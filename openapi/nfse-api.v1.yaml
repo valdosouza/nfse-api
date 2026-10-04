@@ -1,0 +1,635 @@
+openapi: 3.0.3
+# Contrato DESIGN-FIRST da nfse-api (F0 — 2026-10-03; revisto pela Rodada 3 em 2026-10-04: D-F27…D-F35;
+# retrabalho dos gates da F1 em 2026-10-04: cerca da virada, licença nas ações, pendentes paginados,
+# reserva K do cancelamento, aluguel do rodízio, 404 de nota inexistente — §15.4 do prompt).
+# Decisões: D-F4 (setes-api passivo; o app é o cliente) · D-F8 (/v1) · D-F10 (a API lê o banco do
+# produto: o app manda só a REFERÊNCIA da nota) · D-F11 (o C LOCAL é do setes-api) · D-F13 (JWT RS256
+# do setes-api) · D-F14 (licenciado = institution) · D-F16 (A1 cifrado no fiscal_api).
+# Regras herdadas da Onda 3 (D-N1…D-N38): ambíguo nunca fecha; F só conclusivo; vigente = quem detém a
+# chave (D-N26); vida da nota (D-N27); prazo do PAM é aviso (D-N15).
+# Fonte de verdade do contrato: este arquivo. A F1 o serve em /docs e um teste confere rota × path.
+info:
+  title: nfse-api — NFS-e pelo Padrão Nacional (ADN)
+  version: 1.0.0-f1r4
+  description: >-
+    Serviço da família NFS-e do Gestão 2027. Emite, autoriza, consulta e cancela no fisco a NFS-e da nota
+    de serviço já FATURADA no ERP — a nfse-api lê a nota, o ramo de serviço congelado, o emitente e o
+    tomador no banco do produto (só leitura) e controla a conversa com a Sefin Nacional (mTLS com o A1 do
+    estabelecimento). O cancelamento LOCAL da nota (evento C, financeiro, OS) é do setes-api, que lê a voz C
+    do fisco no banco fiscal — o app orquestra: nfse-api `cancel` → setes-api `POST /api/billing/cancel`.
+
+    CERCA DA VIRADA (D-F18 sem dual-write; D-F39): enquanto a habilitação do estabelecimento for RÉPLICA do ERP
+    (`cutover_at` NULL no fiscal_api — ou, sem linha nenhuma, o ERP ainda tem habilitação SE própria), toda AÇÃO
+    (transmit/refresh/reconfirm/cancel/passada) e toda ESCRITA do emitente responde 409 FISCAL_CUTOVER_PENDING — as
+    leituras seguem. A virada é um FATO write-once no banco (o ato `migrate:setes --cutover`), lido por todas as
+    instâncias; abrir o emissor, cunhar nDPS e tomar o aluguel do rodízio recusam a réplica no próprio comando.
+    LICENÇA (D-F14/D-F37): a interface do ramo tem de estar CONTRATADA para TODOS — o admin passa só o privilégio.
+
+    Corpo: toda rota que recebe JSON responde 400 (malformado), 413 (grande demais) e 415 (charset/encoding não
+    suportado) no envelope de erro — antes da autenticação; nunca 500.
+servers:
+  - url: http://localhost:3002
+    description: dev
+security:
+  - BearerAuth: []
+tags:
+  - name: operação
+  - name: emitente
+  - name: nfse
+paths:
+  /v1/health:
+    get:
+      tags: [operação]
+      summary: Saúde do serviço (sem autenticação)
+      security: []
+      responses:
+        '200':
+          description: >-
+            banco, chave-mestra (decifra um vetor de teste E toda versão que cifra A1 vivo está no anel — rotação
+            mal feita aparece aqui, não na 1ª emissão) e storage respondem
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+        '503':
+          description: alguma dependência falhou (o corpo diz qual)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+
+  /v1/emitter:
+    get:
+      tags: [emitente]
+      summary: Situação do emitente do token (A1 + habilitações) — nunca conteúdo de segredo
+      description: Admin da institution (adminGuard do produto). Habilitado = linha do modelo + A1 vigente (D-E4).
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data: { $ref: '#/components/schemas/EmitterStatus' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /v1/emitter/certificate:
+    put:
+      tags: [emitente]
+      summary: Envia o A1 (.pfx + senha) — write-only
+      description: >-
+        O PKCS#12 é aberto na requisição (D-N5): valida par certificado × chave, vigência e CNPJ do CN contra o
+        CNPJ do estabelecimento lido no ERP (D-N29b — e-CPF e CN sem CNPJ recusados). Grava o certificado
+        (público) e a chave privada CIFRADA no fiscal_api (D-F16). A senha não persiste em lugar nenhum. UM A1 por
+        estabelecimento, serve H e P e todas as famílias (D-N31).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pfxBase64, password]
+              properties:
+                pfxBase64: { type: string, maxLength: 64000 }
+                password:  { type: string, maxLength: 200 }
+      responses:
+        '200':
+          description: par gravado (409 FISCAL_CUTOVER_PENDING antes da virada)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data: { $ref: '#/components/schemas/CertificateStatus' }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/MasterKeyUnavailable' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+    delete:
+      tags: [emitente]
+      summary: Apaga o A1 (as habilitações ficam e deixam de estar habilitadas)
+      description: >-
+        Recusa com transmissão VIVA (em voo, S ou K) em qualquer ambiente — sem o A1 nenhuma reconciliação fecha
+        (409 FISCAL_ISSUER_HAS_LIVE_TRANSMISSIONS; trava a habilitação SE, serializando com a reserva).
+      responses:
+        '200': { description: ok }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /v1/emitter/issuers/{model}:
+    parameters:
+      - name: model
+        in: path
+        required: true
+        schema: { type: string, enum: [SE] }
+        description: nfse-api só habilita o modelo SE (55/65 são da nfe-api)
+    put:
+      tags: [emitente]
+      summary: Cria/altera a habilitação do modelo (ambiente H/P e série do DPS)
+      description: Não troca o ambiente com transmissão viva no ambiente atual (409 FISCAL_ISSUER_HAS_LIVE_TRANSMISSIONS — D-I27 espelhada).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [environment, serie]
+              properties:
+                environment: { type: string, enum: [H, P] }
+                serie: { type: string, pattern: '^\d{1,5}$', description: '1–49999 (50000+ é do emissor nacional)' }
+      responses:
+        '200': { description: ok }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/Unprocessable' }   # FISCAL_MODEL_NOT_SUPPORTED (55/65 são da nfe-api)
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+    delete:
+      tags: [emitente]
+      summary: Exclui a habilitação (recusa com transmissão viva)
+      responses:
+        '200': { description: ok }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }        # FISCAL_ISSUER_MISSING (não há habilitação do modelo)
+
+  /v1/nfse/invoices/pending:
+    get:
+      tags: [nfse]
+      summary: Notas de serviço faturadas sem NFS-e viva ou autorizada — PAGINADO (o lote é do APP — fatia e repete)
+      description: >-
+        Fora da lista: última voz da vida vigente A, N, S, K ou C (C com o C local pendente só daria 409
+        FISCAL_EFFECT_PENDING). Licença (D-F14/D-F37): só os ramos CONTRATADOS, para todos — inclusive o admin
+        (nenhum = lista vazia). Ordem estável (mais antiga primeiro, id) — o app percorre por página.
+      parameters:
+        - { name: page,     in: query, schema: { type: integer, minimum: 1, maximum: 100000, default: 1 } }
+        - { name: pageSize, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
+      responses:
+        '200':
+          description: envelope paginado da casa
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:       { type: boolean }
+                  page:     { type: integer }
+                  pageSize: { type: integer }
+                  total:    { type: integer }
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        invoiceId:    { type: integer }
+                        number:       { type: string }
+                        dtEmission:   { type: string, format: date }
+                        interfaceKey: { type: string, enum: [service-orders, orders, order-returns] }
+        '400': { $ref: '#/components/responses/Invalid' }
+
+  /v1/nfse/invoices/{invoiceId}:
+    parameters: [ { $ref: '#/components/parameters/InvoiceId' } ]
+    get:
+      tags: [nfse]
+      summary: Situação fiscal da nota (linha do tempo das tentativas e vozes da VIDA vigente)
+      description: Leitura exige a interface do ramo contratada (Q-N32). Instantes na zona do estabelecimento (Q-TZ1).
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data: { $ref: '#/components/schemas/FiscalView' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '400': { $ref: '#/components/responses/Invalid' }
+
+  /v1/nfse/invoices/{invoiceId}/transmit:
+    parameters: [ { $ref: '#/components/parameters/InvoiceId' } ]
+    post:
+      tags: [nfse]
+      summary: Transmite o DPS da nota ao fisco
+      description: >-
+        A nfse-api lê a nota no ERP (viva, emitida por este estabelecimento, com ramo de serviço) e monta o DPS
+        com o que está congelado no faturamento + emitente/tomador lidos agora. Reserva a tentativa sob o FOR
+        UPDATE na linha da nota no ERP (D-F27 — o mesmo do cancelamento local do setes-api; ordem nota → emissor →
+        DPS → tentativa); o nDPS é da VIDA (D-N3/D-F30) e o contador do emissor SE (D-N18). Fisco FORA da
+        transação. Privilégio TRANSMITIR na interface do RAMO + ramo CONTRATADO (D-F14; admin passa — Q-F46).
+        Desfecho ambíguo NÃO fecha: a tentativa fica em voo e o refresh reconcilia por dps_id NO MESMO AMBIENTE.
+      responses:
+        '201':
+          description: autorizada (voz A)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data: { $ref: '#/components/schemas/TransmitResult' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >-
+            FISCAL_ISSUER_MISSING · FISCAL_CERT_MISSING/EXPIRED/INVALID · FISCAL_TRANSMISSION_IN_PROGRESS ·
+            FISCAL_ALREADY_AUTHORIZED · FISCAL_CANCEL_IN_FLIGHT · FISCAL_EFFECT_PENDING · INVOICE_NOT_TRANSMITTABLE ·
+            FISCAL_DPS_ID_CHANGED · FISCAL_AUTHORITY_AUTH_FAILED (F gravado) · RESOURCE_BUSY (nota travada por outra
+            operação) · FISCAL_CUTOVER_PENDING (cerca da virada)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: >-
+            INVOICE_SERVICE_BRANCH_MISSING · SERVICE_RULE_NATIONAL_CODE_REQUIRED · FISCAL_EMITTER_INCOMPLETE ·
+            FISCAL_RECIPIENT_INCOMPLETE · FISCAL_DPS_INVALID · FISCAL_DPS_REJECTED (R gravado — E0xxx em fields[])
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '502': { $ref: '#/components/responses/AuthorityAmbiguous' }
+        '503': { $ref: '#/components/responses/AuthorityUnavailable' }
+        '400': { $ref: '#/components/responses/Invalid' }
+
+  /v1/nfse/invoices/{invoiceId}/refresh:
+    parameters: [ { $ref: '#/components/parameters/InvoiceId' } ]
+    post:
+      tags: [nfse]
+      summary: Consulta o fisco e grava a voz nova da tentativa vigente (idempotente)
+      description: >-
+        Privilégio TRANSMITIR do ramo (ramo contratado). A chave achada pela consulta do Id do DPS pousa só numa
+        tentativa do MESMO ambiente (gate da F1). A voz C descoberta aqui NÃO produz o C local — o setes-api o aplica (D-F11).
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data: { $ref: '#/components/schemas/RefreshResult' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '502': { $ref: '#/components/responses/AuthorityAmbiguous' }
+        '503': { $ref: '#/components/responses/AuthorityUnavailable' }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '422': { $ref: '#/components/responses/Unprocessable' }   # o fisco recusou a CONSULTA (400 → FISCAL_DPS_REJECTED)
+
+  /v1/nfse/invoices/{invoiceId}/reconfirm:
+    parameters: [ { $ref: '#/components/parameters/InvoiceId' } ]
+    post:
+      tags: [nfse]
+      summary: Reconfere no fisco a tentativa que fechou com F de envio interrompido (Q-ADV1b) — antes do cancelamento local
+      description: >-
+        D-F29: o setes-api não fala com o fisco (D-F4); a conferência que hoje roda dentro do cancelamento local
+        passa a ser pedida pelo app aqui. Grava `last_queried_at` na tentativa — é a PROVA lida no banco que o
+        setes-api exige (consulta POSTERIOR ao F) antes de cancelar localmente uma nota com F por consulta em
+        produção; sem ela o cancelamento local é recusado (fail-closed preservado).
+      responses:
+        '200':
+          description: 'conferido (achou a NFS-e → reconciliada como A; não achou → grava a PROVA last_queried_at)'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data: { $ref: '#/components/schemas/ReconfirmResult' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/AuthorityUnavailable' }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '422': { $ref: '#/components/responses/Unprocessable' }   # o fisco recusou a CONSULTA (400 → FISCAL_DPS_REJECTED)
+        '502': { $ref: '#/components/responses/AuthorityAmbiguous' }   # 404 sem E2404 (gateway/HTML — Q-ADV1a) ou resposta ilegível
+
+  /v1/nfse/invoices/{invoiceId}/cancel:
+    parameters: [ { $ref: '#/components/parameters/InvoiceId' } ]
+    post:
+      tags: [nfse]
+      summary: Pede ao fisco o cancelamento da NFS-e autorizada (evento e101101)
+      description: >-
+        Operação EM LINHA (D-F28): só a NFS-e AUTORIZADA (A, ou N depois de K) vai ao fisco. Resposta ok (200, voz C
+        gravada) → o app AVANÇA e envia o cancelamento ao setes-api (`POST /api/billing/cancel`), que lê a voz C no
+        banco fiscal e aplica o C local (D-F11); não ok (4xx/5xx) → o app NÃO avança. Antes daqui o app consulta o
+        plano de cancelamento no setes-api (consultivo — D-F29). Nada de vínculo gravado: a pendência (voz C × nota
+        ainda não-C) é derivada. Nota sem tentativa, rejeitada ou com falha → 409 FISCAL_NOT_AUTHORIZED (cancele direto no ERP).
+        RESERVA (gates da F1): a voz K ("pedido em andamento") é gravada ANTES da chamada ao fisco, sob a trava da
+        nota — um 2º pedido simultâneo recebe 409 FISCAL_CANCEL_IN_FLIGHT e só UM e101101 sai. Fisco recusa →
+        409 FISCAL_CANCEL_REFUSED e N libera a reserva (a NFS-e segue autorizada, pode-se pedir de novo); preparo
+        local falha (A1, leiaute) → N e o erro sobe (o fisco não foi chamado); ambíguo → o K FICA e bloqueia até a
+        consulta reconciliar (C, ou N depois da carência). Prazo do PAM vencido → aviso em warnings. O pedido vai ao
+        fisco do ambiente de QUEM DETÉM a chave. Privilégio CANCELAR do ramo (ramo contratado).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 255 }
+      responses:
+        '200':
+          description: voz C gravada (o fisco cancelou) — ou já estava (atAuthority false, idempotente)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data: { $ref: '#/components/schemas/CancelResult' }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >-
+            FISCAL_NOT_AUTHORIZED · FISCAL_TRANSMISSION_IN_PROGRESS · FISCAL_CANCEL_IN_FLIGHT · FISCAL_CANCEL_REFUSED
+            (N gravado) · FISCAL_CERT_* / FISCAL_ISSUER_MISSING (N gravado) · FISCAL_CUTOVER_PENDING
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '502': { $ref: '#/components/responses/AuthorityAmbiguous' }
+        '503': { $ref: '#/components/responses/AuthorityUnavailable' }
+        '422': { $ref: '#/components/responses/Unprocessable' }   # cadastro do emitente incompleto no PREPARO (N libera a reserva)
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+
+  /v1/nfse/invoices/{invoiceId}/xml:
+    parameters: [ { $ref: '#/components/parameters/InvoiceId' } ]
+    get:
+      tags: [nfse]
+      summary: XML da NFS-e autorizada (ou cancelada — o documento existiu)
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      accessKey: { type: string }
+                      xml: { type: string }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/Unprocessable' }   # FISCAL_EMITTER_INCOMPLETE (sem CNPJ do emitente para achar a pasta)
+
+  /v1/nfse/invoices/{invoiceId}/danfse:
+    parameters: [ { $ref: '#/components/parameters/InvoiceId' } ]
+    get:
+      tags: [nfse]
+      summary: DANFSe (PDF nosso — a API do fisco está suspensa, NT 008); carimbo CANCELADA pela voz do fisco
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      accessKey: { type: string }
+                      pdfBase64: { type: string }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/Unprocessable' }   # FISCAL_EMITTER_INCOMPLETE
+
+  /v1/nfse/refresh:
+    post:
+      tags: [nfse]
+      summary: Uma passada da consulta ativa do estabelecimento (vivas, autorizadas a cada 24 h — D-N21)
+      description: >-
+        Orçamento de tempo por requisição; nenhum estado de controle em memória (a F3 troca por worker). UMA
+        passada por estabelecimento por vez, em qualquer instância: ALUGUEL de 60 s na linha da habilitação SE
+        (nenhuma conexão retida; devolvido SÓ pelo dono — a passada que estoura não apaga o aluguel da seguinte);
+        quem não obtém o aluguel recebe 200 com skipped=true; sem habilitação SE → 409 FISCAL_ISSUER_MISSING.
+        Candidatas filtradas pela VIDA vigente no SQL, vivas antes das autorizadas; autorizadas só até o teto de idade
+        (D-F38: max(prazo de cancelamento do município, 60) + 30 dias, contado do dhProc — leitura do convênio só ALARGA, A13;
+        prazo implausível/ausente/lento → 60 + 30; o convênio é esperado no máximo 3 s). Erro TÉCNICO numa nota vai ao
+        relatório só como "Erro interno (ref X)" (o detalhe fica no log com o ref). Privilégio TRANSMITIR em algum
+        ramo CONTRATADO.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                minMinutes: { type: integer, minimum: 1, maximum: 1440 }
+                limit:      { type: integer, minimum: 1, maximum: 50 }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data: { $ref: '#/components/schemas/RefreshRunReport' }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: O MESMO token do login do setes-api, assinado em RS256 (D-F13). A nfse-api só tem a chave pública.
+  parameters:
+    InvoiceId:
+      name: invoiceId
+      in: path
+      required: true
+      schema: { type: integer, minimum: 1 }
+      description: id da nota = id do pedido no ERP (terminal 0)
+  responses:
+    Unauthorized:
+      description: token ausente, inválido, expirado ou não-RS256
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Forbidden:
+      description: PRIVILEGE_REQUIRED (ramo) · INTERFACE_NOT_ALLOWED (licença — D-F14; vale também para o admin, D-F37) · admin exigido
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    NotFound:
+      description: nota/NFS-e não encontrada
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Invalid:
+      description: payload inválido
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Conflict:
+      description: estado não permite a ação (código em `code`; FISCAL_CUTOVER_PENDING = institution ainda emitida pelo setes-api)
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Unprocessable:
+      description: dado de cadastro/documento inválido (campo em fields[])
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    AuthorityAmbiguous:
+      description: FISCAL_AUTHORITY_UNKNOWN_RESPONSE — resposta ilegível do fisco; nada fechado
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    AuthorityUnavailable:
+      description: FISCAL_AUTHORITY_UNAVAILABLE — rede/timeout/5xx; a tentativa fica EM VOO (retryable)
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    PayloadTooLarge:
+      description: VALIDATION_FAILED — corpo da requisição grande demais (limite 128 kb)
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    UnsupportedMediaType:
+      description: UNSUPPORTED_MEDIA_TYPE — corpo com charset ≠ UTF-8 ou Content-Encoding fora de gzip/deflate/identity
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    MasterKeyUnavailable:
+      description: FISCAL_MASTER_KEY_UNAVAILABLE — chave-mestra do cofre ausente na instância (o A1 não cifra/abre)
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+  schemas:
+    Error:
+      type: object
+      required: [error, code]
+      properties:
+        error: { type: string }
+        code:  { type: string }
+        ref:   { type: string, description: referência do registro de crash (erro inesperado) }
+        fields:
+          type: array
+          items:
+            type: object
+            properties:
+              field:    { type: string }
+              message:  { type: string }
+              expected: { description: valor esperado quando a recusa depende de dado que mudou fora da tela }
+    Health:
+      type: object
+      properties:
+        status:    { type: string, enum: [ok, degraded] }
+        db:        { type: boolean }
+        masterKey: { type: boolean }
+        storage:   { type: boolean }
+    CertificateInfo:
+      type: object
+      properties:
+        subject: { type: string }
+        issuer: { type: string }
+        notBefore: { type: string, format: date-time }
+        notAfter: { type: string, format: date-time }
+        daysToExpire: { type: integer }
+        expired: { type: boolean }
+        notYetValid: { type: boolean }
+        cnpj: { type: string, nullable: true }
+    CertificateStatus:
+      type: object
+      properties:
+        certificate: { type: boolean }
+        privateKey: { type: boolean }
+        certificateInfo: { allOf: [ { $ref: '#/components/schemas/CertificateInfo' } ], nullable: true }
+    EmitterStatus:
+      type: object
+      properties:
+        issuers:
+          type: array
+          items:
+            type: object
+            properties:
+              model: { type: string, enum: [SE, '55', '65'] }
+              environment: { type: string, enum: [H, P] }
+              serie: { type: string, nullable: true }
+              cutoverAt: { type: string, nullable: true, description: 'D-F39 — desde quando (UTC) esta API emite por esta habilitação; null = RÉPLICA do ERP (só leitura)' }
+              enabled: { type: boolean, description: 'virada + A1 vigente' }
+              authority: { type: string, enum: [ADN, SEFAZ] }
+        certificate: { $ref: '#/components/schemas/CertificateStatus' }
+    Transmission:
+      type: object
+      properties:
+        attempt: { type: integer }
+        environment: { type: string, enum: [H, P] }
+        dpsId: { type: string, nullable: true }
+        accessKey: { type: string, nullable: true }
+        nfseNumber: { type: string, nullable: true }
+        dhProc: { type: string, nullable: true }
+        lastKind: { type: string, nullable: true, enum: [S, A, R, C, K, F, N, null] }
+        lastCode: { type: string, nullable: true }
+        lastMessage: { type: string, nullable: true }
+    Voice:
+      type: object
+      properties:
+        attempt: { type: integer }
+        event: { type: integer }
+        kind: { type: string, enum: [S, A, R, C, K, F, N] }
+        authorityCode: { type: string, nullable: true }
+        message: { type: string, nullable: true }
+        dh: { type: string, nullable: true, description: 'instante da VOZ do fisco; NULL nos fatos nossos (K da reserva, N de liberação)' }
+        source: { type: string, enum: [P, Q] }
+    FiscalView:
+      type: object
+      properties:
+        invoiceId: { type: integer }
+        state: { type: string, enum: [none, in_flight, authorized, rejected, failed, cancelled, cancel_in_flight] }
+        transmissions: { type: array, items: { $ref: '#/components/schemas/Transmission' } }
+        events: { type: array, items: { $ref: '#/components/schemas/Voice' } }
+        localCancelPending: { type: boolean, description: 'voz C do fisco sem o C local aplicado pelo setes-api (DERIVADO — D-F28; o app envia o cancelamento ao setes-api)' }
+        xmlAvailable: { type: boolean }
+        danfseAvailable: { type: boolean }
+    TransmitResult:
+      type: object
+      properties:
+        invoiceId: { type: integer }
+        attempt: { type: integer }
+        dpsId: { type: string }
+        accessKey: { type: string, nullable: true }
+        nfseNumber: { type: string, nullable: true }
+        kind: { type: string, enum: [A] }
+    RefreshResult:
+      type: object
+      properties:
+        invoiceId: { type: integer }
+        attempt: { type: integer }
+        changed: { type: boolean }
+        kind: { type: string, nullable: true }
+        accessKey: { type: string, nullable: true }
+        localCancelPending: { type: boolean, description: 'voz C do fisco com a nota ainda não cancelada no ERP (D-F28)' }
+    CancelResult:
+      type: object
+      properties:
+        invoiceId: { type: integer }
+        attempt: { type: integer }
+        atAuthority: { type: boolean, description: 'false = a voz C já existia (idempotente; o app segue para o setes-api do mesmo jeito)' }
+        transmissionEvent: { type: integer, description: nº da voz C }
+        warnings: { type: array, items: { type: string } }
+        nextStep: { type: string, enum: [apply-local-cancel], description: 'o app chama POST /api/billing/cancel no setes-api' }
+    ReconfirmResult:
+      type: object
+      properties:
+        invoiceId: { type: integer }
+        needed:    { type: boolean, description: 'false = nada a reconfirmar (sem F por consulta em produção na vida, ou já há chave)' }
+        found:     { type: boolean, description: 'true = o fisco tem a NFS-e: reconciliada como A — o cancelamento passa a exigir "Cancelar NFS-e"' }
+        attempt:   { type: integer, nullable: true }
+        accessKey: { type: string, nullable: true }
+    RefreshRunReport:
+      type: object
+      properties:
+        checked: { type: integer }
+        changed: { type: integer }
+        stoppedEarly: { type: boolean }
+        skipped: { type: boolean, description: 'outra passada do estabelecimento estava em curso (aluguel ocupado) — nada consultado (sem habilitação SE, ou habilitação RÉPLICA, a resposta é 409, não skipped)' }
+        authorizedMaxDays: { type: integer, description: 'D-F38 — teto de idade (dias) das autorizadas revisitadas nesta passada' }
+        ceilingSource: { type: string, enum: [municipio, padrao], description: 'de onde veio o teto: prazo do município (convênio) ou o padrão 60 dias (+30)' }
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              invoiceId: { type: integer }
+              code: { type: string, nullable: true }
+              message: { type: string }

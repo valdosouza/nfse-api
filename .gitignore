@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+.env
+secrets/
+storage/
+*.log
+.DS_Store
+Thumbs.db
+storage-smoke/
