@@ -289,36 +289,56 @@ async function assertFrozen(c: PoolConnection, s: string, institutionId: number)
   return 'virada — origem congelada, nada copiado'
 }
 
+/**
+ * Re-sincronia de TODAS as institutions — D-F48 (= Q-F58 (a), Valdo 2026-10-04): UMA TRANSAÇÃO POR INSTITUTION. O
+ * "tudo ou nada" global (D-F18) não protegia nenhum invariante ENTRE institutions e, com a trava por linha (§17.2),
+ * segurava FOR UPDATE nas habilitações VIRADAS de todas até o commit final (transmitir/cancelar delas esperavam e voltavam
+ * 409). Agora cada institution trava só o tempo dela; a que falha volta SOZINHA (nada dela gravado), as outras seguem, e o
+ * script sai com erro listando as que falharam (falha alta preservada).
+ */
 async function resyncAll(pool: ReturnType<typeof createFiscalPool>, keyring: MasterKeyRing, storage: FsFiscalStorage): Promise<void> {
   const c = await pool.getConnection()
+  const reports: (Report | { schema: string; institutionId: number; state: string })[] = []
+  const failures: { schema: string; institutionId: number; error: string }[] = []
   try {
-    await c.beginTransaction()
     const [insts] = await c.query<any[]>(`SELECT id, schema_name AS schemaName FROM setes_central.tb_institution WHERE deleted = 'N' ORDER BY id`)
-    const reports: (Report | { schema: string; institutionId: number; state: string })[] = []
     for (const i of insts) {
       const s = assertSchema(String(i.schemaName)), id = Number(i.id)
-      if (!(await erp.erpServiceIssuerExists(c, s, id))) {               // o ERP nunca emitiu por ela (o MESMO predicado da lacuna (b))
-        // gate adversarial r8 LOW [r8-resync-55]: mesmo sem SE no ERP, réplica de OUTRO modelo (resíduo de versão antiga do
-        // script) trava a institution pela cerca sem saída pelo --cutover → falha alta com a instrução de DELETE (D-F42).
-        // Leitura NÃO travante: só detecta (o erro desfaz tudo) — travar aqui pegaria gap lock em institution sem linha.
-        assertNoForeignReplica(await apiIssuerRows(c, id, false), s, id)
-        continue
+      await c.beginTransaction()
+      try {
+        const rep = await resyncInstitution(c, keyring, storage, s, id)
+        if (DRY) await c.rollback(); else await c.commit()
+        if (rep) reports.push(rep)
+      } catch (err) {
+        await c.rollback()
+        failures.push({ schema: s, institutionId: id, error: String((err as Error)?.message ?? err) })
       }
-      const { rows, replicas } = await lockApiIssuers(c, s, id)          // decide pelo ATUAL (trava por linha), não pelo snapshot
-      if (rows > 0 && replicas === 0) { reports.push({ schema: s, institutionId: id, state: await assertFrozen(c, s, id) }); continue }
-      const r = await migrateInstitution(c, keyring, storage, id, s)
-      if (r) reports.push(r)
     }
-    if (DRY) await c.rollback(); else await c.commit()
     for (const r of reports) if ('xmlMissing' in r) await checkXmls(c, storage, r)
-    console.log(JSON.stringify({ dryRun: DRY, committed: !DRY, reports,
+    console.log(JSON.stringify({ dryRun: DRY, committed: !DRY, reports, failures,
       ...(DRY ? { nota: 'dry-run: a conferência de XML lê o estado ATUAL (a cópia foi desfeita)' } : {}) }, null, 2))
-  } catch (err) {
-    await c.rollback()
-    throw err
   } finally {
     c.release()
   }
+  if (failures.length) {
+    throw new Error(`re-sincronia: ${failures.length} institution(s) com falha — nada delas gravado`
+      + `${DRY ? '' : '; as demais foram gravadas'}: ${failures.map(f => f.error).join(' | ')}`)
+  }
+}
+
+/** Uma institution, DENTRO da transação dela (D-F48). */
+async function resyncInstitution(c: PoolConnection, keyring: MasterKeyRing, storage: FsFiscalStorage, s: string, id: number)
+  : Promise<Report | { schema: string; institutionId: number; state: string } | null> {
+  if (!(await erp.erpServiceIssuerExists(c, s, id))) {                 // o ERP nunca emitiu por ela (o MESMO predicado da lacuna (b))
+    // gate adversarial r8 LOW [r8-resync-55]: mesmo sem SE no ERP, réplica de OUTRO modelo (resíduo de versão antiga do
+    // script) trava a institution pela cerca sem saída pelo --cutover → falha alta com a instrução de DELETE (D-F42).
+    // Leitura NÃO travante: só detecta (o erro desfaz a institution) — travar aqui pegaria gap lock em institution sem linha.
+    assertNoForeignReplica(await apiIssuerRows(c, id, false), s, id)
+    return null
+  }
+  const { rows, replicas } = await lockApiIssuers(c, s, id)            // decide pelo ATUAL (trava por linha), não pelo snapshot
+  if (rows > 0 && replicas === 0) return { schema: s, institutionId: id, state: await assertFrozen(c, s, id) }
+  return (await migrateInstitution(c, keyring, storage, id, s)) ?? null
 }
 
 async function cutover(pool: ReturnType<typeof createFiscalPool>, keyring: MasterKeyRing, storage: FsFiscalStorage, institutionId: number): Promise<void> {
@@ -394,4 +414,5 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch(err => { console.error('[migrate:setes] FALHA (nada gravado):', err?.message ?? err); process.exit(1) })
+// virada: uma transação só (nada gravado na falha); re-sincronia: o texto do erro diz o que voltou (D-F48)
+main().catch(err => { console.error('[migrate:setes] FALHA:', err?.message ?? err); process.exit(1) })

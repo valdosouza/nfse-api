@@ -137,7 +137,7 @@ describe('autorização de AÇÃO e licença (D-F13/D-F14)', () => {
     erpM.userHasPrivilege.mockImplementation(async (_p: any, _s: string, _u: number, key: string) => key === 'service-orders')
     expect((await request(app).post('/v1/nfse/refresh').set('Authorization', `Bearer ${token()}`).send({})).status).toBe(200)
     expect(tx.refreshOpenServiceTransmissions).toHaveBeenLastCalledWith(expect.anything(), { schemaName: 'setes_setes', institutionId: 1, userId: 7 },
-      expect.objectContaining({ interfaces: ['service-orders'] }))
+      expect.objectContaining({ interfaces: ['service-orders'], liveOnlyInterfaces: ['order-returns'] }))   // D-F47: cortado só com viva
     // admin passa o privilégio, nunca a licença (D-F37): todos os CONTRATADOS, o não contratado fica fora
     await request(app).post('/v1/nfse/refresh').set('Authorization', `Bearer ${token({ role: 'admin' })}`).send({})
     expect(tx.refreshOpenServiceTransmissions).toHaveBeenLastCalledWith(expect.anything(), expect.anything(),

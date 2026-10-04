@@ -5,7 +5,7 @@ import type { Actor } from '../../nfse/transmission'
 import * as tx from '../../nfse/transmission'
 import { renderDanfse } from '../../nfse/danfse'
 import { emitterDisplay } from '../../facts/service-facts'
-import { requireBranchPrivilege, requireBranchInterface, requireAnyPrivilege, requireCutover, visibleInterfaces, parseInvoiceId } from '../guards'
+import { requireBranchPrivilege, requireBranchInterface, passScope, requireCutover, visibleInterfaces, parseInvoiceId } from '../guards'
 import { parseWith } from '../validate'
 import { cancelDto, refreshPassDto, pendingQueryDto } from './nfse.dto'
 
@@ -95,9 +95,9 @@ export function nfseRoutes(ctx: AppContext): Router {
   router.post('/refresh', route('POST /v1/nfse/refresh', async (req, res) => {
     const inst = institutionOf(req)
     await requireCutover(ctx, inst)
-    const interfaces = await requireAnyPrivilege(ctx, inst, PASS_INTERFACES, erp.PRIVILEGE_TRANSMITIR)
+    const scope = await passScope(ctx, inst, PASS_INTERFACES, erp.PRIVILEGE_TRANSMITIR)       // D-F46/D-F47
     const body = parseWith(refreshPassDto, req.body)
-    sendOk(res, await tx.refreshOpenServiceTransmissions(ctx, actorOf(inst), { minMinutes: body.minMinutes, limit: body.limit, interfaces }))
+    sendOk(res, await tx.refreshOpenServiceTransmissions(ctx, actorOf(inst), { minMinutes: body.minMinutes, limit: body.limit, ...scope }))
   }))
 
   return router

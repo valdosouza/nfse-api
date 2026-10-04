@@ -313,15 +313,25 @@ const clampDays = (d: number) => (Number.isFinite(d) ? Math.min(Math.max(Math.tr
  *  - a voz C NÃO volta ao rodízio (o efeito local é do setes-api — D-F28);
  *  - PRIORIDADE: vivas antes das autorizadas; dentro de cada grupo, a menos olhada primeiro;
  *  - [interfaces] (D-F46): só notas cujo RAMO (view de política `vw_order_interface` — D-F32; sem linha = 'orders',
- *    o mesmo default de `erp.orderInterface`) está na lista de quem pede; lista vazia = nenhuma candidata.
+ *    o mesmo default de `erp.orderInterface`) está na lista de quem pede; [liveOnlyInterfaces] (D-F47): ramos cortados
+ *    entram SÓ com tentativa viva (sem voz/S/K) — a autorizada (A/N) de ramo cortado não volta ao rodízio. As duas
+ *    vazias = nenhuma candidata (nunca "sem filtro").
  */
 export async function listRefreshCandidates(
   q: Q, schemaName: string, institutionId: number, minMinutes: number, inFlightMinutes: number, limit: number,
-  opts: { authorizedHours?: number; authorizedMaxDays?: number; interfaces?: readonly string[] } = {},
+  opts: { authorizedHours?: number; authorizedMaxDays?: number; interfaces?: readonly string[]; liveOnlyInterfaces?: readonly string[] } = {},
 ): Promise<TransmissionRow[]> {
   const s = assertSchema(schemaName)
   const interfaces = opts.interfaces
-  if (interfaces && interfaces.length === 0) return []
+  const liveOnly = interfaces ? (opts.liveOnlyInterfaces ?? []) : []
+  if (interfaces && interfaces.length === 0 && liveOnly.length === 0) return []
+  const branch = `COALESCE(oi.interface_key, 'orders')`
+  const branchFilter = !interfaces ? ''
+    : `AND (${[
+      ...(interfaces.length ? [`${branch} IN (?)`] : []),
+      ...(liveOnly.length ? [`(${branch} IN (?) AND (le.kind IS NULL OR le.kind IN ('S','K')))`] : []),
+    ].join(' OR ')})`
+  const branchParams = !interfaces ? [] : [...(interfaces.length ? [[...interfaces]] : []), ...(liveOnly.length ? [[...liveOnly]] : [])]
   const [rows] = await q.query(
     `${TX_SELECT}
       JOIN \`${s}\`.vw_invoice_life l
@@ -339,12 +349,12 @@ export async function listRefreshCandidates(
              AND COALESCE(t.dh_proc, t.created_at) >= DATE_SUB(NOW(), INTERVAL ? DAY)
              AND (t.last_queried_at IS NULL OR t.last_queried_at < DATE_SUB(NOW(), INTERVAL ? HOUR)))
         )
-        ${interfaces ? `AND COALESCE(oi.interface_key, 'orders') IN (?)` : ''}
+        ${branchFilter}
       ORDER BY (le.kind IN ('A','N')) ASC, (t.last_queried_at IS NULL) DESC, t.last_queried_at ASC, t.tb_invoice_id ASC
       LIMIT ?`,
     [institutionId, inFlightMinutes, minMinutes, minMinutes,
       clampDays(opts.authorizedMaxDays ?? DEFAULT_CANCEL_DAYS + REFRESH_AUTHORIZED_MARGIN_DAYS), opts.authorizedHours ?? REFRESH_AUTHORIZED_HOURS,
-      ...(interfaces ? [[...interfaces]] : []), limit])
+      ...branchParams, limit])
   return (rows as any[]).map(mapTx)
 }
 

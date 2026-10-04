@@ -471,8 +471,8 @@ describe('consulta ativa — ALUGUEL na linha do emissor, candidatas filtradas n
 
   it('D-F46: os ramos de quem pede descem até o SQL das candidatas (o filtro é antes do LIMIT, nunca em JS)', async () => {
     ;(repo.listRefreshCandidates as jest.Mock).mockResolvedValue([])
-    await refreshOpenServiceTransmissions(deps, A, { minMinutes: 7, limit: 3, interfaces: ['service-orders'] })
-    expect(repo.listRefreshCandidates).toHaveBeenCalledWith(pool, 'setes_setes', 1, 7, 10, 3, { authorizedMaxDays: 90, interfaces: ['service-orders'] })
+    await refreshOpenServiceTransmissions(deps, A, { minMinutes: 7, limit: 3, interfaces: ['service-orders'], liveOnlyInterfaces: ['orders'] })
+    expect(repo.listRefreshCandidates).toHaveBeenCalledWith(pool, 'setes_setes', 1, 7, 10, 3, { authorizedMaxDays: 90, interfaces: ['service-orders'], liveOnlyInterfaces: ['orders'] })
   })
 
   it('consulta CADA candidata que o SQL devolveu (o filtro da vida vigente é do SQL) e devolve o aluguel no fim', async () => {

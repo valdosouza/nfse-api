@@ -40,20 +40,26 @@ export async function visibleInterfaces(ctx: AppContext, inst: InstitutionPayloa
 }
 
 /**
- * Privilégio em QUALQUER das interfaces (rotas sem nota específica — ex.: passada do rodízio) e DEVOLVE os ramos em
- * que quem pede pode agir: contratados (D-F14/D-F37) E com o privilégio (ou admin). D-F46: quem chama FILTRA as notas
- * por esta lista — ramo não contratado (ou sem privilégio) não ganha serviço fiscal nem de carona na passada de outro.
- * Nenhum ramo → 403 (nada contratado = INTERFACE_NOT_ALLOWED; contratado sem privilégio = PRIVILEGE_REQUIRED).
+ * Escopo da PASSADA do rodízio (rota sem nota específica):
+ *  - [interfaces] = ramos em que quem pede pode agir — contratados (D-F14/D-F37) E com o privilégio (ou admin): TODAS as
+ *    candidatas deles (D-F46 — ramo não contratado não ganha serviço fiscal de carona);
+ *  - [liveOnlyInterfaces] = ramos NÃO contratados: só as tentativas JÁ VIVAS (sem voz/S/K) — D-F47 (= Q-F57 (b), Valdo
+ *    2026-10-04): fechar o que estava em curso quando o ramo saiu do contrato não é serviço novo; sem isso a nota órfã
+ *    ficava viva para sempre e travava o emitente inteiro (trocar ambiente, excluir habilitação/A1). Consultar, cancelar
+ *    e ler continuam 403 para todos (D-F46).
+ * Nenhum ramo com privilégio → 403 (nada contratado = INTERFACE_NOT_ALLOWED; contratado sem privilégio =
+ * PRIVILEGE_REQUIRED), SALVO o admin com NADA contratado: ele roda a passada só sobre as vivas dos ramos cortados (D-F47).
  */
-export async function requireAnyPrivilege(ctx: AppContext, inst: InstitutionPayload, keys: readonly string[], privilegeId: number): Promise<string[]> {
+export async function passScope(ctx: AppContext, inst: InstitutionPayload, keys: readonly string[], privilegeId: number)
+  : Promise<{ interfaces: string[]; liveOnlyInterfaces: string[] }> {
   let contracted = false
-  const allowed: string[] = []
+  const interfaces: string[] = [], liveOnlyInterfaces: string[] = []
   for (const key of keys) {
-    if (!(await erp.institutionHasInterface(ctx.pool, inst.schemaName, inst.institutionId, key))) continue
+    if (!(await erp.institutionHasInterface(ctx.pool, inst.schemaName, inst.institutionId, key))) { liveOnlyInterfaces.push(key); continue }
     contracted = true
-    if (isAdmin(inst) || await erp.userHasPrivilege(ctx.pool, inst.schemaName, inst.userId, key, privilegeId)) allowed.push(key)
+    if (isAdmin(inst) || await erp.userHasPrivilege(ctx.pool, inst.schemaName, inst.userId, key, privilegeId)) interfaces.push(key)
   }
-  if (allowed.length > 0) return allowed
+  if (interfaces.length > 0 || (isAdmin(inst) && !contracted)) return { interfaces, liveOnlyInterfaces }
   if (!contracted) throw new HttpError(403, 'Nenhuma interface fiscal contratada para este estabelecimento', undefined, ErrorCodes.INTERFACE_NOT_ALLOWED)
   throw new HttpError(403, 'Privilégio necessário para esta ação', undefined, ErrorCodes.PRIVILEGE_REQUIRED)
 }

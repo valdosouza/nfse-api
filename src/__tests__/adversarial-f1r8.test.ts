@@ -164,22 +164,26 @@ describe('D-F46 — ataques à borda: ramo não contratado, admin, lista vazia, 
     const r = await request(app).post('/v1/nfse/refresh').set('Authorization', `Bearer ${token()}`).set('Content-Type', 'application/json').send(raw)
     expect(r.status).toBe(200)
     expect(spies.refreshOpenServiceTransmissions).toHaveBeenCalledWith(expect.anything(), expect.anything(),
-      { minMinutes: 5, limit: undefined, interfaces: ['service-orders'] })
+      { minMinutes: 5, limit: undefined, interfaces: ['service-orders'], liveOnlyInterfaces: ['order-returns'] })   // D-F47: o cortado só com viva
     for (const body of [[], { limit: 51 }, { minMinutes: 0 }, { minMinutes: '5' }]) {
       const b = await request(app).post('/v1/nfse/refresh').set('Authorization', `Bearer ${token()}`).send(body as any)
       expect([JSON.stringify(body), b.status, b.body.code]).toEqual([JSON.stringify(body), 400, 'VALIDATION_FAILED'])
     }
   })
 
-  it('admin com SÓ a devolução contratada → a passada leva só ["order-returns"]; nada contratado → 403 INTERFACE_NOT_ALLOWED sem rodar', async () => {
+  it('admin com SÓ a devolução contratada → a passada leva só ["order-returns"] (os cortados só com viva); nada contratado → D-F47: admin fecha só as VIVAS dos cortados; usuário comum 403', async () => {
     const app = createApp(ctx())
     const admin = { Authorization: `Bearer ${token({ role: 'admin' })}` }
     contracted('order-returns')
     expect((await request(app).post('/v1/nfse/refresh').set(admin).send({})).status).toBe(200)
-    expect(spies.refreshOpenServiceTransmissions).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ interfaces: ['order-returns'] }))
-    spies.refreshOpenServiceTransmissions.mockClear()
+    expect(spies.refreshOpenServiceTransmissions).toHaveBeenLastCalledWith(expect.anything(), expect.anything(),
+      expect.objectContaining({ interfaces: ['order-returns'], liveOnlyInterfaces: ['service-orders', 'orders'] }))
     contracted()
-    const r = await request(app).post('/v1/nfse/refresh').set(admin).send({})
+    expect((await request(app).post('/v1/nfse/refresh').set(admin).send({})).status).toBe(200)
+    expect(spies.refreshOpenServiceTransmissions).toHaveBeenLastCalledWith(expect.anything(), expect.anything(),
+      expect.objectContaining({ interfaces: [], liveOnlyInterfaces: ['service-orders', 'orders', 'order-returns'] }))
+    spies.refreshOpenServiceTransmissions.mockClear()
+    const r = await request(app).post('/v1/nfse/refresh').set('Authorization', `Bearer ${token()}`).send({})
     expect([r.status, r.body.code]).toEqual([403, 'INTERFACE_NOT_ALLOWED'])
     expect(spies.refreshOpenServiceTransmissions).not.toHaveBeenCalled()
   })
@@ -359,6 +363,22 @@ describe('scripts: migrate:setes --cutover / re-sincronia (D-F42/D-F44)', () => 
     if (/SUM\(cutover_at IS NULL\)/.test(sql)) return [[{ n: 1, r: 1 }]]
     return undefined
   }
+
+  // D-F48 (= Q-F58 (a), Valdo 2026-10-04): re-sincronia com UMA transação POR institution — a que falha volta sozinha
+  it('[D-F48] a institution que falha volta SOZINHA; a seguinte é gravada; o script sai ≠ 0 listando a que falhou', async () => {
+    const twoDb: Handler = (sql, p) => {
+      if (/SELECT id, schema_name AS schemaName FROM setes_central\.tb_institution WHERE deleted = 'N'/.test(sql)) return [[{ id: 2, schemaName: 'setes_y' }, { id: 3, schemaName: 'setes_z' }]]
+      if (/SELECT model, cutover_at AS c FROM tb_establishment_issuer/.test(sql)) return [p[0] === 2 ? [{ model: '55', c: null }] : []]
+      return strandedDb(sql, p)
+    }
+    const r = await runScript([], twoDb)
+    expect(r.conn.beginTransaction).toHaveBeenCalledTimes(2)                 // uma por institution
+    expect(r.conn.rollback).toHaveBeenCalledTimes(1)                         // só a 2 (réplica 55) voltou
+    expect(r.conn.commit).toHaveBeenCalledTimes(1)                           // a 3 foi gravada
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join(' ')).toMatch(/1 institution\(s\) com falha — nada delas gravado; as demais foram gravadas: setes_y: o fiscal_api tem réplica do ERP de modelo 55/)
+    expect(r.logs.join(' ')).toMatch(/"failures"/)
+  })
 
   it('cenário r8-resync-55: a institution fica TRAVADA (cerca = réplica em qualquer linha) e o `--cutover` não tem saída ("nada a virar")', async () => {
     const q = { query: jest.fn(async (sql: string, p: any[]) => strandedDb(sql, p) ?? [[]]) }

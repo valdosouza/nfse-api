@@ -808,11 +808,13 @@ const isBusy = (err: unknown) => err instanceof HttpError && err.code === ErrorC
  * conexão retida — a trava nomeada antiga segurava uma conexão e pedia outra: pool cheio = serviço travado);
  * as candidatas já vêm filtradas pela VIDA vigente no SQL, antes do LIMIT (o filtro em JS depois do LIMIT
  * prendia linhas no topo e o rodízio parava em silêncio).
- * [interfaces] (D-F46): ramos em que quem pede pode agir (contratados + privilégio — `requireAnyPrivilege`); a rota
- * HTTP SEMPRE passa — o filtro vai no SQL das candidatas, antes do LIMIT. Ausente = sem filtro (só chamada interna).
+ * [interfaces] (D-F46): ramos em que quem pede pode agir (contratados + privilégio — `passScope`); [liveOnlyInterfaces]
+ * (D-F47): ramos cortados, só as tentativas JÁ VIVAS. A rota HTTP SEMPRE passa os dois — o filtro vai no SQL das
+ * candidatas, antes do LIMIT. Ausentes = sem filtro (só chamada interna).
  */
 export async function refreshOpenServiceTransmissions(
-  deps: NfseDeps, actor: Actor, opts: { minMinutes?: number; limit?: number; budgetMs?: number; interfaces?: readonly string[] } = {},
+  deps: NfseDeps, actor: Actor,
+  opts: { minMinutes?: number; limit?: number; budgetMs?: number; interfaces?: readonly string[]; liveOnlyInterfaces?: readonly string[] } = {},
 ): Promise<RefreshRunReport> {
   const report: RefreshRunReport = { checked: 0, changed: 0, errors: [], stoppedEarly: false, skipped: false }
   let lease = await leaseCommand(deps, actor, 'tomar', q => acquireRefreshLease(q, actor.institutionId, SERVICE_MODEL, REFRESH_LEASE_SECONDS))
@@ -838,7 +840,7 @@ export async function refreshOpenServiceTransmissions(
     report.ceilingSource = ceiling.source
     const list = await listRefreshCandidates(deps.pool, actor.schemaName, actor.institutionId,
       opts.minMinutes ?? REFRESH_MIN_MINUTES, IN_FLIGHT_MINUTES, opts.limit ?? REFRESH_MAX_PER_RUN,
-      opts.interfaces ? { authorizedMaxDays, interfaces: opts.interfaces } : { authorizedMaxDays })
+      opts.interfaces ? { authorizedMaxDays, interfaces: opts.interfaces, liveOnlyInterfaces: opts.liveOnlyInterfaces ?? [] } : { authorizedMaxDays })
     for (const tx of list) {
       if (Date.now() >= deadline) { report.stoppedEarly = true; break }
       // o aluguel cobre UMA candidata: renovado antes de cada uma; perdido (outra passada o tomou) = esta para

@@ -424,6 +424,9 @@ paths:
         relatório só como "Erro interno (ref X)" (o detalhe fica no log com o ref). Privilégio TRANSMITIR em algum
         ramo CONTRATADO; D-F46: só entram as notas dos ramos contratados em que quem pede tem TRANSMITIR (admin: todos
         os contratados) — nota de ramo não contratado não é consultada nem de carona (bloqueio total, inclusive do já emitido).
+        D-F47: a exceção são as tentativas JÁ VIVAS (sem voz/S/K) de ramo cortado — a passada as fecha (o que estava em curso
+        quando o ramo saiu do contrato); a autorizada de ramo cortado não volta. Admin com NADA contratado roda a passada só
+        sobre essas vivas (usuário comum: 403).
       requestBody:
         content:
           application/json:

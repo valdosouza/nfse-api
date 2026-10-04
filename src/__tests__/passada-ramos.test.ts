@@ -17,15 +17,30 @@ describe('D-F46 — candidatas da passada filtradas pelo RAMO (vw_order_interfac
     expect(calls).toHaveLength(1)
     const { sql, params } = calls[0]
     expect(sql).toMatch(/LEFT JOIN `setes_setes`\.vw_order_interface oi\s+ON oi\.tb_institution_id = t\.tb_institution_id AND oi\.tb_order_id = t\.tb_invoice_id AND oi\.terminal = t\.terminal/)
-    expect(sql).toMatch(/AND COALESCE\(oi\.interface_key, 'orders'\) IN \(\?\)\s+ORDER BY/)
+    expect(sql).toMatch(/AND \(COALESCE\(oi\.interface_key, 'orders'\) IN \(\?\)\)\s+ORDER BY/)
     expect(sql.indexOf('IN (?)')).toBeLessThan(sql.indexOf('LIMIT ?'))
     expect(params).toEqual([1, 10, 5, 5, 90, 24, ['service-orders', 'orders'], 8])
   })
 
-  it('lista vazia → nenhuma candidata e NENHUMA consulta ao banco (nunca "sem filtro")', async () => {
+  it('as duas listas vazias → nenhuma candidata e NENHUMA consulta ao banco (nunca "sem filtro")', async () => {
     const { q, calls } = fakeQ()
     expect(await listRefreshCandidates(q, 'setes_setes', 1, 5, 10, 8, { interfaces: [] })).toEqual([])
+    expect(await listRefreshCandidates(q, 'setes_setes', 1, 5, 10, 8, { interfaces: [], liveOnlyInterfaces: [] })).toEqual([])
     expect(calls).toHaveLength(0)
+  })
+
+  it('D-F47: ramo CORTADO entra só com tentativa VIVA (sem voz/S/K); os dois grupos no MESMO filtro, antes do LIMIT', async () => {
+    const { q, calls } = fakeQ()
+    await listRefreshCandidates(q, 'setes_setes', 1, 5, 10, 8, { authorizedMaxDays: 90, interfaces: ['service-orders'], liveOnlyInterfaces: ['orders', 'order-returns'] })
+    expect(calls[0].sql).toMatch(/AND \(COALESCE\(oi\.interface_key, 'orders'\) IN \(\?\) OR \(COALESCE\(oi\.interface_key, 'orders'\) IN \(\?\) AND \(le\.kind IS NULL OR le\.kind IN \('S','K'\)\)\)\)\s+ORDER BY/)
+    expect(calls[0].params).toEqual([1, 10, 5, 5, 90, 24, ['service-orders'], ['orders', 'order-returns'], 8])
+  })
+
+  it('D-F47: admin com NADA contratado → só as vivas dos cortados (nenhuma autorizada volta ao rodízio)', async () => {
+    const { q, calls } = fakeQ()
+    await listRefreshCandidates(q, 'setes_setes', 1, 5, 10, 8, { authorizedMaxDays: 90, interfaces: [], liveOnlyInterfaces: ['service-orders', 'orders', 'order-returns'] })
+    expect(calls[0].sql).toMatch(/AND \(\(COALESCE\(oi\.interface_key, 'orders'\) IN \(\?\) AND \(le\.kind IS NULL OR le\.kind IN \('S','K'\)\)\)\)\s+ORDER BY/)
+    expect(calls[0].params).toEqual([1, 10, 5, 5, 90, 24, ['service-orders', 'orders', 'order-returns'], 8])
   })
 
   it('sem a opção (chamada interna): o SQL é o de antes — sem a view, sem o parâmetro', async () => {
