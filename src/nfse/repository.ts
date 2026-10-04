@@ -311,18 +311,24 @@ const clampDays = (d: number) => (Number.isFinite(d) ? Math.min(Math.max(Math.tr
  *    cancelamento do município + margem, contado do dh_proc — depois disso o fisco não aceita mais cancelamento pelo
  *    emitente e a voz não muda; a consulta manual continua possível);
  *  - a voz C NÃO volta ao rodízio (o efeito local é do setes-api — D-F28);
- *  - PRIORIDADE: vivas antes das autorizadas; dentro de cada grupo, a menos olhada primeiro.
+ *  - PRIORIDADE: vivas antes das autorizadas; dentro de cada grupo, a menos olhada primeiro;
+ *  - [interfaces] (D-F46): só notas cujo RAMO (view de política `vw_order_interface` — D-F32; sem linha = 'orders',
+ *    o mesmo default de `erp.orderInterface`) está na lista de quem pede; lista vazia = nenhuma candidata.
  */
 export async function listRefreshCandidates(
   q: Q, schemaName: string, institutionId: number, minMinutes: number, inFlightMinutes: number, limit: number,
-  opts: { authorizedHours?: number; authorizedMaxDays?: number } = {},
+  opts: { authorizedHours?: number; authorizedMaxDays?: number; interfaces?: readonly string[] } = {},
 ): Promise<TransmissionRow[]> {
   const s = assertSchema(schemaName)
+  const interfaces = opts.interfaces
+  if (interfaces && interfaces.length === 0) return []
   const [rows] = await q.query(
     `${TX_SELECT}
       JOIN \`${s}\`.vw_invoice_life l
         ON l.tb_institution_id = t.tb_institution_id AND l.tb_invoice_id = t.tb_invoice_id AND l.terminal = t.terminal
        AND l.life_event = t.life_event
+      ${interfaces ? `LEFT JOIN \`${s}\`.vw_order_interface oi
+        ON oi.tb_institution_id = t.tb_institution_id AND oi.tb_order_id = t.tb_invoice_id AND oi.terminal = t.terminal` : ''}
       WHERE t.tb_institution_id = ? AND t.terminal = 0 AND t.deleted = 'N'
         AND (
           (le.kind IS NULL AND t.created_at < DATE_SUB(NOW(), INTERVAL ? MINUTE)
@@ -333,10 +339,12 @@ export async function listRefreshCandidates(
              AND COALESCE(t.dh_proc, t.created_at) >= DATE_SUB(NOW(), INTERVAL ? DAY)
              AND (t.last_queried_at IS NULL OR t.last_queried_at < DATE_SUB(NOW(), INTERVAL ? HOUR)))
         )
+        ${interfaces ? `AND COALESCE(oi.interface_key, 'orders') IN (?)` : ''}
       ORDER BY (le.kind IN ('A','N')) ASC, (t.last_queried_at IS NULL) DESC, t.last_queried_at ASC, t.tb_invoice_id ASC
       LIMIT ?`,
     [institutionId, inFlightMinutes, minMinutes, minMinutes,
-      clampDays(opts.authorizedMaxDays ?? DEFAULT_CANCEL_DAYS + REFRESH_AUTHORIZED_MARGIN_DAYS), opts.authorizedHours ?? REFRESH_AUTHORIZED_HOURS, limit])
+      clampDays(opts.authorizedMaxDays ?? DEFAULT_CANCEL_DAYS + REFRESH_AUTHORIZED_MARGIN_DAYS), opts.authorizedHours ?? REFRESH_AUTHORIZED_HOURS,
+      ...(interfaces ? [[...interfaces]] : []), limit])
   return (rows as any[]).map(mapTx)
 }
 

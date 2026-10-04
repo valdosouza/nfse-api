@@ -39,14 +39,21 @@ export async function visibleInterfaces(ctx: AppContext, inst: InstitutionPayloa
   return out
 }
 
-/** Privilégio em QUALQUER das interfaces (rotas sem nota específica — ex.: passada do rodízio). */
-export async function requireAnyPrivilege(ctx: AppContext, inst: InstitutionPayload, keys: string[], privilegeId: number): Promise<void> {
+/**
+ * Privilégio em QUALQUER das interfaces (rotas sem nota específica — ex.: passada do rodízio) e DEVOLVE os ramos em
+ * que quem pede pode agir: contratados (D-F14/D-F37) E com o privilégio (ou admin). D-F46: quem chama FILTRA as notas
+ * por esta lista — ramo não contratado (ou sem privilégio) não ganha serviço fiscal nem de carona na passada de outro.
+ * Nenhum ramo → 403 (nada contratado = INTERFACE_NOT_ALLOWED; contratado sem privilégio = PRIVILEGE_REQUIRED).
+ */
+export async function requireAnyPrivilege(ctx: AppContext, inst: InstitutionPayload, keys: readonly string[], privilegeId: number): Promise<string[]> {
   let contracted = false
+  const allowed: string[] = []
   for (const key of keys) {
     if (!(await erp.institutionHasInterface(ctx.pool, inst.schemaName, inst.institutionId, key))) continue
     contracted = true
-    if (isAdmin(inst) || await erp.userHasPrivilege(ctx.pool, inst.schemaName, inst.userId, key, privilegeId)) return
+    if (isAdmin(inst) || await erp.userHasPrivilege(ctx.pool, inst.schemaName, inst.userId, key, privilegeId)) allowed.push(key)
   }
+  if (allowed.length > 0) return allowed
   if (!contracted) throw new HttpError(403, 'Nenhuma interface fiscal contratada para este estabelecimento', undefined, ErrorCodes.INTERFACE_NOT_ALLOWED)
   throw new HttpError(403, 'Privilégio necessário para esta ação', undefined, ErrorCodes.PRIVILEGE_REQUIRED)
 }

@@ -422,7 +422,8 @@ paths:
         (D-F38: max(prazo de cancelamento do município, 60) + 30 dias, contado do dhProc — leitura do convênio só ALARGA, A13;
         prazo implausível/ausente/lento → 60 + 30; o convênio é esperado no máximo 3 s). Erro TÉCNICO numa nota vai ao
         relatório só como "Erro interno (ref X)" (o detalhe fica no log com o ref). Privilégio TRANSMITIR em algum
-        ramo CONTRATADO.
+        ramo CONTRATADO; D-F46: só entram as notas dos ramos contratados em que quem pede tem TRANSMITIR (admin: todos
+        os contratados) — nota de ramo não contratado não é consultada nem de carona (bloqueio total, inclusive do já emitido).
       requestBody:
         content:
           application/json:

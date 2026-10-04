@@ -16,6 +16,11 @@ import { cancelDto, refreshPassDto, pendingQueryDto } from './nfse.dto'
  */
 
 const BRANCH_INTERFACES = ['service-orders', 'orders']
+/**
+ * Passada do rodízio (D-F46): o MESMO domínio da guarda por nota (`erp.orderInterface` → requireBranchPrivilege) — a
+ * passada é o "consultar" de várias notas de uma vez, então cada nota só entra se o ramo dela entraria na rota por nota.
+ */
+const PASS_INTERFACES = ['service-orders', 'orders', 'order-returns'] as const
 const actorOf = (inst: InstitutionPayload): Actor => ({ schemaName: inst.schemaName, institutionId: inst.institutionId, userId: inst.userId })
 
 export function nfseRoutes(ctx: AppContext): Router {
@@ -90,9 +95,9 @@ export function nfseRoutes(ctx: AppContext): Router {
   router.post('/refresh', route('POST /v1/nfse/refresh', async (req, res) => {
     const inst = institutionOf(req)
     await requireCutover(ctx, inst)
-    await requireAnyPrivilege(ctx, inst, BRANCH_INTERFACES, erp.PRIVILEGE_TRANSMITIR)
+    const interfaces = await requireAnyPrivilege(ctx, inst, PASS_INTERFACES, erp.PRIVILEGE_TRANSMITIR)
     const body = parseWith(refreshPassDto, req.body)
-    sendOk(res, await tx.refreshOpenServiceTransmissions(ctx, actorOf(inst), { minMinutes: body.minMinutes, limit: body.limit }))
+    sendOk(res, await tx.refreshOpenServiceTransmissions(ctx, actorOf(inst), { minMinutes: body.minMinutes, limit: body.limit, interfaces }))
   }))
 
   return router

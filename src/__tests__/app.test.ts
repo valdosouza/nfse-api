@@ -129,6 +129,33 @@ describe('autorização de AÇÃO e licença (D-F13/D-F14)', () => {
     expect(tx.refreshOpenServiceTransmissions).not.toHaveBeenCalled()
   })
 
+  it('D-F46: a PASSADA só consulta os ramos em que quem pede pode agir (contratado + privilégio); o resto não vai de carona', async () => {
+    ;(tx.refreshOpenServiceTransmissions as jest.Mock).mockResolvedValue({ checked: 0, changed: 0, errors: [], stoppedEarly: false, skipped: false })
+    const app = createApp(ctx())
+    // contratados: service-orders e orders; o usuário só tem TRANSMITIR em service-orders
+    erpM.institutionHasInterface.mockImplementation(async (_p: any, _s: string, _i: number, key: string) => key !== 'order-returns')
+    erpM.userHasPrivilege.mockImplementation(async (_p: any, _s: string, _u: number, key: string) => key === 'service-orders')
+    expect((await request(app).post('/v1/nfse/refresh').set('Authorization', `Bearer ${token()}`).send({})).status).toBe(200)
+    expect(tx.refreshOpenServiceTransmissions).toHaveBeenLastCalledWith(expect.anything(), { schemaName: 'setes_setes', institutionId: 1, userId: 7 },
+      expect.objectContaining({ interfaces: ['service-orders'] }))
+    // admin passa o privilégio, nunca a licença (D-F37): todos os CONTRATADOS, o não contratado fica fora
+    await request(app).post('/v1/nfse/refresh').set('Authorization', `Bearer ${token({ role: 'admin' })}`).send({})
+    expect(tx.refreshOpenServiceTransmissions).toHaveBeenLastCalledWith(expect.anything(), expect.anything(),
+      expect.objectContaining({ interfaces: ['service-orders', 'orders'] }))
+    // devolução contratada com privilégio entra (o MESMO domínio da rota por nota — erp.orderInterface)
+    erpM.institutionHasInterface.mockResolvedValue(true)
+    erpM.userHasPrivilege.mockImplementation(async (_p: any, _s: string, _u: number, key: string) => key === 'order-returns')
+    await request(app).post('/v1/nfse/refresh').set('Authorization', `Bearer ${token()}`).send({})
+    expect(tx.refreshOpenServiceTransmissions).toHaveBeenLastCalledWith(expect.anything(), expect.anything(),
+      expect.objectContaining({ interfaces: ['order-returns'] }))
+    // contratado sem privilégio em nenhum → 403 PRIVILEGE_REQUIRED, passada não roda
+    ;(tx.refreshOpenServiceTransmissions as jest.Mock).mockClear()
+    erpM.userHasPrivilege.mockResolvedValue(false)
+    const r = await request(app).post('/v1/nfse/refresh').set('Authorization', `Bearer ${token()}`).send({})
+    expect([r.status, r.body.code]).toEqual([403, 'PRIVILEGE_REQUIRED'])
+    expect(tx.refreshOpenServiceTransmissions).not.toHaveBeenCalled()
+  })
+
   it('emitente é ato do ADMIN → usuário comum 403 ADMIN_REQUIRED', async () => {
     const r = await request(createApp(ctx())).get('/v1/emitter').set('Authorization', `Bearer ${token()}`)
     expect(r.status).toBe(403)

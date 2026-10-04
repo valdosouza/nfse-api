@@ -47,7 +47,7 @@ async function main(): Promise<void> {
     }) as any
 
     await listPendingServiceInvoices(capture('pendentes'), SCHEMA, INST, cfg.database, { page: 1, pageSize: 25 }, ['service-orders', 'orders'])
-    await listRefreshCandidates(capture('rodízio'), SCHEMA, INST, 5, 10, 8, { authorizedMaxDays: DEFAULT_CANCEL_DAYS + REFRESH_AUTHORIZED_MARGIN_DAYS })
+    await listRefreshCandidates(capture('rodízio'), SCHEMA, INST, 5, 10, 8, { authorizedMaxDays: DEFAULT_CANCEL_DAYS + REFRESH_AUTHORIZED_MARGIN_DAYS, interfaces: ['service-orders', 'orders', 'order-returns'] })
 
     for (const c of captured) {
       const [plan] = await pool.query(`EXPLAIN ${c.sql}`, c.params) as unknown as [Plan[]]
