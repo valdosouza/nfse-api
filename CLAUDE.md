@@ -57,4 +57,4 @@ emite a produção da Setes — **NUNCA `--cutover` sem `--dry-run` fora da vira
 `FISCAL_LEGACY_INSTITUTIONS` foi APOSENTADA (definida = boot falha). Ataques ao vivo rodam em CÓPIA descartável
 (`src/__tests__/live-harness.ts`) — nunca virar a habilitação real. Scripts: `npm run explain:leituras` (D-F40, usuário de
 diagnóstico em `EXPLAIN_DB_USER`) · `npm run smoke:adn-h -- --candidatas | --nota <id> [--vai]` (D-F36, banco descartável;
-`--vai` só com o "vai" do Valdo). Relatório: §15 do prompt. Repo GitHub a criar.
+`--vai` só com o "vai" do Valdo). Relatório: §15–§17 do prompt. Repo GitHub `valdosouza/gestao-2027-nfse-api` (privado, criado 2026-10-04).
