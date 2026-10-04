@@ -632,11 +632,9 @@ export async function cancelServiceInvoiceAtAuthority(deps: NfseDeps, actor: Act
   // "recusado" com a NFS-e já cancelada). Quem chega depois vê K → 409 FISCAL_CANCEL_IN_FLIGHT.
   type Decision = { already: { attempt: number; event: number } } | { authorized: TransmissionRow; dhEvento: string }
   const decision = await withInvoiceTx(deps, 'decisão do cancelamento fiscal', actor, invoiceId, async (conn, locked): Promise<Decision> => {
-    // re-prova final R4 (MEDIUM): a reserva K passa pela TRAVA da habilitação (ordem nota → habilitação → A1, a da reserva
-    // da transmissão) — sem ela o DELETE do A1 contava as vivas antes do K e apagava o certificado com o pedido em curso.
-    // Gates do delta de 2026-10-04: e confere o A1 SOB essa trava, ANTES do K (A1 ausente/vencido/ilegível = 409 sem K —
-    // o K→N deixava uma janela: processo caído entre os dois = K vivo sem A1, o estado que a guarda do DELETE impede)
-    await openIssuer(estDeps(deps), institutionId, SERVICE_MODEL, { conn, forUpdate: true, schemaName: s })
+    // as saídas que NÃO falam com o fisco (C já gravada = idempotente; R/F/sem tentativa = "cancele no ERP"; viva) vêm
+    // ANTES de abrir o emissor — leituras não travantes da tentativa (gate adversarial r8 MEDIUM [r8-cancel-idem]: com o
+    // openIssuer primeiro, o retry com voz C e A1 vencido virava 409 FISCAL_CERT_* e o app não seguia ao setes-api)
     const tx = await latestTransmission(conn, institutionId, invoiceId, locked.lifeEvent)
     if (tx?.lastKind === 'C') {
       const voice = await findTransmissionEventByKind(conn, institutionId, invoiceId, tx.attempt, 'C')
@@ -648,6 +646,11 @@ export async function cancelServiceInvoiceAtAuthority(deps: NfseDeps, actor: Act
     }
     if (tx.lastKind === null || tx.lastKind === 'S' || tx.lastKind === 'K') throw liveTransmissionError(tx)
     if (!tx.accessKey) throw new HttpError(409, `Transmissão ${tx.attempt} autorizada sem chave de acesso — consulte antes`, undefined, ErrorCodes.FISCAL_TRANSMISSION_IN_PROGRESS)
+    // re-prova final R4 (MEDIUM): a reserva K passa pela TRAVA da habilitação (ordem nota → habilitação → A1, a da reserva
+    // da transmissão) — sem ela o DELETE do A1 contava as vivas antes do K e apagava o certificado com o pedido em curso.
+    // Gates do delta de 2026-10-04: e confere o A1 SOB essa trava, logo ANTES do K (A1 ausente/vencido/ilegível = 409 sem K —
+    // o K→N deixava uma janela: processo caído entre os dois = K vivo sem A1, o estado que a guarda do DELETE impede)
+    await openIssuer(estDeps(deps), institutionId, SERVICE_MODEL, { conn, forUpdate: true, schemaName: s })
     const zone = await erp.institutionZone(conn, s, institutionId)
     const dhEvento = nowIsoIn(zone)
     // K e o N de liberação são fatos NOSSOS, não voz do fisco: dh NULL — a chave única (kind, dh) é a

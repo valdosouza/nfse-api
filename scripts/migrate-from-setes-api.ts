@@ -233,16 +233,25 @@ async function checkXmlsUnsafe(q: { query: PoolConnection['query'] }, storage: F
  * o ON DUPLICATE KEY UPDATE da re-sincronia reescrever uma linha virada em paralelo). D-F42: réplica de outro modelo = FALHA.
  */
 async function lockApiIssuers(c: PoolConnection, s: string, institutionId: number): Promise<{ rows: number; replicas: number }> {
+  const list = await apiIssuerRows(c, institutionId, true)
+  assertNoForeignReplica(list, s, institutionId)
+  return { rows: list.length, replicas: list.filter((r: any) => r.c == null).length }
+}
+
+async function apiIssuerRows(c: PoolConnection, institutionId: number, forUpdate: boolean): Promise<any[]> {
   const [list] = await c.query<any[]>(
     `SELECT model, cutover_at AS c FROM tb_establishment_issuer
-      WHERE tb_institution_id = ? AND model IN (${ISSUER_MODELS.map(() => '?').join(', ')}) FOR UPDATE`,
+      WHERE tb_institution_id = ? AND model IN (${ISSUER_MODELS.map(() => '?').join(', ')})${forUpdate ? ' FOR UPDATE' : ''}`,
     [institutionId, ...ISSUER_MODELS])
+  return list
+}
+
+function assertNoForeignReplica(list: any[], s: string, institutionId: number): void {
   const strange = list.filter((r: any) => r.c == null && r.model !== SERVICE_MODEL).map((r: any) => r.model)
   if (strange.length) {
     throw new Error(`${s}: o fiscal_api tem réplica do ERP de modelo ${strange.join(', ')} — só a ${SERVICE_MODEL} muda de casa (D-F42); `
       + `apague à mão com DELETE físico (soft delete continua réplica): DELETE FROM tb_establishment_issuer WHERE tb_institution_id = ${institutionId} AND model IN (${strange.map((m: string) => `'${m}'`).join(', ')}) AND cutover_at IS NULL`)
   }
-  return { rows: list.length, replicas: list.filter((r: any) => r.c == null).length }
 }
 
 /**
@@ -288,7 +297,13 @@ async function resyncAll(pool: ReturnType<typeof createFiscalPool>, keyring: Mas
     const reports: (Report | { schema: string; institutionId: number; state: string })[] = []
     for (const i of insts) {
       const s = assertSchema(String(i.schemaName)), id = Number(i.id)
-      if (!(await erp.erpServiceIssuerExists(c, s, id))) continue        // o ERP nunca emitiu por ela (o MESMO predicado da lacuna (b))
+      if (!(await erp.erpServiceIssuerExists(c, s, id))) {               // o ERP nunca emitiu por ela (o MESMO predicado da lacuna (b))
+        // gate adversarial r8 LOW [r8-resync-55]: mesmo sem SE no ERP, réplica de OUTRO modelo (resíduo de versão antiga do
+        // script) trava a institution pela cerca sem saída pelo --cutover → falha alta com a instrução de DELETE (D-F42).
+        // Leitura NÃO travante: só detecta (o erro desfaz tudo) — travar aqui pegaria gap lock em institution sem linha.
+        assertNoForeignReplica(await apiIssuerRows(c, id, false), s, id)
+        continue
+      }
       const { rows, replicas } = await lockApiIssuers(c, s, id)          // decide pelo ATUAL (trava por linha), não pelo snapshot
       if (rows > 0 && replicas === 0) { reports.push({ schema: s, institutionId: id, state: await assertFrozen(c, s, id) }); continue }
       const r = await migrateInstitution(c, keyring, storage, id, s)
