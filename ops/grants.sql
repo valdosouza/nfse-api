@@ -18,6 +18,13 @@ GRANT SELECT ON `setes\_%`.* TO 'fiscal_api'@'%';
 -- (MySQL 8 apenas, se a leitura travante for recusada:)
 -- GRANT LOCK TABLES ON `setes\_%`.* TO 'fiscal_api'@'%';
 
+-- 1b. D-F53 (= Q-F53 (a), Valdo 2026-10-04): controle TOTAL nas CÓPIAS DESCARTÁVEIS dos ataques ao vivo
+--     (`fiscal_api_adv_*` — `src/__tests__/live-harness.ts`), e SÓ nelas. O padrão casa apenas bancos com esse prefixo
+--     ('\_' = '_' literal): o ERP (`setes_*`, `setes_central`) e o `fiscal_api` real não ganham nada. Assim os ataques
+--     podem rodar com o usuário 'fiscal_api' (que só LÊ o ERP) e um teste errado fica fisicamente impedido de escrever
+--     no ERP — a defesa deixa de ser só DETECÇÃO (o CHECKSUM do harness). Em produção é inócuo: lá não existem cópias.
+GRANT ALL PRIVILEGES ON `fiscal\_api\_adv\_%`.* TO 'fiscal_api'@'%';
+
 -- 2. Usuário do setes-api (F2a): lê a voz fiscal SÓ pelas VIEWs publicadas (contrato — D-F15); nunca as
 --    tabelas internas do fiscal_api. As views são SQL SECURITY DEFINER (definidor = quem rodou a migration
 --    da família, o 'fiscal_api'), então o SELECT na view basta.
@@ -26,6 +33,11 @@ GRANT SELECT ON `setes\_%`.* TO 'fiscal_api'@'%';
 
 -- 3. Conferência (critério §12.8-2): pela conexão do 'fiscal_api', um INSERT em setes_<cliente>.tb_invoice_event
 --    tem que dar ER_TABLEACCESS_DENIED_ERROR; um SELECT … FOR UPDATE em setes_<cliente>.tb_invoice tem que passar.
+--    D-F53: `CREATE DATABASE fiscal_api_adv_conferencia` + `DROP DATABASE fiscal_api_adv_conferencia` têm que passar;
+--    `CREATE DATABASE setes_conferencia` tem que dar ER_DBACCESS_DENIED_ERROR. `SHOW GRANTS FOR 'fiscal_api'@'%'` lista as 4.
+--
+-- Ordem na implantação: este script ANTES do 1º boot da nfse-api (o boot cria o `fiscal_api` e aplica as migrations).
+-- É idempotente (CREATE USER IF NOT EXISTS; GRANT repetido não duplica) — pode rodar de novo a cada ambiente.
 --
 -- 4. O ATO da virada (`npm run migrate:setes -- --cutover <id> --confirmo-setes-api-parado` — D-F39/D-F44) roda com a
 --    credencial do DONO do ERP (a do setes-api), passada SÓ ao processo do ato (DB_USER/DB_PASSWORD na linha de comando,
