@@ -740,20 +740,26 @@ d('GATE ADVERSARIAL r5 — re-prova do delta da Rodada 4 (cópia descartável fi
     })
 
     // -----------------------------------------------------------------------
-    describe('G. harness — detecta, não impede', () => {
+    describe('G. harness — D-F53: o ataque IMPEDE escrita no ERP (usuário do serviço); o fiscal_api real segue por detecção', () => {
       const h: any = {}
-      it('cenário: o pool do ataque usa o usuário do setes-api; a verificação do drop() cobre só as 5 tabelas copiadas', async () => {
+      it('[D-F53] o pool do ataque usa o usuário do SERVIÇO (não o dono do ERP); a verificação do drop() cobre o fiscal_api real', async () => {
         h.user = (await q('SELECT CURRENT_USER() AS u'))[0].u
         h.grants = (await q('SHOW GRANTS FOR CURRENT_USER()')).map((r: any) => String(Object.values(r)[0]).replace(/PASSWORD '[^']*'/, "PASSWORD '***'"))
         h.realBaseTables = (await rq(`SELECT table_name AS t FROM information_schema.tables WHERE table_schema = ? AND table_type = 'BASE TABLE' ORDER BY table_name`, [REAL])).map((r: any) => String(r.t))
         h.checked = [...FISCAL_COPY_TABLES, '_migrations']                         // o drop() confere também a _migrations (re-prova R4)
         // eslint-disable-next-line no-console
         console.log('[adv-r5] harness', JSON.stringify(h))
-        expect(h.user).toMatch(new RegExp(`^${setesUser}@`))
+        expect(h.user).not.toMatch(new RegExp(`^${setesUser}@`))
+        expect(h.grants.some((g: string) => /ON \*\.\*/.test(g) && /ALL PRIVILEGES|\b(INSERT|UPDATE|DELETE|DROP)\b/.test(g))).toBe(false)
         expect(h.realBaseTables).toEqual(expect.arrayContaining(h.checked))
       })
-      // Q-F53 (decisão do Valdo — GRANT no servidor que guarda a produção da Setes): até lá a defesa é DETECÇÃO (CHECKSUM do real e do ERP)
-      it.failing('[Q-F53] …e o pool do ataque NÃO tem privilégio de escrita no fiscal_api REAL (prevenção por privilégio; hoje ALL PRIVILEGES ON *.*)', () => {
+      it('[D-F53] …e o pool do ataque NÃO consegue escrever no ERP (o MySQL recusa antes de executar — WHERE 1 = 0 não toca linha)', async () => {
+        await expect(q(`DELETE FROM \`${SCHEMA}\`.tb_invoice_event WHERE 1 = 0`)).rejects.toMatchObject({ errno: 1142 })
+        await expect(q(`UPDATE \`${SCHEMA}\`.tb_establishment_issuer SET deleted = deleted WHERE 1 = 0`)).rejects.toMatchObject({ errno: 1142 })
+      })
+      // POR DESENHO o usuário do serviço é DONO do fiscal_api real (D-F7/D-F15): ali a defesa dos ataques segue sendo DETECÇÃO
+      // (CHECKSUM do real no drop()). A prevenção da D-F53 vale para o ERP (acima).
+      it.failing('[Q-F53] …e o pool do ataque NÃO tem privilégio de escrita no fiscal_api REAL (limitação aceita — o serviço é dono dele)', () => {
         expect(h.grants.some((g: string) => /ALL PRIVILEGES ON \*\.\*|\b(INSERT|UPDATE|DELETE|DROP)\b[^`]*ON \*\.\*|ON `?fiscal_api`?\.\*/.test(g))).toBe(false)
       })
       it('[corrigido] …e a verificação do drop() cobre TODAS as tabelas-base do fiscal_api real (inclusive `_migrations`)', () => {

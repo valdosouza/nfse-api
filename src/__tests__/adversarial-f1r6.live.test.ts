@@ -549,7 +549,7 @@ d('GATE ADVERSARIAL r6 — re-prova final do delta do retrabalho 2 (cópia desca
     afterAll(async () => { await rootPool.query(`DROP DATABASE IF EXISTS \`${SMOKE}\``) })
     it('sem achado: banco de smoke com EVIDÊNCIA (envio sem voz) fica intacto mesmo com `--descartar-evidencia` (sem --vai nada é apagado)', async () => {
       await restoreCertFromReal()
-      await runMigrations({ ...harness!.cfg, database: SMOKE }, MIGRATION_SETS)
+      await runMigrations({ ...harness!.cfg, ...harness!.owner, database: SMOKE }, MIGRATION_SETS)   // D-F53: banco fora de fiscal_api_adv_* = dono
       const life = await lifeOf(X)
       await rootPool.query(`INSERT INTO \`${SMOKE}\`.tb_invoice_service_dps (tb_institution_id, tb_invoice_id, terminal, life_event, serie, dps_number, dps_id, tb_user_id, created_at, updated_at, deleted)
                             VALUES (?, ?, 0, ?, '900', 1, ?, NULL, NOW(), NOW(), 'N')`, [INST, X, life, `DPS4106902${'2'}${CNPJ}00900${'1'.padStart(15, '0')}`])

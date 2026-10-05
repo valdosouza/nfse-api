@@ -4,11 +4,14 @@
 // cenário R2-2 que a D-F39 fechou). Agora cada suíte trabalha numa CÓPIA DESCARTÁVEL (`fiscal_api_adv_*`): migrations do
 // núcleo + família, as tabelas copiadas linha a linha, a virada aplicada SÓ na cópia; o ERP continua só LIDO (a nota é
 // travada por instantes, como em toda transmissão). No fim a cópia é apagada e o CHECKSUM do `fiscal_api` REAL tem de
-// ser o mesmo do início — senão a suíte falha. O usuário é o de ../setes-api/.env (o do serviço não cria banco — D-F31):
-// ele ESCREVE no ERP, então a garantia da D-F31 por GRANT não vale durante o ataque — por isso o `drop()` confere também o
-// CHECKSUM do ERP (tabelas que a nfse-api lê/trava) e a `_migrations` do real (re-prova R4; voltar ao usuário de SELECT
-// mínimo nas cópias depende de GRANT no servidor — Q-F53). Cópias `fiscal_api_adv_*` que SOBRARAM de uma execução morta
-// (jest matado no meio) são apagadas na criação da próxima — rode as suítes ao vivo com --runInBand.
+// ser o mesmo do início — senão a suíte falha.
+// D-F53 (Valdo 2026-10-04 — GRANT ALL em `fiscal\_api\_adv\_%` para o 'fiscal_api', `ops/grants.sql` 1b, aplicado no dev):
+// o ATAQUE (o pool da cópia, `cfg`/`pool`, e as migrations da cópia) roda com o usuário do SERVIÇO (DB_USER do .env da
+// nfse-api — o 'fiscal_api', que só LÊ o ERP): teste errado fica IMPEDIDO de escrever no ERP por construção. O DONO do ERP
+// (../setes-api/.env) fica só para a faxina (copiar as linhas, apagar a cópia, CHECKSUM) e para os PROCESSOS FILHOS
+// (`env` — o ensaio da virada aposenta a SE no ERP e exige o dono, D-F44). O `drop()` segue conferindo o CHECKSUM do
+// `fiscal_api` real (o serviço é dono dele por desenho) e do ERP. Cópias `fiscal_api_adv_*` que SOBRARAM de uma execução
+// morta (jest matado no meio) são apagadas na criação da próxima — rode as suítes ao vivo com --runInBand.
 import fs from 'fs'
 import path from 'path'
 import dotenv from 'dotenv'
@@ -27,9 +30,12 @@ export const FISCAL_COPY_TABLES = [
 export interface DisposableFiscalDb {
   cfg:      FiscalDbConfig
   pool:     Pool
+  /** Usuário do ATAQUE = o do serviço (D-F53). */
   user:     string
   password: string
-  /** Variáveis para um processo filho (ex.: `npm run migrate:setes`) apontar para a CÓPIA, nunca para o real. */
+  /** Dono do ERP — só faxina e processos filhos (D-F53). */
+  owner:    { user: string; password: string }
+  /** Variáveis para um processo filho (ex.: `npm run migrate:setes`) apontar para a CÓPIA, nunca para o real (com o DONO). */
   env:      Record<string, string>
   drop():   Promise<void>
 }
@@ -37,11 +43,17 @@ export interface DisposableFiscalDb {
 export async function disposableFiscalDb(root: string, name: string, opts: { turned: boolean }): Promise<DisposableFiscalDb> {
   if (!/^fiscal_api_adv[a-z0-9_]*$/.test(name)) throw new Error(`Banco descartável inválido: ${name}`)
   const setesEnv = dotenv.parse(fs.readFileSync(path.resolve(root, '..', 'setes-api', '.env')))
-  const user = setesEnv.DB_USER, password = setesEnv.DB_PASSWORD ?? ''
+  const ownerUser = setesEnv.DB_USER, ownerPassword = setesEnv.DB_PASSWORD ?? ''
   const base = dbConfigFromEnv()
   const real = base.database
   if (name === real) throw new Error(`O banco descartável não pode ser o real (${real})`)
-  const admin = createFiscalPool({ ...base, user, password })
+  // D-F53: o ataque usa o usuário do SERVIÇO — tem de ser outro que o dono do ERP, senão a prevenção não existe
+  const user = base.user, password = base.password ?? ''
+  if (!user || user === ownerUser) {
+    throw new Error(`D-F53: DB_USER do .env da nfse-api (${user || 'vazio'}) tem de ser o usuário do SERVIÇO ('fiscal_api'), não o dono do ERP — `
+      + 'aplique `ops/grants.sql` (seção 1b) e configure o .env')
+  }
+  const admin = createFiscalPool({ ...base, user: ownerUser, password: ownerPassword })
   const erpSchema = process.env.ADV_ERP_SCHEMA ?? 'setes_setes'
   const realSums = async () => JSON.stringify((await admin.query(
     `CHECKSUM TABLE ${[...FISCAL_COPY_TABLES, '_migrations'].map(t => `\`${real}\`.${t}`).join(', ')}, ${ERP_WATCH.map(t => `\`${erpSchema}\`.${t}`).join(', ')}, ${CENTRAL_WATCH.join(', ')}`))[0])
@@ -57,14 +69,14 @@ export async function disposableFiscalDb(root: string, name: string, opts: { tur
   const nulls = (JSON.parse(before) as any[]).filter(r => r.Checksum == null).map(r => r.Table)
   if (nulls.length) throw new Error(`Vigilância do harness com tabela inexistente: ${nulls.join(', ')} (ADV_ERP_SCHEMA?)`)
   await admin.query(`DROP DATABASE IF EXISTS \`${name}\``)
-  await runMigrations({ ...base, user, password, database: name }, MIGRATION_SETS)
+  await runMigrations({ ...base, user, password, database: name }, MIGRATION_SETS)   // pelo SERVIÇO: views com o definidor de produção
   for (const t of FISCAL_COPY_TABLES) await admin.query(`INSERT INTO \`${name}\`.${t} SELECT * FROM \`${real}\`.${t}`)
   if (opts.turned) await admin.query(`UPDATE \`${name}\`.tb_establishment_issuer SET cutover_at = NOW() WHERE cutover_at IS NULL`)
   const cfg: FiscalDbConfig = { ...base, user, password, database: name }
   const pool = createFiscalPool(cfg)
   return {
-    cfg, pool, user, password,
-    env: { FISCAL_DB_NAME: name, DB_USER: user, DB_PASSWORD: password },
+    cfg, pool, user, password, owner: { user: ownerUser, password: ownerPassword },
+    env: { FISCAL_DB_NAME: name, DB_USER: ownerUser, DB_PASSWORD: ownerPassword },
     async drop() {
       try { await pool.end() } catch { /* já encerrado */ }
       try {
