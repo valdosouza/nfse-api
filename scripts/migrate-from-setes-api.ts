@@ -297,27 +297,33 @@ async function assertFrozen(c: PoolConnection, s: string, institutionId: number)
  * script sai com erro listando as que falharam (falha alta preservada).
  */
 async function resyncAll(pool: ReturnType<typeof createFiscalPool>, keyring: MasterKeyRing, storage: FsFiscalStorage): Promise<void> {
-  const c = await pool.getConnection()
+  let c = await pool.getConnection()
   const reports: (Report | { schema: string; institutionId: number; state: string })[] = []
   const failures: { schema: string; institutionId: number; error: string }[] = []
   try {
     const [insts] = await c.query<any[]>(`SELECT id, schema_name AS schemaName FROM setes_central.tb_institution WHERE deleted = 'N' ORDER BY id`)
     for (const i of insts) {
       const s = assertSchema(String(i.schemaName)), id = Number(i.id)
-      await c.beginTransaction()
       try {
+        await c.beginTransaction()
         const rep = await resyncInstitution(c, keyring, storage, s, id)
         if (DRY) await c.rollback(); else await c.commit()
         if (rep) reports.push(rep)
       } catch (err) {
-        await c.rollback()
+        // a CAUSA RAIZ é o erro da institution (gate r9 LOW [r9-resync-rollback-throws]); conexão que não desfaz (caída)
+        // é DESCARTADA e a próxima institution usa outra — o laço e o relatório das já gravadas seguem
         failures.push({ schema: s, institutionId: id, error: String((err as Error)?.message ?? err) })
+        try { await c.rollback() } catch {
+          try { (c as any).destroy?.() } catch { /* já morta */ }
+          c = await pool.getConnection()
+        }
       }
     }
     for (const r of reports) if ('xmlMissing' in r) await checkXmls(c, storage, r)
+  } finally {
+    // o relatório sai SEMPRE — inclusive o das institutions já gravadas quando o laço para por erro de infraestrutura
     console.log(JSON.stringify({ dryRun: DRY, committed: !DRY, reports, failures,
       ...(DRY ? { nota: 'dry-run: a conferência de XML lê o estado ATUAL (a cópia foi desfeita)' } : {}) }, null, 2))
-  } finally {
     c.release()
   }
   if (failures.length) {
