@@ -41,10 +41,11 @@ cancelamento no fisco (D-F10).
    `<cnpj>/H/…` (Q-N38a), pasta pelo mês da zona (Q-TZ7), dhEmi na zona do estabelecimento (Q-TZ2).
 5. Swagger/OpenAPI em todo endpoint; gates socrático ≥ 0,70 + adversarial sem HIGH antes de "pronto".
 
-## Estado (2026-10-04)
+## Estado (2026-10-04, 3ª sessão)
 
-**F1 executada + Rodadas 4 e 6 (2026-10-04 — §16/§17)** — `npm test` (143; ao vivo: 7 suítes, 130 testes; o ataque ao vivo `NFSE_ADV_LIVE=1 npx jest
-src/__tests__/adversarial-f1.live.test.ts --runInBand` usa o banco do dev com fisco FALSO) · `npm run dev` (porta 3002;
+**F1 + Rodadas 4, 6 e 7 executadas (D-F46…D-F53 — §17.5/§18 do prompt)** — `npm test` (224 unit; ao vivo: 7 suítes `*.live.test.ts`
+com `NFSE_ADV_LIVE=1 npx jest live --runInBand` — usa o banco do dev com fisco FALSO, em cópias `fiscal_api_adv_*`; o ATAQUE roda com
+o DB_USER do .env, que TEM de ser o `fiscal_api` — D-F53, `ops/grants.sql` 1b) · `npm run dev` (porta 3002;
 `.env` a partir do `.env.example`) ·
 `npm run db:migrate` · `npm run migrate:setes [-- --dry-run]` (re-sincronia até a virada) · `npm run token:dev` (só dev).
 ⚠️ **A habilitação migrada está em PRODUÇÃO** (cópia do setes-api): nada de transmitir/consultar/cancelar no dev sem
