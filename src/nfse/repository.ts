@@ -295,6 +295,12 @@ export async function touchQueriedAt(q: Q, institutionId: number, invoiceId: num
 
 /** D-N21: autorizadas revisitadas a cada 24 h (o fisco pode ter cancelado sem nós). */
 export const REFRESH_AUTHORIZED_HOURS = 24
+/**
+ * D-F52 (= Q-F61 (a), Valdo 2026-10-04): o F "sem resposta" gravado por CONSULTA (D-F51) volta ao rodízio UMA vez, depois de
+ * 24 h — o ADN pode gerar a NFS-e com atraso de propagação e a voz F mentiria. "Uma vez" = `last_queried_at` anterior ao F +
+ * 24 h (a revisita carimba depois disso); só a ÚLTIMA tentativa da vida, sem chave, dentro do teto da D-F38. Achou → A.
+ */
+export const F_REVISIT_HOURS = 24
 /** D-F38: teto de idade das autorizadas no rodízio quando não se sabe o prazo do município (60 = Curitiba) + margem. */
 export const DEFAULT_CANCEL_DAYS = 60
 export const REFRESH_AUTHORIZED_MARGIN_DAYS = 30
@@ -311,6 +317,7 @@ const clampDays = (d: number) => (Number.isFinite(d) ? Math.min(Math.max(Math.tr
  *    cancelamento do município + margem, contado do dh_proc — depois disso o fisco não aceita mais cancelamento pelo
  *    emitente e a voz não muda; a consulta manual continua possível);
  *  - a voz C NÃO volta ao rodízio (o efeito local é do setes-api — D-F28);
+ *  - F "sem resposta" por consulta: UMA revisita 24 h depois (D-F52 — `F_REVISIT_HOURS`), no grupo das autorizadas;
  *  - PRIORIDADE: vivas antes das autorizadas; dentro de cada grupo, a menos olhada primeiro;
  *  - [interfaces] (D-F46): só notas cujo RAMO (view de política `vw_order_interface` — D-F32; sem linha = 'orders',
  *    o mesmo default de `erp.orderInterface`) está na lista de quem pede; [liveOnlyInterfaces] (D-F47): ramos cortados
@@ -332,6 +339,8 @@ export async function listRefreshCandidates(
       ...(liveOnly.length ? [`(${branch} IN (?) AND (le.kind IS NULL OR le.kind IN ('S','K')))`] : []),
     ].join(' OR ')})`
   const branchParams = !interfaces ? [] : [...(interfaces.length ? [[...interfaces]] : []), ...(liveOnly.length ? [[...liveOnly]] : [])]
+  // D-F52: teto da revisita do F = o MESMO teto das autorizadas (D-F38); inteiro já no domínio (clampDays) — vai literal no SQL
+  const revisitDays = clampDays(opts.authorizedMaxDays ?? DEFAULT_CANCEL_DAYS + REFRESH_AUTHORIZED_MARGIN_DAYS)
   const [rows] = await q.query(
     `${TX_SELECT}
       JOIN \`${s}\`.vw_invoice_life l
@@ -348,9 +357,16 @@ export async function listRefreshCandidates(
           OR (le.kind IN ('A','N') AND COALESCE(l.last_kind, '-') <> 'C'
              AND COALESCE(t.dh_proc, t.created_at) >= DATE_SUB(NOW(), INTERVAL ? DAY)
              AND (t.last_queried_at IS NULL OR t.last_queried_at < DATE_SUB(NOW(), INTERVAL ? HOUR)))
+          OR (le.kind = 'F' AND le.source = 'Q' AND t.access_key IS NULL
+             AND le.created_at <= DATE_SUB(NOW(), INTERVAL ${F_REVISIT_HOURS} HOUR)
+             AND le.created_at >= DATE_SUB(NOW(), INTERVAL ${revisitDays} DAY)
+             AND (t.last_queried_at IS NULL OR t.last_queried_at < DATE_ADD(le.created_at, INTERVAL ${F_REVISIT_HOURS} HOUR))
+             AND NOT EXISTS (SELECT 1 FROM tb_invoice_service_transmission t2
+                              WHERE t2.tb_institution_id = t.tb_institution_id AND t2.tb_invoice_id = t.tb_invoice_id
+                                AND t2.terminal = t.terminal AND t2.life_event = t.life_event AND t2.attempt > t.attempt))
         )
         ${branchFilter}
-      ORDER BY (le.kind IN ('A','N')) ASC, (t.last_queried_at IS NULL) DESC, t.last_queried_at ASC, t.tb_invoice_id ASC
+      ORDER BY (le.kind IN ('A','N','F')) ASC, (t.last_queried_at IS NULL) DESC, t.last_queried_at ASC, t.tb_invoice_id ASC
       LIMIT ?`,
     [institutionId, inFlightMinutes, minMinutes, minMinutes,
       clampDays(opts.authorizedMaxDays ?? DEFAULT_CANCEL_DAYS + REFRESH_AUTHORIZED_MARGIN_DAYS), opts.authorizedHours ?? REFRESH_AUTHORIZED_HOURS,

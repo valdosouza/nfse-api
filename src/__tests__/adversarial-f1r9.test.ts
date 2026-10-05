@@ -82,9 +82,14 @@ interface Row {
   erpLastKind: string | null        // vw_invoice_life.last_kind
   procAgeDays: number               // idade de COALESCE(t.dh_proc, t.created_at)
   branch: string | null             // vw_order_interface.interface_key (null = sem linha na view)
+  source: string | null             // le.source da última voz (D-F52)
+  hasKey: boolean                   // t.access_key IS NOT NULL (D-F52)
+  voiceAgeMin: number               // idade de le.created_at (D-F52)
+  newerAttempt: boolean             // existe tentativa POSTERIOR na mesma vida (D-F52)
 }
 const row = (over: Partial<Row> = {}): Row => ({
-  inst: 1, terminal: 0, deleted: 'N', env: 'P', kind: null, createdAgeMin: 60, lqAgeMin: null, erpLastKind: 'E', procAgeDays: 1, branch: 'orders', ...over,
+  inst: 1, terminal: 0, deleted: 'N', env: 'P', kind: null, createdAgeMin: 60, lqAgeMin: null, erpLastKind: 'E', procAgeDays: 1, branch: 'orders',
+  source: 'P', hasKey: false, voiceAgeMin: 0, newerAttempt: false, ...over,
 })
 
 /** O WHERE de profundidade 0 (o das subconsultas do TX_SELECT fica dentro de parênteses) até o ORDER BY/LIMIT/fim. */
@@ -117,6 +122,14 @@ const ATOMS: { re: RegExp; js: (take: () => unknown, m: RegExpExecArray) => stri
   { re: /COALESCE\(l\.last_kind, '-'\) <> 'C'/y, js: () => `(r.erpLastKind !== 'C')` },
   { re: /COALESCE\(t\.dh_proc, t\.created_at\) >= DATE_SUB\(NOW\(\), INTERVAL \? DAY\)/y, js: t => `(r.procAgeDays <= ${JSON.stringify(t())})` },
   { re: /COALESCE\(oi\.interface_key, 'orders'\) IN \(\?\)/y, js: t => `(${JSON.stringify(t())}.includes(r.branch ?? 'orders'))` },
+  // D-F52 — revisita única do F por consulta
+  { re: /le\.kind = 'F'/y, js: () => `(r.kind === 'F')` },
+  { re: /le\.source = 'Q'/y, js: () => `(r.source === 'Q')` },
+  { re: /t\.access_key IS NULL/y, js: () => '(!r.hasKey)' },
+  { re: /le\.created_at <= DATE_SUB\(NOW\(\), INTERVAL (\d+) HOUR\)/y, js: (_t, m) => `(r.voiceAgeMin >= ${Number(m[1])} * 60)` },
+  { re: /le\.created_at >= DATE_SUB\(NOW\(\), INTERVAL (\d+) DAY\)/y, js: (_t, m) => `(r.voiceAgeMin <= ${Number(m[1])} * 1440)` },
+  { re: /t\.last_queried_at < DATE_ADD\(le\.created_at, INTERVAL (\d+) HOUR\)/y, js: (_t, m) => `(r.lqAgeMin !== null && (r.voiceAgeMin - r.lqAgeMin) < ${Number(m[1])} * 60)` },
+  { re: /NOT EXISTS \(SELECT 1 FROM tb_invoice_service_transmission t2 WHERE [^()]*t2\.attempt > t\.attempt\)/y, js: () => '(!r.newerAttempt)' },
 ]
 
 /** Traduz o WHERE principal para um predicado JS; devolve também quantos parâmetros consumiu. */
@@ -219,6 +232,27 @@ describe('D-F47 — o filtro de ramo não escapa da institution nem do bloco de 
     expect(mutated).not.toBe(sql)
     expect(whereOracle(mutated, params).pred(row({ inst: 2 }))).toBe(true)
     expect(whereOracle(sql, params).pred(row({ inst: 2 }))).toBe(false)
+  })
+})
+
+// D-F52 (= Q-F61 (a), Valdo 2026-10-04) — o F "sem resposta" por CONSULTA volta ao rodízio UMA vez, 24 h depois
+describe('D-F52 — revisita única do F por consulta (oráculo sobre o SQL REAL)', () => {
+  it('entra só o F de source Q, sem chave, ≥ 24 h, dentro do teto, não revisitado, última tentativa da vida e de ramo com privilégio', async () => {
+    const { pred } = await candidatesOracle({ interfaces: ['service-orders'], liveOnlyInterfaces: ['orders'] })
+    // F gravado há 25 h; a consulta que o gravou carimbou junto (lqAge ≈ voiceAge)
+    const F = (over: Partial<Row> = {}) => row({ branch: 'service-orders', kind: 'F', source: 'Q', voiceAgeMin: 25 * 60, lqAgeMin: 25 * 60, ...over })
+    const cases: [string, Row, boolean][] = [
+      ['F por consulta há 25 h, nunca revisitado', F(), true],
+      ['F por consulta há 23 h (< 24 h)', F({ voiceAgeMin: 23 * 60, lqAgeMin: 23 * 60 }), false],
+      ['F por consulta JÁ revisitado (carimbo 24 h depois do F)', F({ lqAgeMin: 60 }), false],
+      ['F do transmitir (source P — recusa explícita)', F({ source: 'P' }), false],
+      ['F com chave', F({ hasKey: true }), false],
+      ['F com tentativa POSTERIOR na vida (retransmitida)', F({ newerAttempt: true }), false],
+      ['F velho demais (além do teto de 90 dias)', F({ voiceAgeMin: 91 * 1440, lqAgeMin: 91 * 1440 }), false],
+      ['F de ramo CORTADO (só vivas — D-F46/D-F47)', F({ branch: 'orders' }), false],
+      ['F de outra institution', F({ inst: 2 }), false],
+    ]
+    expect(cases.map(([label, r]) => [label, pred(r)])).toEqual(cases.map(([label, , want]) => [label, want]))
   })
 })
 
