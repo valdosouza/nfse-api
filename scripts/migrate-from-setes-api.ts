@@ -347,12 +347,35 @@ async function resyncInstitution(c: PoolConnection, keyring: MasterKeyRing, stor
   return (await migrateInstitution(c, keyring, storage, id, s)) ?? null
 }
 
+/** Nome FIXO da migration da F2a no setes-api (arquivo `NNN_f2a_fiscal_passivo.sql` → `_migrations.name`) — D-F50. */
+export const F2A_MIGRATION_NAME = 'f2a_fiscal_passivo'
+
+async function setesApiF2aApplied(q: { query: (sql: string, p?: unknown[]) => Promise<any> }, s: string): Promise<boolean> {
+  try {
+    const [rows] = await q.query(`SELECT 1 AS x FROM \`${s}\`._migrations WHERE name = ? LIMIT 1`, [F2A_MIGRATION_NAME])
+    return Array.isArray(rows) && rows.length > 0
+  } catch (err: any) {
+    if (err?.errno === 1146 || err?.code === 'ER_NO_SUCH_TABLE') return false    // schema sem controle de migrations = sem F2a
+    throw err
+  }
+}
+
 async function cutover(pool: ReturnType<typeof createFiscalPool>, keyring: MasterKeyRing, storage: FsFiscalStorage, institutionId: number): Promise<void> {
   if (!CONFIRMED) throw new Error('--cutover exige --confirmo-setes-api-parado: o caminho de emissão do setes-api tem de estar PARADO (F2a) antes da virada')
   // o schema vem ANTES da transação (autocommit) — nenhuma leitura não travante dentro dela antes das travas
   const [inst] = await pool.query<any[]>(`SELECT schema_name AS schemaName FROM setes_central.tb_institution WHERE id = ? AND deleted = 'N'`, [institutionId])
   if (!inst[0]) throw new Error(`Institution ${institutionId} inexistente/excluída`)
   const s = assertSchema(String(inst[0].schemaName))
+  // D-F50 (= Q-F59 (a), Valdo 2026-10-04): a virada exige o FATO de que a F2a do setes-api está aplicada NESTE schema — a
+  // migration de nome fixo `F2A_MIGRATION_NAME` no `_migrations` do cliente. Sem ela a tela antiga "Emissor fiscal" ainda
+  // gravaria a SE (upsert com deleted='N') e REVIVERIA a linha que o ato aposenta (o contador congelado do ERP voltaria a
+  // cunhar nDPS já usados — R2-2). Leitura em autocommit, ANTES da transação. No --dry-run vira BLOQUEIO no relatório (o
+  // ensaio segue); no ato real, recusa. O rollback do DEPLOY do setes-api depois da virada continua proibido por procedimento.
+  const f2aMissing = !(await setesApiF2aApplied(pool, s))
+  if (f2aMissing && !DRY) {
+    throw new Error(`${s}: a F2a do setes-api não está aplicada neste schema (migration "${F2A_MIGRATION_NAME}" ausente em _migrations) — `
+      + 'a tela antiga do Emissor fiscal reviveria a habilitação SE aposentada; aplique a F2a antes da virada (D-F50)')
+  }
   const c = await pool.getConnection()
   try {
     await c.beginTransaction()
@@ -392,6 +415,7 @@ async function cutover(pool: ReturnType<typeof createFiscalPool>, keyring: Maste
     if (rep) await checkXmls(c, storage, rep)
     console.log(JSON.stringify({ dryRun: DRY, committed: !DRY,
       cutover: { institutionId, schema: s, linhasViradas: Number(u.affectedRows ?? 0), habilitacaoErpAposentada: retired }, report: rep,
+      ...(f2aMissing ? { bloqueios: [`D-F50: a virada REAL seria recusada — migration "${F2A_MIGRATION_NAME}" (F2a do setes-api) ausente em ${s}._migrations`] } : {}),
       nota: 'D-F44: a habilitação SE do ERP foi aposentada no ato (deleted=S) — o setes-api não emite mais por ela; a série da nota segue \'1\'.' }, null, 2))
   } catch (err) {
     await c.rollback()

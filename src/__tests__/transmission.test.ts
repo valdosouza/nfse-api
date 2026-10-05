@@ -266,13 +266,33 @@ describe('consultar — a voz do fisco, idempotente, SEM efeito no ERP', () => {
     expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()
   })
 
-  it('em voo sem chave: GET /dps não gerou → só "nós olhamos" (F só por recusa explícita — D-I21)', async () => {
+  it('em voo RECENTE (< 10 min) sem chave: GET /dps não gerou → só "nós olhamos" (o POST pode estar no fisco agora — D-I21/D-F51)', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: null, accessKey: null }))
     adapter.queryDpsAccessKey.mockResolvedValue(null)
     const r = await refreshServiceTransmission(deps, A, INVOICE, 'Q')
     expect(r.changed).toBe(false)
     expect(repo.touchQueriedAt).toHaveBeenCalledWith(pool, 1, INVOICE, 1)
     expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()
+  })
+
+  it('D-F51: em voo há ≥ 10 min e o fisco SEM o DPS → F "sem resposta" por CONSULTA, sob a trava da nota (o mesmo veredito do transmitir)', async () => {
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: null, accessKey: null, ageMinutes: 15 }))
+    ;(repo.getTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: null, accessKey: null, ageMinutes: 15 }))
+    adapter.queryDpsAccessKey.mockResolvedValue(null)
+    const r = await refreshServiceTransmission(deps, A, INVOICE, 'Q')
+    expect(r).toMatchObject({ changed: true, kind: 'F', accessKey: null })
+    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(conn, 1, INVOICE, 1, A.userId, expect.objectContaining({ kind: 'F', source: 'Q' }))
+    expect(conn.commit).toHaveBeenCalled()
+  })
+
+  it('D-F51: sob a trava a tentativa JÁ ganhou voz (corrida com outra consulta) → nenhum F; devolve a voz LIDA e não carimba (gate r10)', async () => {
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: null, accessKey: null, ageMinutes: 15 }))
+    ;(repo.getTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
+    adapter.queryDpsAccessKey.mockResolvedValue(null)
+    const r = await refreshServiceTransmission(deps, A, INVOICE, 'Q')
+    expect(r).toMatchObject({ changed: false, kind: 'A' })
+    expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()
+    expect(repo.touchQueriedAt).not.toHaveBeenCalled()
   })
 
   it('em voo sem chave: GET /dps achou → A retroativo (source Q) + write-once', async () => {

@@ -564,7 +564,9 @@ d('GATE ADVERSARIAL — delta da Rodada 4 (D-F36…D-F40) — banco real (répli
       await sleep(1100)
       const again = runScript('migrate:setes', ['--cutover', '1', '--confirmo-setes-api-parado'], advEnv())
       expect(again.status).not.toBe(0)
-      expect(again.out).toMatch(/já VIRADA/)
+      // D-F50: antes da F2a do setes-api o ato recusa já na conferência da migration (antes de qualquer transação) — as
+      // duas recusas acontecem ANTES de escrever, que é o que este teste prova
+      expect(again.out).toMatch(/já VIRADA|F2a do setes-api não está aplicada/)
       expect((await advIssuer(INST)).c).toBe(turnedAt)
       const s0 = await advSums()
       const resync = runScript('migrate:setes', [], advEnv())

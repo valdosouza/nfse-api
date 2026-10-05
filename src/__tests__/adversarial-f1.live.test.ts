@@ -537,7 +537,7 @@ d('GATE ADVERSARIAL F1 — banco real + fisco falso', () => {
       const r1 = track('amb refresh sem NFS-e', await request(app).post(`/v1/nfse/invoices/${id}/refresh`).set(a))
       expect(r1.body.data).toMatchObject({ changed: false, kind: null })
       last = await lastOf(id)
-      expect(last.lastKind).toBeNull()                                           // F só por recusa explícita
+      expect(last.lastKind).toBeNull()                                           // em voo RECENTE: F só depois de IN_FLIGHT_MINUTES (D-F51)
       generate(issuerBefore.environment, last.dpsId)                             // o fisco GEROU; a resposta se perdeu…
       fisco.swapQuery = true                                                     // …e a consulta devolve a NFS-e de OUTRO DPS
       const r2 = track('amb refresh trocada', await request(app).post(`/v1/nfse/invoices/${id}/refresh`).set(a))

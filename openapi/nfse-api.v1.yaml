@@ -264,6 +264,8 @@ paths:
       description: >-
         Privilégio TRANSMITIR do ramo (ramo contratado). A chave achada pela consulta do Id do DPS pousa só numa
         tentativa do MESMO ambiente (gate da F1). A voz C descoberta aqui NÃO produz o C local — o setes-api o aplica (D-F11).
+        D-F51: tentativa EM VOO há ≥ 10 min cujo DPS o fisco NÃO conhece recebe F "sem resposta" (envio interrompido — o mesmo
+        veredito do transmitir); em voo mais recente, só "consultado".
       responses:
         '200':
           description: ok

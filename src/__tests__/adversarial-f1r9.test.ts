@@ -10,7 +10,7 @@
 // trecho do WHERE que o oráculo não reconheça faz o teste falhar (cobertura total, sem "passa por não entender").
 //
 // Achados deste arquivo:
-//  - [MEDIUM — r9-inflight-never-closes] a passada NÃO fecha a tentativa EM VOO cujo DPS o fisco não conhece (o envio
+//  - [MEDIUM — r9-inflight-never-closes — CORRIGIDO 2026-10-04 pela D-F51] a passada NÃO fecha a tentativa EM VOO cujo DPS o fisco não conhece (o envio
 //    interrompido que nunca chegou): `refreshServiceTransmission` só grava `last_queried_at`; o F "sem resposta" só é
 //    escrito por `reconcileInterrupted`, que roda SÓ no transmitir — 403 para ramo cortado (D-F46). A tentativa segue viva,
 //    `countLiveTransmissions` segue > 0 e o emitente segue travado — a D-F47 não destrava esse caso; de quebra a órfã
@@ -253,7 +253,11 @@ describe('D-F47 — semântica de "viva": a passada × a guarda do emitente', ()
     accessKey: null, nfseNumber: null, dhProc: null, createdAt: '2026-10-01 10:00:00', ageMinutes: 4000, lastQueriedAt: '2026-10-04 10:00:00',
     lastEvent: null, lastKind: null, lastCode: null, lastMessage: null, lastSource: null, lastDh: null, lastEventAt: null, lastEventAgeMinutes: null,
   }
+  const conn = { beginTransaction: jest.fn(), query: jest.fn(async () => [[]]), commit: jest.fn(), rollback: jest.fn(), release: jest.fn() }
   const arrange = () => {
+    pool.getConnection.mockResolvedValue(conn)                        // D-F51: o F nasce sob a trava da nota (transação)
+    erpM.lockInvoice.mockResolvedValue({ alive: true, lifeEvent: 1, lastEvent: 1, lastKind: 'E' })
+    repoM.insertTransmissionEvent.mockResolvedValue(1)
     erpM.invoiceLife.mockResolvedValue({ lifeEvent: 1, lastEvent: 1, lastKind: 'E', alive: true })
     repoM.getTransmission.mockResolvedValue(inFlight)
     repoM.findTransmissionByDpsId.mockResolvedValue(null)
@@ -262,24 +266,11 @@ describe('D-F47 — semântica de "viva": a passada × a guarda do emitente', ()
     adapter.queryDpsAccessKey.mockResolvedValue(null)                 // o fisco não conhece o DPS: o POST nunca chegou
   }
 
-  it('cenário r9-inflight-never-closes: em voo de ramo cortado, fisco sem o DPS → a passada só "olhou"; segue viva, volta ao rodízio e trava o emitente', async () => {
+  // [corrigido 2026-10-04 — D-F51 (= Q-F60 (a))] a consulta grava o F "sem resposta" com o mesmo critério do transmitir
+  it('[r9-inflight-never-closes][corrigido] a passada FECHA a tentativa em voo de ramo cortado que o fisco não conhece (voz final gravada — D-F47/D-F51)', async () => {
     arrange()
     const r = await txMod.refreshServiceTransmission(deps, ACTOR, INVOICE, 'Q', { attempt: 1 })
-    expect(r).toMatchObject({ changed: false, kind: null })
-    expect(repoM.touchQueriedAt).toHaveBeenCalledWith(pool, 1, INVOICE, 1)
-    expect(repoM.insertTransmissionEvent).not.toHaveBeenCalled()
-    // 6 min depois a MESMA tentativa (ainda sem voz) é candidata de novo, no grupo de PRIORIDADE (vivas antes das autorizadas)
-    const cand = await candidatesOracle({ interfaces: ['service-orders'], liveOnlyInterfaces: ['orders'] })
-    expect(cand.pred(row({ branch: 'orders', kind: null, createdAgeMin: 4000, lqAgeMin: 6 }))).toBe(true)
-    // e a guarda do emitente continua contando-a (trocar ambiente / excluir habilitação / excluir A1 = 409)
-    const { q, calls } = fakeQ()
-    await actualRepo.countLiveTransmissions(q, 1)
-    expect(whereOracle(calls[0].sql, calls[0].params).pred(row({ kind: null }))).toBe(true)
-  })
-
-  it.failing('[r9-inflight-never-closes] a passada FECHA a tentativa em voo de ramo cortado que o fisco não conhece (voz final gravada — D-F47)', async () => {
-    arrange()
-    await txMod.refreshServiceTransmission(deps, ACTOR, INVOICE, 'Q', { attempt: 1 })
+    expect(r).toMatchObject({ changed: true, kind: 'F' })
     const kinds = repoM.insertTransmissionEvent.mock.calls.map(c => c[5]?.kind)
     expect(kinds.some(k => actualFiscal.FINAL_TRANSMISSION_KINDS.has(k))).toBe(true)
   })

@@ -283,10 +283,11 @@ describe('scripts: migrate:setes --cutover / re-sincronia (D-F42/D-F44)', () => 
   }
 
   /** ERP com a SE viva (série [erpSerie]) e o fiscal_api com [apiRows]; [retire] decide o UPDATE no ERP. */
-  const cutoverDb = (o: { erpSerie?: string; apiRows?: any[]; retire?: () => any } = {}): Handler => {
+  const cutoverDb = (o: { erpSerie?: string; apiRows?: any[]; retire?: () => any; f2a?: boolean } = {}): Handler => {
     let turned = false
     return (sql) => {
       if (/FROM setes_central\.tb_institution WHERE id = \?/.test(sql)) return [[{ schemaName: 'setes_x' }]]
+      if (/FROM `setes_x`\._migrations WHERE name = \?/.test(sql)) return o.f2a === false ? [[]] : [[{ x: 1 }]]   // D-F50
       if (/dps_last_number AS n FROM `setes_x`\.tb_establishment_issuer .*FOR UPDATE/s.test(sql)) return [[{ model: 'SE', serie: o.erpSerie ?? '1', deleted: 'N', n: 10 }]]
       if (/SELECT model, cutover_at AS c FROM tb_establishment_issuer/.test(sql)) return [o.apiRows ?? [{ model: 'SE', c: null }]]
       if (/information_schema\.tables/.test(sql)) return [[{ x: 1 }]]
@@ -346,6 +347,23 @@ describe('scripts: migrate:setes --cutover / re-sincronia (D-F42/D-F44)', () => 
     expect(r.conn.rollback).toHaveBeenCalled()
   })
 
+  // D-F50 (= Q-F59 (a), Valdo 2026-10-04): a virada exige a F2a do setes-api aplicada no schema do cliente
+  it('[D-F50] sem a migration da F2a no _migrations do cliente → a virada REAL recusa antes de abrir a transação (nada escrito)', async () => {
+    const r = await runScript(CUT, cutoverDb({ f2a: false }))
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join(' ')).toMatch(/F2a do setes-api não está aplicada.*f2a_fiscal_passivo.*D-F50/)
+    expect(r.conn.beginTransaction).not.toHaveBeenCalled()
+    expect(r.sqls.some(q => /^(INSERT|UPDATE|DELETE)/i.test(q))).toBe(false)
+  })
+
+  it('[D-F50] no --dry-run a ausência da F2a vira BLOQUEIO no relatório e o ensaio segue (e desfaz)', async () => {
+    const r = await runScript([...CUT, '--dry-run'], cutoverDb({ f2a: false }))
+    expect(r.exitCode).toBeNull()
+    expect(r.logs.join(' ')).toMatch(/"bloqueios"[\s\S]*D-F50: a virada REAL seria recusada/)
+    expect(r.conn.commit).not.toHaveBeenCalled()
+    expect(r.conn.rollback).toHaveBeenCalled()
+  })
+
   it('resistiu: `--cutover` sem `--confirmo-setes-api-parado` → recusa antes de abrir conexão', async () => {
     const r = await runScript(['--cutover', '1'], cutoverDb())
     expect(r.exitCode).toBe(1)
@@ -357,6 +375,7 @@ describe('scripts: migrate:setes --cutover / re-sincronia (D-F42/D-F44)', () => 
   const strandedDb: Handler = (sql) => {
     if (/SELECT id, schema_name AS schemaName FROM setes_central\.tb_institution WHERE deleted = 'N'/.test(sql)) return [[{ id: 2, schemaName: 'setes_y' }]]
     if (/FROM setes_central\.tb_institution WHERE id = \?/.test(sql)) return [[{ schemaName: 'setes_y' }]]
+    if (/FROM `setes_y`\._migrations WHERE name = \?/.test(sql)) return [[{ x: 1 }]]                       // D-F50: F2a aplicada
     if (/SELECT 1 AS x FROM `setes_y`\.tb_establishment_issuer WHERE tb_institution_id = \? AND model = 'SE'/.test(sql)) return [[]]
     if (/FROM `setes_y`\.tb_establishment_issuer .*FOR UPDATE/s.test(sql)) return [[]]
     if (/SELECT model, cutover_at AS c FROM tb_establishment_issuer/.test(sql)) return [[{ model: '55', c: null }]]

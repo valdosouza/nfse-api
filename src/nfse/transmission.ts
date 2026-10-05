@@ -394,14 +394,26 @@ async function reconcileInterrupted(deps: NfseDeps, actor: Actor, tx: Transmissi
     await refreshServiceTransmission(deps, actor, tx.invoiceId, 'Q', { attempt: tx.attempt })
     return
   }
-  await withInvoiceTx(deps, 'reconciliação do envio interrompido', actor, tx.invoiceId, async conn => {
+  await recordInterruptedFailure(deps, actor, tx)
+}
+
+/**
+ * F "sem resposta" por CONSULTA: tentativa EM VOO (sem voz) há ≥ IN_FLIGHT_MINUTES e o fisco NÃO conhece o DPS = envio
+ * interrompido (conclusivo — o mesmo critério da Onda 2, HIGH-3). Um veredito só, nos dois caminhos (D-F51 = Q-F60 (a),
+ * Valdo 2026-10-04): o transmitir (reserva interrompida) e o consultar (rota por nota e passada do rodízio — sem isso a
+ * em voo de ramo cortado nunca fechava e travava o emitente; D-F47). Sob a trava da nota; reconfere que segue sem voz.
+ * Devolve true se gravou.
+ */
+async function recordInterruptedFailure(deps: NfseDeps, actor: Actor, tx: TransmissionRow): Promise<{ recorded: boolean; current: TransmissionRow | null }> {
+  return withInvoiceTx(deps, 'reconciliação do envio interrompido', actor, tx.invoiceId, async conn => {
     // sob a trava da nota a leitura é não travante (o snapshot nasce DEPOIS da trava — PADROES §9 regra 2)
     const cur = await getTransmission(conn, actor.institutionId, tx.invoiceId, tx.attempt)
-    if (!cur || cur.lastKind !== null) return
+    if (!cur || cur.lastKind !== null) return { recorded: false, current: cur }
     await touchQueriedAt(conn, actor.institutionId, tx.invoiceId, tx.attempt)
     await insertTransmissionEvent(conn, actor.institutionId, tx.invoiceId, tx.attempt, actor.userId, {
       kind: 'F', source: 'Q', message: 'Sem resposta do fisco e nenhuma NFS-e gerada para este DPS — envio interrompido',
     })
+    return { recorded: true, current: cur }
   })
 }
 
@@ -466,7 +478,15 @@ export async function refreshServiceTransmission(
         // MEDIUM-1: sem chave (em voo, R ou F) a pergunta é pelo Id do DPS
         accessKey = await deps.adapter.queryDpsAccessKey(ctx, tx0.dpsId)
         if (!accessKey) {
-          await touchQueriedAt(deps.pool, institutionId, invoiceId, tx0.attempt)   // só "nós olhamos" — F só por recusa explícita
+          // D-F51: em voo há ≥ IN_FLIGHT_MINUTES e o fisco sem o DPS = envio interrompido → F (o mesmo veredito do transmitir)
+          if (isInterruptedInFlight(tx0)) {
+            const closed = await recordInterruptedFailure(deps, actor, tx0)
+            if (closed.recorded) return { invoiceId, attempt: tx0.attempt, changed: true, kind: 'F', accessKey: null, localCancelPending: pendingOf('F') }
+            // gate r10 LOW [r10-lost-race-stale]: outro escritor gravou a voz antes (sob a trava ela já existe) — devolve a voz
+            // LIDA e NÃO carimba last_queried_at: este GET /dps é ANTERIOR à voz do vencedor (a prova da D-F29 exige posterior)
+            if (closed.current) return unchanged(closed.current)
+          }
+          await touchQueriedAt(deps.pool, institutionId, invoiceId, tx0.attempt)   // em voo recente (ou já com voz): só "nós olhamos"
           return unchanged(tx0)
         }
         target = holder ?? tx0
