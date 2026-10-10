@@ -256,6 +256,18 @@ describe('transmitir — trava da nota → DPS da vida → fisco FORA da transa�
   })
 })
 
+describe('D-F59 (= Q-F67 (a), Valdo 2026-10-10) — IM do PRESTADOR no DPS só em HOMOLOGAÇÃO', () => {
+  // o cadastro do emitente TEM a IM (777): em H o CNC exige (E0116 — smoke de 2026-10-10); em P o CNC recusa (E0120 — Q-N35)
+  it('habilitação em PRODUÇÃO: o mesmo emitente sai SEM <IM> no <prest> (o caminho feliz em H acima leva <IM>777</IM>)', async () => {
+    adapter.transmit.mockResolvedValue({ accessKey: KEY, nfseNumber: '123', dhProc: '2026-09-21T10:15:30-03:00', nfseXml: NFSE_XML, raw: {} })
+    ;(fiscal.openIssuer as jest.Mock).mockResolvedValue(opened('P'))
+    await transmitServiceInvoice(deps, A, INVOICE)
+    const sentP = adapter.transmit.mock.calls[0][1] as string
+    expect(sentP).toContain('<prest><CNPJ>12345678000199</CNPJ><regTrib>')
+    expect(sentP).not.toMatch(/<prest>(?:(?!<\/prest>)[\s\S])*<IM>/)
+  })
+})
+
 describe('consultar — a voz do fisco, idempotente, SEM efeito no ERP', () => {
   it('A já gravado e fisco "authorized" → nada novo; last_queried_at marcado', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
@@ -366,7 +378,7 @@ describe('cancelar no fisco — operação EM LINHA (D-F28)', () => {
     adapter.registerEvent.mockResolvedValue({ dhEvento: null, raw: {} })
     const r = await cancelServiceInvoiceAtAuthority(deps, A, INVOICE, 'erro')
     expect(r.warnings).toEqual([expect.stringMatching(/Prazo de cancelamento .*30 dias/)])
-    expect(adapter.registerEvent.mock.calls[0][2]).toContain('<xMotivo>erro — Cancelamento solicitado pelo emissor</xMotivo>')
+    expect(adapter.registerEvent.mock.calls[0][2]).toContain('<xMotivo>erro - Cancelamento solicitado pelo emissor</xMotivo>')
   })
 
   /** Estado da tentativa 1 que ACOMPANHA as vozes gravadas (K da reserva, N da liberação). */
@@ -428,6 +440,19 @@ describe('cancelar no fisco — operação EM LINHA (D-F28)', () => {
     ;(repo.findTransmissionEventByKind as jest.Mock).mockResolvedValue({ attempt: 1, event: 3, kind: 'C' })
     const r = await cancelServiceInvoiceAtAuthority(deps, A, INVOICE, 'erro')
     expect(r).toMatchObject({ atAuthority: false, transmissionEvent: 3, nextStep: 'apply-local-cancel' })
+    expect(adapter.registerEvent).not.toHaveBeenCalled()
+  })
+  it('[gate do delta da Rodada 6 — M2 = r8-cancel-idem] já C + A1 vencido / chave-mestra ausente → AINDA o ok idempotente (o emissor nem é aberto); recusas de estado também não abrem', async () => {
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'C', lastEvent: 3 }))
+    ;(repo.findTransmissionEventByKind as jest.Mock).mockResolvedValue({ attempt: 1, event: 3, kind: 'C' })
+    ;(fiscal.openIssuer as jest.Mock).mockRejectedValue(new HttpError(409, 'A1 vencido', undefined, 'FISCAL_CERT_EXPIRED'))
+    const r = await cancelServiceInvoiceAtAuthority(deps, A, INVOICE, 'erro')
+    expect(r).toMatchObject({ atAuthority: false, transmissionEvent: 3, nextStep: 'apply-local-cancel' })
+    for (const t of [null, tx({ lastKind: 'R', accessKey: null }), tx({ lastKind: 'K' })]) {
+      ;(repo.latestTransmission as jest.Mock).mockResolvedValue(t)
+      await expect(cancelServiceInvoiceAtAuthority(deps, A, INVOICE, 'erro')).rejects.toMatchObject({ statusCode: 409 })
+    }
+    expect(fiscal.openIssuer).not.toHaveBeenCalled()
     expect(adapter.registerEvent).not.toHaveBeenCalled()
   })
 })

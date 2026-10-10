@@ -237,7 +237,9 @@ const spawnScript = (script: string, args: string[], env: Record<string, string>
     p.on('close', code => resolve({ status: code, out }))
   })
 }
-const copyEnv = () => ({ FISCAL_DB_NAME: COPY, DB_USER: setesUser, DB_PASSWORD: setesPass })
+// D-F53: a re-sincronia na CÓPIA roda com o usuário do SERVIÇO; só o ENSAIO do ato (escreve no ERP e desfaz) leva o DONO
+const copyEnv = () => ({ FISCAL_DB_NAME: COPY, DB_USER: process.env.DB_USER ?? '', DB_PASSWORD: process.env.DB_PASSWORD ?? '' })
+const ownerEnv = () => ({ FISCAL_DB_NAME: COPY, DB_USER: setesUser, DB_PASSWORD: setesPass })
 
 let realBefore: { sums: Record<string, string>; objects: string } = { sums: {}, objects: '' }
 let erpBefore: Record<string, string> = {}
@@ -424,10 +426,10 @@ d('GATE ADVERSARIAL r6 — re-prova final do delta do retrabalho 2 (cópia desca
         await blocker.beginTransaction()
         await blocker.query(`SELECT cutover_at FROM tb_establishment_issuer WHERE tb_institution_id = ? FOR UPDATE`, [INST])
         // D-F44: o ato REAL aposenta a habilitação SE do ERP — contra o ERP real do dev, SÓ em --dry-run (escrita desfeita)
-        pCut = spawnScript('migrate:setes', ['--cutover', String(INST), '--confirmo-setes-api-parado', '--dry-run'], copyEnv())
+        pCut = spawnScript('migrate:setes', ['--cutover', String(INST), '--confirmo-setes-api-parado', '--dry-run'], ownerEnv())
         out.cutBlocked = await waitBlocked(Number(cid), [/SELECT model, cutover_at AS c FROM tb_establishment_issuer/, /FOR UPDATE/i], 1, 90_000)   // trava POR LINHA (D-F42)
         const pStore = storeA1(pfx)
-        out.storeBlocked = await waitBlocked(Number(cid), [/SELECT cutover_at AS c FROM tb_establishment_issuer/, /FOR UPDATE/i])
+        out.storeBlocked = await waitBlocked(Number(cid), [/SELECT model, cutover_at AS c FROM tb_establishment_issuer/, /FOR UPDATE/i])
         await blocker.rollback()
         out.store = await pStore
         const cut = await pCut
@@ -527,7 +529,7 @@ d('GATE ADVERSARIAL r6 — re-prova final do delta do retrabalho 2 (cópia desca
       const rs = runScript('migrate:setes', [], { ...copyEnv(), STORAGE_PATH: broken })
       mig.resync = { status: rs.status, msg: rs.out.match(/FALHA[^\n]*/)?.[0]?.slice(0, 140), serieDepois: (await issuerOfCopy())?.serie }
       await restoreIssuerFromReal()
-      const ct = runScript('migrate:setes', ['--cutover', String(INST), '--confirmo-setes-api-parado', '--dry-run'], { ...copyEnv(), STORAGE_PATH: broken })   // D-F44: só ensaio contra o ERP real
+      const ct = runScript('migrate:setes', ['--cutover', String(INST), '--confirmo-setes-api-parado', '--dry-run'], { ...ownerEnv(), STORAGE_PATH: broken })   // D-F44: só ensaio contra o ERP real
       mig.cutover = { status: ct.status, msg: ct.out.match(/FALHA[^\n]*/)?.[0]?.slice(0, 140), viradaDepois: (await issuerOfCopy())?.c }
       mig.xmlWarning = /conferência de XML NÃO concluída/.test(rs.out) && /conferência de XML NÃO concluída/.test(ct.out)
       // eslint-disable-next-line no-console
@@ -549,7 +551,8 @@ d('GATE ADVERSARIAL r6 — re-prova final do delta do retrabalho 2 (cópia desca
     afterAll(async () => { await rootPool.query(`DROP DATABASE IF EXISTS \`${SMOKE}\``) })
     it('sem achado: banco de smoke com EVIDÊNCIA (envio sem voz) fica intacto mesmo com `--descartar-evidencia` (sem --vai nada é apagado)', async () => {
       await restoreCertFromReal()
-      await runMigrations({ ...harness!.cfg, ...harness!.owner, database: SMOKE }, MIGRATION_SETS)   // D-F53: banco fora de fiscal_api_adv_* = dono
+      // D-F53: o banco do SMOKE é criado pelo DONO (o smoke usa SMOKE_DB_USER = dono; o serviço só alcança fiscal_api_adv*)
+      await runMigrations({ ...harness!.cfg, user: setesUser, password: setesPass, database: SMOKE }, MIGRATION_SETS)
       const life = await lifeOf(X)
       await rootPool.query(`INSERT INTO \`${SMOKE}\`.tb_invoice_service_dps (tb_institution_id, tb_invoice_id, terminal, life_event, serie, dps_number, dps_id, tb_user_id, created_at, updated_at, deleted)
                             VALUES (?, ?, 0, ?, '900', 1, ?, NULL, NOW(), NOW(), 'N')`, [INST, X, life, `DPS4106902${'2'}${CNPJ}00900${'1'.padStart(15, '0')}`])
@@ -632,7 +635,7 @@ d('GATE ADVERSARIAL r6 — re-prova final do delta do retrabalho 2 (cópia desca
       await w(`INSERT INTO tb_establishment_issuer (tb_institution_id, model, environment, serie, dps_last_number, created_at, updated_at, deleted, cutover_at)
                VALUES (?, '55', 'H', NULL, 0, NOW(), NOW(), 'N', NULL)`, [INST])
       const rs = runScript('migrate:setes', ['--dry-run'], copyEnv())
-      const ct = runScript('migrate:setes', ['--cutover', String(INST), '--confirmo-setes-api-parado', '--dry-run'], copyEnv())
+      const ct = runScript('migrate:setes', ['--cutover', String(INST), '--confirmo-setes-api-parado', '--dry-run'], ownerEnv())
       const rows = (await q(`SELECT model, cutover_at IS NULL AS replica FROM tb_establishment_issuer WHERE tb_institution_id = ? ORDER BY model`, [INST]))
         .map(r => `${r.model}:${Number(r.replica) ? 'replica' : 'virada'}`)
       const out = { resync: [rs.status, /réplica do ERP de modelo 55/.test(rs.out), /DELETE FROM tb_establishment_issuer/.test(rs.out)],
@@ -651,7 +654,7 @@ d('GATE ADVERSARIAL r6 — re-prova final do delta do retrabalho 2 (cópia desca
     it('D-F44 — o ATO aposenta a habilitação SE do ERP na MESMA transação (ensaio: `--cutover --dry-run` executa a escrita e a DESFAZ); o ERP real fica intacto', async () => {
       await restoreIssuerFromReal()
       const erpBefore = (await q(`SELECT deleted, serie, dps_last_number AS n FROM \`${SCHEMA}\`.tb_establishment_issuer WHERE tb_institution_id = ? AND model = 'SE'`, [INST]))[0]
-      const ct = runScript('migrate:setes', ['--cutover', String(INST), '--confirmo-setes-api-parado', '--dry-run'], copyEnv())
+      const ct = runScript('migrate:setes', ['--cutover', String(INST), '--confirmo-setes-api-parado', '--dry-run'], ownerEnv())
       const erpAfter = (await q(`SELECT deleted, serie, dps_last_number AS n FROM \`${SCHEMA}\`.tb_establishment_issuer WHERE tb_institution_id = ? AND model = 'SE'`, [INST]))[0]
       const out = { status: ct.status, virou: ct.out.match(/"linhasViradas": \d+/)?.[0], aposentou: ct.out.match(/"habilitacaoErpAposentada": \d+/)?.[0], erpBefore, erpAfter }
       // eslint-disable-next-line no-console

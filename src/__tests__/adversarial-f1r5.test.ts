@@ -142,8 +142,8 @@ describe('[MEDIUM — regressão do retrabalho R4, corrigida] DELETE do A1: a 1�
   // snapshot nasce antes de esperar a trava → `countLiveTransmissions` lê o passado. É a regra 2 do PADROES §9 que o gate
   // R2 cravou na RESERVA ("trava antes de qualquer leitura não travante"), agora quebrada do lado do DELETE.
   const answer = async (sql: string) => {
-    if (/SELECT cutover_at AS c FROM tb_establishment_issuer/.test(sql)) return [[{ c: '2026-10-04 00:00:00' }]]   // trava: VIRADA
-    if (/SUM\(cutover_at IS NULL\)/.test(sql)) return [[{ n: 1, r: 0 }]]                       // habilitação VIRADA
+    if (/SELECT model, cutover_at AS c FROM tb_establishment_issuer/.test(sql)) return [[{ model: 'SE', c: '2026-10-04 00:00:00' }]]   // trava: SE VIRADA
+    if (/SUM\(cutover_at IS NULL\)/.test(sql)) return [[{ n: 1, r: 0, s: 1 }]]                 // habilitação SE VIRADA (D-F57: s = linhas SE)
     if (/FROM tb_establishment_issuer/.test(sql)) return [[TURNED_ROW]]
     if (/COUNT\(\*\) AS n\s+FROM tb_invoice_service_transmission/.test(sql)) return [[{ n: 0 }]]
     if (/UPDATE tb_establishment_certificate/.test(sql)) return [{ affectedRows: 1 }]

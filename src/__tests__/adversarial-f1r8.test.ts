@@ -325,7 +325,7 @@ describe('scripts: migrate:setes --cutover / re-sincronia (D-F42/D-F44)', () => 
   })
 
   it('resistiu: série da NOTA SE ≠ "1" → falha ALTA antes de QUALQUER escrita (fiscal_api ou ERP)', async () => {
-    const r = await runScript([...CUT], cutoverDb({ erpSerie: '2' }))
+    const r = await runScript([...CUT, '--vai'], cutoverDb({ erpSerie: '2' }))
     expect(r.exitCode).toBe(1)
     expect(r.errors.join(' ')).toMatch(/série da NOTA SE do ERP é '2'/)
     expect(r.sqls.filter(isWrite)).toEqual([])
@@ -333,7 +333,7 @@ describe('scripts: migrate:setes --cutover / re-sincronia (D-F42/D-F44)', () => 
   })
 
   it('resistiu: réplica de OUTRO modelo no fiscal_api → falha ALTA com a instrução de DELETE físico, nada escrito', async () => {
-    const r = await runScript([...CUT], cutoverDb({ apiRows: [{ model: 'SE', c: null }, { model: '55', c: null }] }))
+    const r = await runScript([...CUT, '--vai'], cutoverDb({ apiRows: [{ model: 'SE', c: null }, { model: '55', c: null }] }))
     expect(r.exitCode).toBe(1)
     expect(r.errors.join(' ')).toMatch(/réplica do ERP de modelo 55 .*DELETE FROM tb_establishment_issuer WHERE tb_institution_id = 1 AND model IN \('55'\) AND cutover_at IS NULL/)
     expect(r.sqls.filter(isWrite)).toEqual([])
@@ -341,7 +341,7 @@ describe('scripts: migrate:setes --cutover / re-sincronia (D-F42/D-F44)', () => 
 
   it('resistiu: credencial SEM UPDATE no ERP (o usuário fiscal_api) → o UPDATE é negado e o ATO inteiro volta (cutover_at não comita)', async () => {
     const denied = Object.assign(new Error("UPDATE command denied to user 'fiscal_api'"), { code: 'ER_TABLEACCESS_DENIED_ERROR', errno: 1142 })
-    const r = await runScript([...CUT], cutoverDb({ retire: () => denied }))
+    const r = await runScript([...CUT, '--vai'], cutoverDb({ retire: () => denied }))
     expect(r.exitCode).toBe(1)
     expect(r.conn.commit).not.toHaveBeenCalled()
     expect(r.conn.rollback).toHaveBeenCalled()
@@ -349,7 +349,7 @@ describe('scripts: migrate:setes --cutover / re-sincronia (D-F42/D-F44)', () => 
 
   // D-F50 (= Q-F59 (a), Valdo 2026-10-04): a virada exige a F2a do setes-api aplicada no schema do cliente
   it('[D-F50] sem a migration da F2a no _migrations do cliente → a virada REAL recusa antes de abrir a transação (nada escrito)', async () => {
-    const r = await runScript(CUT, cutoverDb({ f2a: false }))
+    const r = await runScript([...CUT, '--vai'], cutoverDb({ f2a: false }))
     expect(r.exitCode).toBe(1)
     expect(r.errors.join(' ')).toMatch(/F2a do setes-api não está aplicada.*f2a_fiscal_passivo.*D-F50/)
     expect(r.conn.beginTransaction).not.toHaveBeenCalled()
@@ -402,7 +402,7 @@ describe('scripts: migrate:setes --cutover / re-sincronia (D-F42/D-F44)', () => 
   it('cenário r8-resync-55: a institution fica TRAVADA (cerca = réplica em qualquer linha) e o `--cutover` não tem saída ("nada a virar")', async () => {
     const q = { query: jest.fn(async (sql: string, p: any[]) => strandedDb(sql, p) ?? [[]]) }
     expect(await actualFiscal.emissionStillInErp(q, 'setes_y', 2)).toBe(true)
-    const r = await runScript(['--cutover', '2', '--confirmo-setes-api-parado'], strandedDb)
+    const r = await runScript(['--cutover', '2', '--confirmo-setes-api-parado', '--vai'], strandedDb)
     expect(r.exitCode).toBe(1)
     expect(r.errors.join(' ')).toMatch(/não tem habilitação SE — nada a virar/)
   })

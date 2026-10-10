@@ -3,7 +3,7 @@
 ## ⚠️ Base de conhecimento central: D:\Gestao2027\Infra-IA
 
 Antes de qualquer tarefa neste projeto, consulte `D:\Gestao2027\Infra-IA\INDICE_CENTRAL.md` e
-**`Infra-IA/nfse-api/INDEX.md`** (START HERE). Decisões vigentes: D-F1…D-F53 em
+**`Infra-IA/nfse-api/INDEX.md`** (START HERE). Decisões vigentes: D-F1…D-F59 em
 `Infra-IA/prompts/prompt_apis_fiscais_isoladas.md` §7; plano no §12, modelo no §14, execução da F1 no **§15**. O núcleo comum vive
 em `D:\Gestao2027\fiscal-api` (biblioteca — `Infra-IA/fiscal-api/INDEX.md`).
 Ao concluir tarefa que gere conhecimento novo, siga `Infra-IA/skills-genericas/atualizar-infra-ia.md`.
@@ -41,9 +41,10 @@ cancelamento no fisco (D-F10).
    `<cnpj>/H/…` (Q-N38a), pasta pelo mês da zona (Q-TZ7), dhEmi na zona do estabelecimento (Q-TZ2).
 5. Swagger/OpenAPI em todo endpoint; gates socrático ≥ 0,70 + adversarial sem HIGH antes de "pronto".
 
-## Estado (2026-10-04, 3ª sessão)
+## Estado (2026-10-10 — reconciliação da sessão 2026-10-10 com a 3ª sessão de 2026-10-04, §20 do prompt)
 
-**F1 + Rodadas 4, 6 e 7 executadas (D-F46…D-F53 — §17.5/§18 do prompt)** — `npm test` (224 unit; ao vivo: 7 suítes `*.live.test.ts`
+**F1 + Rodadas 4–9 executadas (D-F46…D-F59 — §17–§20 do prompt; ramo fora do contrato = BLOQUEIO TOTAL, D-F46 (b) — a D-F55 desta
+máquina foi REVOGADA na reconciliação)** — `npm test` (240 unit; ao vivo: 8 suítes `*.live.test.ts`, 150 testes
 com `NFSE_ADV_LIVE=1 npx jest live --runInBand` — usa o banco do dev com fisco FALSO, em cópias `fiscal_api_adv_*`; o ATAQUE roda com
 o DB_USER do .env, que TEM de ser o `fiscal_api` — D-F53, `ops/grants.sql` 1b) · `npm run dev` (porta 3002;
 `.env` a partir do `.env.example`) ·
@@ -52,7 +53,8 @@ o DB_USER do .env, que TEM de ser o `fiscal_api` — D-F53, `ops/grants.sql` 1b)
 decisão — o setes-api segue sendo o caminho de produção até a virada (F2a). **CERCA DA VIRADA = FATO no banco** (D-F39,
 migration 003 do núcleo): `tb_establishment_issuer.cutover_at` NULL = RÉPLICA do ERP → ações e escritas do emitente dão 409
 `FISCAL_CUTOVER_PENDING`, e o NÚCLEO recusa abrir o emissor, cunhar nDPS, tomar o aluguel e escrever o A1 da réplica. A
-virada é o ato `npm run migrate:setes -- --cutover <id> --confirmo-setes-api-parado` (write-once). ⚠️ **D-F44: o ato
+virada é o ato `npm run migrate:setes -- --cutover <id> --confirmo-setes-api-parado --vai` (write-once) — **sem `--vai` é
+ENSAIO** (executa e desfaz) e argumento desconhecido FALHA (gate do delta da Rodada 6, M3 — 2026-10-10). ⚠️ **D-F44: o ato
 APOSENTA a habilitação SE do ERP** (`deleted='S'` — a única escrita no ERP, `scripts/cutover-erp.ts`): no dev o ERP é o que
 emite a produção da Setes — **NUNCA `--cutover` sem `--dry-run` fora da virada decidida**; os testes ao vivo só ensaiam. A variável
 `FISCAL_LEGACY_INSTITUTIONS` foi APOSENTADA (definida = boot falha). Ataques ao vivo rodam em CÓPIA descartável

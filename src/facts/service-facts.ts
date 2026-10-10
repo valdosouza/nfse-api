@@ -250,6 +250,11 @@ export async function buildDpsBase(
   }
   const { identity, prest, simplesTotalTaxAliquot } = await buildEmitter(q, schemaName, institutionId)
   const totTrib = emitterDpsFacts(prest, simplesTotalTaxAliquot)
+  // D-F59 (= Q-F67 (a), Valdo 2026-10-10): a IM do PRESTADOR vai ao DPS só em HOMOLOGAÇÃO — o CNC de H a EXIGE (E0116,
+  // smoke de 2026-10-10) e o de PRODUÇÃO a RECUSA (E0120 — Q-N35). A IM é FATO do emitente (`tb_company.im`); quem decide se
+  // ela entra no DPS é o AMBIENTE da habilitação (dado do fisco, não preferência). A IM do TOMADOR não muda.
+  const { im: _prestIm, ...prestWithoutIm } = prest
+  const prestDps = environment === 'H' ? prest : prestWithoutIm
   const toma = await buildRecipient(q, header.entityId)
   const cLocPrestacao = await erp.cityIbge(q, b.cityId)
   if (!cLocPrestacao) {
@@ -275,7 +280,7 @@ export async function buildDpsBase(
   const zone = await erp.institutionZone(q, schemaName, institutionId)
   const input: Omit<DpsInput, 'serie' | 'nDps'> = {
     environment, dhEmi: nowIsoIn(zone), verAplic: VER_APLIC, dCompet: header.dtEmission,
-    tpEmit: '1', cLocEmi: identity.cMunEmi, prest, toma,
+    tpEmit: '1', cLocEmi: identity.cMunEmi, prest: prestDps, toma,
     serv: {
       locPrest: { cLocPrestacao },
       cServ: {

@@ -19,6 +19,7 @@ import {
   hasTransmissionEvent, findTransmissionEventByKind, touchQueriedAt, listRefreshCandidates,
   DEFAULT_CANCEL_DAYS, REFRESH_AUTHORIZED_MARGIN_DAYS,
 } from './repository'
+import { toTsString } from '../authority/dps-builder'
 
 /**
  * COMPOSIÇÃO DA NFS-e na nfse-api (F1 da extração fiscal — prompt_apis_fiscais_isoladas.md §12/§14).
@@ -168,9 +169,14 @@ export function buildSignedDps(base: DpsBase, serie: string | number, nDps: numb
 
 /** xMotivo 15–255: motivo curto ganha o complemento padrão; longo é cortado. */
 export function normalizeCancelMotive(reason: string): string {
-  let m = String(reason ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '').replace(/\s+/g, ' ').trim()
-  if (m.length < XMOTIVO_MIN) m = `${m}${m ? ' — ' : ''}Cancelamento solicitado pelo emissor`
-  return m.slice(0, XMOTIVO_MAX)
+  let m = toTsString(String(reason ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, ''))
+    // gate adversarial r8 (ADV-R8-07) + TSString do XSD (só U+0020–U+00FF): não-caractere, surrogate solto, invisível e TODO
+    // caractere acima de U+00FF saem (tipografia vira ASCII) ANTES do piso — o piso de 15 não pode ser cumprido por eles
+    .replace(/\s+/g, ' ').trim()
+  // complemento com hífen ASCII — o travessão (U+2014) estava FORA do TSString e o fisco recusava o evento (NFS-e 706, 2026-10-10)
+  if (m.length < XMOTIVO_MIN) m = `${m}${m ? ' - ' : ''}Cancelamento solicitado pelo emissor`
+  const cut = m.slice(0, XMOTIVO_MAX)
+  return /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut          // o corte em 255 nunca parte um par (emoji)
 }
 
 function buildSignedCancel(accessKey: string, reason: string, dhEvento: string, environment: AuthorityEnvironment, cnpjAutor: string, opened: OpenedIssuer): { xml: string; xMotivo: string } {

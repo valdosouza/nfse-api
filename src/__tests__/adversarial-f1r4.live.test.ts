@@ -421,7 +421,9 @@ d('GATE ADVERSARIAL — delta da Rodada 4 (D-F36…D-F40) — banco real (répli
     let ctxAdv: AppContext
     const qa = async (sql: string, params: any[] = []) => (await advPool.query(sql, params))[0] as any[]
     const advSums = () => checksumsOf(ADV_DB, FISCAL_TABLES.filter(t => t !== '_migrations'), qa)
-    const advEnv = () => ({ FISCAL_DB_NAME: ADV_DB, DB_USER: setesUser, DB_PASSWORD: setesPass })
+    // D-F53: re-sincronia na cópia com o usuário do SERVIÇO; o ENSAIO do ato com o DONO, explícito
+    const advEnv = () => ({ FISCAL_DB_NAME: ADV_DB, DB_USER: process.env.DB_USER ?? '', DB_PASSWORD: process.env.DB_PASSWORD ?? '' })
+    const ownerAdvEnv = () => ({ FISCAL_DB_NAME: ADV_DB, DB_USER: setesUser, DB_PASSWORD: setesPass })
     const COPY = ['tb_establishment_issuer', 'tb_establishment_certificate', 'tb_invoice_service_dps', 'tb_invoice_service_transmission', 'tb_invoice_service_transmission_event']
     const copyFrom = async (table: string, where = '1=1') => admin.query(`INSERT INTO \`${ADV_DB}\`.${table} SELECT * FROM fiscal_api.${table} WHERE ${where}`)
     const advIssuer = async (inst: number) => (await qa(`SELECT DATE_FORMAT(cutover_at, '%Y-%m-%d %H:%i:%s') AS c, deleted, environment, serie, dps_last_number AS n
@@ -430,13 +432,13 @@ d('GATE ADVERSARIAL — delta da Rodada 4 (D-F36…D-F40) — banco real (répli
     beforeAll(async () => {
       if (!ctx) return
       admin = createFiscalPool({ ...ctx.db, user: setesUser, password: setesPass })
-      await runMigrations({ ...ctx.db, user: setesUser, password: setesPass, database: ADV_DB }, MIGRATION_SETS)
+      await runMigrations({ ...ctx.db, database: ADV_DB }, MIGRATION_SETS)                          // D-F53: como o serviço
       for (const t of COPY) {
         const cols = async (db: string) => (await admin.query<any[]>(`SELECT column_name AS c FROM information_schema.columns WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position`, [db, t]))[0].map(r => r.c).join(',')
         expect(await cols(ADV_DB)).toBe(await cols('fiscal_api'))
         await copyFrom(t)
       }
-      advPool = createFiscalPool({ ...ctx.db, user: setesUser, password: setesPass, database: ADV_DB })
+      advPool = createFiscalPool({ ...ctx.db, database: ADV_DB })                                   // D-F53: ataque com o SERVIÇO
       ctxAdv = { ...ctx, pool: advPool, fiscalDb: ADV_DB, checkIdentity: false }
       appAdv = createApp(ctxAdv)
       expect((await advIssuer(INST))?.c).toBeNull()               // a cópia nasce RÉPLICA, como a origem
@@ -487,24 +489,30 @@ d('GATE ADVERSARIAL — delta da Rodada 4 (D-F36…D-F40) — banco real (répli
       expect([revived.deleted, revived.c, revived.environment, revived.serie]).toEqual(['N', born.c, 'P', '901'])
     })
 
-    it('D-F37: ADMIN de institution SEM o ramo contratado → 403 INTERFACE_NOT_ALLOWED em ações, leituras e passada; pendentes = lista vazia', async () => {
+    it('D-F37 + D-F46/D-F47: ADMIN de institution SEM o ramo contratado → 403 INTERFACE_NOT_ALLOWED em ações e leituras; a passada roda SÓ sobre as vivas dos ramos cortados (aqui nenhuma); pendentes = lista vazia', async () => {
       const a2 = bearer(tok({ institutionId: 2 }))
       const outs: [string, number, string][] = []
       for (const [m, p, body] of [
         ['post', `/v1/nfse/invoices/${X}/transmit`, undefined], ['post', `/v1/nfse/invoices/${X}/refresh`, undefined],
         ['post', `/v1/nfse/invoices/${X}/reconfirm`, undefined], ['post', `/v1/nfse/invoices/${X}/cancel`, { reason: 'licença adversarial r4' }],
-        ['post', '/v1/nfse/refresh', {}], ['get', `/v1/nfse/invoices/${X}`, undefined], ['get', `/v1/nfse/invoices/${X}/xml`, undefined],
+        ['get', `/v1/nfse/invoices/${X}`, undefined], ['get', `/v1/nfse/invoices/${X}/xml`, undefined],
         ['get', `/v1/nfse/invoices/${X}/danfse`, undefined],
       ] as const) {
         const r = await (request(appAdv) as any)[m](p).set(a2).send(body)
         outs.push([`${m} ${p}`, r.status, r.body.code])
       }
+      // D-F47 (= Q-F57 (b) da 3ª sessão de 2026-10-04): o admin com NADA contratado roda a passada só sobre as tentativas JÁ
+      // VIVAS dos ramos cortados — a institution 2 não tem nenhuma, então nada é consultado
+      const pass = await request(appAdv).post('/v1/nfse/refresh').set(a2).send({})
       const pend = await request(appAdv).get('/v1/nfse/invoices/pending?pageSize=5').set(a2)
       // eslint-disable-next-line no-console
-      console.log('[adv-r4] D-F37 admin sem ramo', JSON.stringify(outs), '| pendentes', pend.status, JSON.stringify(pend.body))
+      console.log('[adv-r4] D-F37 admin sem ramo', JSON.stringify(outs), '| passada', pass.status, JSON.stringify(pass.body?.data),
+        '| pendentes', pend.status, JSON.stringify(pend.body), '| fisco', JSON.stringify(fisco.calls))
       expect(outs.every(([, st, code]) => st === 403 && code === 'INTERFACE_NOT_ALLOWED')).toBe(true)
+      expect([pass.status, pass.body?.data?.checked, pass.body?.data?.changed]).toEqual([200, 0, 0])
       expect([pend.status, pend.body.total, pend.body.data]).toEqual([200, 0, []])
-      expect(fisco.calls).toEqual({ transmit: 0, query: 0, dps: 0, event: 0, terms: 0 })
+      // o prazo do município pode ser lido antes de saber se há viva (LOW aceito no gate r9 — §18.2); nada além disso
+      expect(fisco.calls).toMatchObject({ transmit: 0, query: 0, dps: 0, event: 0 })
     })
 
     it('réplica EXCLUÍDA: o PUT recusa (409 — a exclusão não apaga a réplica); a peça upsertIssuer direto TAMBÉM recusa (re-prova R4: a cerca está na peça) e nada vira', async () => {
@@ -538,11 +546,11 @@ d('GATE ADVERSARIAL — delta da Rodada 4 (D-F36…D-F40) — banco real (répli
 
     it('--cutover SEM a confirmação → falha alto, nada muda; com --dry-run → "virou" e desfez (nada muda)', async () => {
       const s0 = await advSums()
-      const noFlag = runScript('migrate:setes', ['--cutover', '1'], advEnv())
+      const noFlag = runScript('migrate:setes', ['--cutover', '1'], ownerAdvEnv())
       expect(noFlag.status).not.toBe(0)
       expect(noFlag.out).toMatch(/--confirmo-setes-api-parado/)
       expect(await advSums()).toEqual(s0)
-      const dry = runScript('migrate:setes', ['--cutover', '1', '--confirmo-setes-api-parado', '--dry-run'], advEnv())
+      const dry = runScript('migrate:setes', ['--cutover', '1', '--confirmo-setes-api-parado', '--dry-run'], ownerAdvEnv())
       // eslint-disable-next-line no-console
       console.log('[adv-r4] --cutover --dry-run', dry.status, dry.out.match(/"linhasViradas": \d+/)?.[0])
       expect(dry.status).toBe(0)
@@ -562,10 +570,10 @@ d('GATE ADVERSARIAL — delta da Rodada 4 (D-F36…D-F40) — banco real (répli
       turnedAt = (await advIssuer(INST)).c
       expect(turnedAt).not.toBeNull()
       await sleep(1100)
-      const again = runScript('migrate:setes', ['--cutover', '1', '--confirmo-setes-api-parado'], advEnv())
+      const again = runScript('migrate:setes', ['--cutover', '1', '--confirmo-setes-api-parado'], ownerAdvEnv())
       expect(again.status).not.toBe(0)
-      // D-F50: antes da F2a do setes-api o ato recusa já na conferência da migration (antes de qualquer transação) — as
-      // duas recusas acontecem ANTES de escrever, que é o que este teste prova
+      // sem `--vai` o ato é ENSAIO (M3) e a falta da F2a vira só bloqueio no relatório (D-F50) — a recusa aqui é o "já VIRADA";
+      // com `--vai` a conferência da F2a recusaria antes de qualquer transação. As duas acontecem ANTES de escrever
       expect(again.out).toMatch(/já VIRADA|F2a do setes-api não está aplicada/)
       expect((await advIssuer(INST)).c).toBe(turnedAt)
       const s0 = await advSums()

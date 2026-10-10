@@ -370,7 +370,7 @@ describe('D-F50 — a virada confere `_migrations.name = f2a_fiscal_passivo` no 
     ['tabela ausente só pelo code', () => Object.assign(new Error('x'), { code: 'ER_NO_SUCH_TABLE' })],
     ['migration não registrada', () => [[]]],
   ])('resistiu: %s → o ato REAL recusa antes de abrir a transação (nada escrito); o --dry-run reporta o bloqueio', async (_n, f2a) => {
-    const real = await runScript(CUT, cutoverDb(f2a))
+    const real = await runScript([...CUT, '--vai'], cutoverDb(f2a))
     expect(real.exitCode).toBe(1)
     expect(real.errors.join(' ')).toMatch(/F2a do setes-api não está aplicada/)
     expect(real.conn.beginTransaction).not.toHaveBeenCalled()
@@ -385,7 +385,7 @@ describe('D-F50 — a virada confere `_migrations.name = f2a_fiscal_passivo` no 
     ['permissão negada (1142)', denied, /SELECT command denied/],
     ['conexão perdida', lost, /Connection lost/],
   ])('resistiu: %s NÃO vira "sem F2a" nem "F2a presente" — sobe cru, real E dry-run, antes de qualquer transação (fail-closed)', async (_n, f2a, msg) => {
-    for (const argv of [CUT, [...CUT, '--dry-run']]) {
+    for (const argv of [[...CUT, '--vai'], [...CUT, '--dry-run']]) {
       const r = await runScript(argv, cutoverDb(f2a))
       expect(r.exitCode).toBe(1)
       expect(r.errors.join(' ')).toMatch(msg)
@@ -396,7 +396,7 @@ describe('D-F50 — a virada confere `_migrations.name = f2a_fiscal_passivo` no 
   })
 
   it('resistiu: schema hostil vindo do tb_institution → assertSchema recusa ANTES de montar o SQL do _migrations', async () => {
-    const r = await runScript(CUT, cutoverDb(() => [[{ x: 1 }]], 'setes_x`._migrations; --'))
+    const r = await runScript([...CUT, '--vai'], cutoverDb(() => [[{ x: 1 }]], 'setes_x`._migrations; --'))
     expect(r.exitCode).toBe(1)
     expect(r.sqls.some(s => /_migrations/.test(s.sql))).toBe(false)
     expect(r.conn.beginTransaction).not.toHaveBeenCalled()

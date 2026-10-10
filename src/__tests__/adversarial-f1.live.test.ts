@@ -323,6 +323,7 @@ d('GATE ADVERSARIAL F1 — banco real + fisco falso', () => {
       const user = bearer(tok({ role: 'user', userId: 266 }))
       const iface = (await q(`SELECT interface_key AS k FROM \`${SCHEMA}\`.vw_order_interface WHERE tb_institution_id = ? AND tb_order_id = ?`, [INST, A]))[0]?.k
       const expected = (await fiscal.erp.institutionHasInterface(ctx.pool, SCHEMA, INST, iface)) ? 'PRIVILEGE_REQUIRED' : 'INTERFACE_NOT_ALLOWED'
+      // D-F46 (b): ramo não contratado = bloqueio total, inclusive sobre o já emitido — a licença decide em TODAS as ações
       for (const [m, p, body] of [
         ['post', `/v1/nfse/invoices/${A}/transmit`, undefined],
         ['post', `/v1/nfse/invoices/${A}/cancel`, { reason: 'teste adversarial de privilégio' }],

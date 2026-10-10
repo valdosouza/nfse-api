@@ -38,8 +38,13 @@
 // ⚠️ Pré-condição: o caminho de emissão do setes-api PARADO (F2a). Credencial: a do DONO do ERP (o usuário `fiscal_api` só
 // lê o ERP — com ele o UPDATE do passo 6 é negado e o ato inteiro volta atrás). `--dry-run` executa o ato inteiro, inclusive
 // a escrita no ERP, e DESFAZ na mesma transação.
+// Gate do delta da Rodada 6 (M3): o ATO é irreversível no ERP que guarda a produção — é ENSAIO por padrão (executa a escrita
+// e DESFAZ); gravar exige `--vai` explícito; argumento desconhecido FALHA (um `--dry-run` digitado errado não pode virar o
+// ato). A re-sincronia (sem `--cutover`) só escreve no `fiscal_api` e continua gravando por padrão.
+// D-F50: o ato com `--vai` também exige a F2a do setes-api aplicada no schema (`f2a_fiscal_passivo` em `_migrations`).
 // Uso: npm run migrate:setes [-- --dry-run]
-//      npm run migrate:setes -- --cutover 1 --confirmo-setes-api-parado [--dry-run]
+//      npm run migrate:setes -- --cutover 1 --confirmo-setes-api-parado            (ENSAIO)
+//      npm run migrate:setes -- --cutover 1 --confirmo-setes-api-parado --vai      (o ATO)
 //   SETES_SECRETS_PATH (default ../setes-api/secrets) · FISCAL_MASTER_KEYS · DB_* da nfse-api · STORAGE_PATH
 import 'dotenv/config'
 import fs from 'fs'
@@ -50,11 +55,14 @@ import {
 } from 'fiscal-api'
 import { SERVICE_MODEL } from '../src/facts/service-facts'
 import { assertNoteSerieKept, retireErpServiceIssuer } from './cutover-erp'
+import { argumentErrors, npmSwallowedFlags } from './migrate-args'
 
-const DRY = process.argv.includes('--dry-run')
-const argAfter = (flag: string) => { const i = process.argv.indexOf(flag); return i >= 0 ? process.argv[i + 1] : undefined }
+const ARGS = process.argv.slice(2)
+const argAfter = (flag: string) => { const i = ARGS.indexOf(flag); return i >= 0 ? ARGS[i + 1] : undefined }
 const CUTOVER = argAfter('--cutover')
-const CONFIRMED = process.argv.includes('--confirmo-setes-api-parado')
+const CONFIRMED = ARGS.includes('--confirmo-setes-api-parado')
+// o ATO só grava com `--vai`; sem ele, ensaio (M3) — a re-sincronia segue o `--dry-run` de sempre
+const DRY = ARGS.includes('--dry-run') || (CUTOVER !== undefined && !ARGS.includes('--vai'))
 const SECRETS = path.resolve(process.env.SETES_SECRETS_PATH ?? path.join(__dirname, '..', '..', 'setes-api', 'secrets'))
 
 interface Report { schema: string; institutionId: number; issuers: number; certificate: string; dps: number; transmissions: number; events: number; xmlMissing: string[] }
@@ -232,10 +240,12 @@ async function checkXmlsUnsafe(q: { query: PoolConnection['query'] }, storage: F
  * congelada" e a virada leem o ATUAL, nunca o snapshot (gate socrático do delta de 2026-10-04: o COUNT não travante deixava
  * o ON DUPLICATE KEY UPDATE da re-sincronia reescrever uma linha virada em paralelo). D-F42: réplica de outro modelo = FALHA.
  */
-async function lockApiIssuers(c: PoolConnection, s: string, institutionId: number): Promise<{ rows: number; replicas: number }> {
+async function lockApiIssuers(c: PoolConnection, s: string, institutionId: number): Promise<{ rows: number; replicas: number; serviceRows: number; serviceReplicas: number }> {
   const list = await apiIssuerRows(c, institutionId, true)
   assertNoForeignReplica(list, s, institutionId)
-  return { rows: list.length, replicas: list.filter((r: any) => r.c == null).length }
+  const service = list.filter((r: any) => r.model === SERVICE_MODEL)
+  return { rows: list.length, replicas: list.filter((r: any) => r.c == null).length,
+    serviceRows: service.length, serviceReplicas: service.filter((r: any) => r.c == null).length }
 }
 
 async function apiIssuerRows(c: PoolConnection, institutionId: number, forUpdate: boolean): Promise<any[]> {
@@ -342,8 +352,9 @@ async function resyncInstitution(c: PoolConnection, keyring: MasterKeyRing, stor
     assertNoForeignReplica(await apiIssuerRows(c, id, false), s, id)
     return null
   }
-  const { rows, replicas } = await lockApiIssuers(c, s, id)            // decide pelo ATUAL (trava por linha), não pelo snapshot
-  if (rows > 0 && replicas === 0) return { schema: s, institutionId: id, state: await assertFrozen(c, s, id) }
+  // decide pelo ATUAL (trava por linha), não pelo snapshot; D-F57: CONGELADA = a LINHA SE virada (uma 55/65 virada não congela a SE)
+  const { serviceRows, serviceReplicas } = await lockApiIssuers(c, s, id)
+  if (serviceRows > 0 && serviceReplicas === 0) return { schema: s, institutionId: id, state: await assertFrozen(c, s, id) }
   return (await migrateInstitution(c, keyring, storage, id, s)) ?? null
 }
 
@@ -388,7 +399,8 @@ async function cutover(pool: ReturnType<typeof createFiscalPool>, keyring: Maste
     assertNoteSerieKept(s, { serie: erpRows[0].serie == null ? null : String(erpRows[0].serie), deleted: String(erpRows[0].deleted) })
     // 2. as linhas do fiscal_api, por linha; réplica de outro modelo = FALHA (D-F42)
     const api = await lockApiIssuers(c, s, institutionId)
-    if (api.rows > 0 && api.replicas === 0) throw new Error(`${s}: já VIRADA — a virada é write-once (D-F39)`)
+    // D-F57 + gate adversarial r8 (ADV-R8-08): "já VIRADA" pela LINHA SE (uma 55/65 que nasceu virada não é a virada da SE)
+    if (api.serviceRows > 0 && api.serviceReplicas === 0) throw new Error(`${s}: já VIRADA — a virada é write-once (D-F39)`)
     // 3. transmissão VIVA na origem
     const [live] = await c.query<any[]>(
       `SELECT t.tb_invoice_id AS inv, t.attempt FROM \`${s}\`.tb_invoice_service_transmission t
@@ -403,9 +415,11 @@ async function cutover(pool: ReturnType<typeof createFiscalPool>, keyring: Maste
     if (live.length) throw new Error(`${s}: transmissão VIVA na origem (${live.map((x: any) => `${x.inv}/${x.attempt}`).join(', ')}) — reconcilie no setes-api antes da virada`)
     // 4. a re-sincronia de sempre
     const rep = await migrateInstitution(c, keyring, storage, institutionId, s)
-    // 5. a VIRADA — todas as linhas da institution ainda réplica
+    // 5. a VIRADA — todas as linhas da institution ainda réplica, PELA PK (gate do delta da Rodada 6, L1: o UPDATE pela faixa
+    //    da institution pedia next-key na linha já travada por REGISTRO no passo 2 — a promoção de trava da regra 8 do PADROES §9)
     const [u] = await c.query<any>(
-      `UPDATE tb_establishment_issuer SET cutover_at = NOW(), updated_at = NOW() WHERE tb_institution_id = ? AND cutover_at IS NULL`, [institutionId])
+      `UPDATE tb_establishment_issuer SET cutover_at = NOW(), updated_at = NOW()
+        WHERE tb_institution_id = ? AND model IN (?) AND cutover_at IS NULL`, [institutionId, ISSUER_MODELS])
     // 6. D-F44: a habilitação SE do ERP é APOSENTADA na MESMA transação (a única escrita de uma API fiscal no ERP — D-F31);
     //    a reserva do setes-api que esperava a trava acorda e recebe 409 FISCAL_ISSUER_MISSING
     const retired = await retireErpServiceIssuer(c, s, institutionId, SERVICE_MODEL)
@@ -426,6 +440,10 @@ async function cutover(pool: ReturnType<typeof createFiscalPool>, keyring: Maste
 }
 
 async function main(): Promise<void> {
+  const bad = argumentErrors(ARGS)
+  if (bad.length) throw new Error(`${bad.join('; ')} — uso: [--dry-run] | --cutover <id> --confirmo-setes-api-parado [--vai]`)
+  const swallowed = npmSwallowedFlags(process.env)
+  if (swallowed.length) throw new Error(`o npm engoliu ${swallowed.join(', ')} (faltou o "--"): use \`npm run migrate:setes -- ${swallowed.join(' ')} …\` — nada foi feito`)
   const cfg = dbConfigFromEnv()
   const pool = createFiscalPool(cfg)
   const keyring = MasterKeyRing.fromEnv()
@@ -444,5 +462,7 @@ async function main(): Promise<void> {
   }
 }
 
-// virada: uma transação só (nada gravado na falha); re-sincronia: o texto do erro diz o que voltou (D-F48)
+// virada: uma transação só (nada gravado na falha); re-sincronia: o texto do erro diz o que voltou (D-F48).
+// Roda ao ser carregado (os testes de script o carregam com process.argv trocado); as funções puras de argumento vivem em
+// `migrate-args.ts` para os testes as importarem sem disparar o main.
 main().catch(err => { console.error('[migrate:setes] FALHA:', err?.message ?? err); process.exit(1) })
