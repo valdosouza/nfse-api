@@ -57,9 +57,10 @@ export interface Actor {
 
 /** Consulta ativa: não reconsulta transmissão viva vista há menos de N minutos. */
 export const REFRESH_MIN_MINUTES = 5
-/** Aluguel da passada do rodízio (segundos): cobre UMA candidata (≤ 2 × 30 s) com folga e é RENOVADO antes de cada uma
- *  (gates R4); queda do processo = vence sozinho. */
-export const REFRESH_LEASE_SECONDS = 90
+/** Aluguel da passada do rodízio (segundos): cobre UMA candidata no PIOR caso e é RENOVADO antes de cada uma (gates R4);
+ *  queda do processo = vence sozinho. D-F62 (= Q-F69 (a), Valdo 2026-10-10): com a leitura tipada dos eventos (D-F61) uma
+ *  candidata faz até 6 idas ao fisco (GET /dps + GET /nfse + 4 eventos) × 30 s de timeout = 180 s, + 30 s de folga. */
+export const REFRESH_LEASE_SECONDS = 210
 export const REFRESH_MAX_PER_RUN = 8
 /** Orçamento TOTAL de uma passada — é a requisição de quem abriu a tela. */
 export const REFRESH_BUDGET_MS = 20_000
@@ -440,12 +441,14 @@ export interface RefreshResult {
 /** Voz C desta tentativa — idempotente por KIND (HIGH-3a: um C por tentativa, qualquer dh). Sem efeito. */
 async function recordCancelVoice(
   conn: PoolConnection, institutionId: number, userId: number | null, invoiceId: number, attempt: number,
-  source: TransmissionSource, dh: string | null, motive: string | null,
+  source: TransmissionSource, dh: string | null, motive: string | null, eventCode: string | null = null,
 ): Promise<{ event: number; inserted: boolean }> {
   const existing = await findTransmissionEventByKind(conn, institutionId, invoiceId, attempt, 'C')   // sob a trava da nota
   if (existing) return { event: existing.event, inserted: false }
+  // D-F64: a SUBSTITUIÇÃO (e105102) fica escrita na voz — o efeito local (do setes-api, D-F28) NÃO é automático para ela
+  const voiceText = `Cancelada no fisco${eventCode === '105102' ? ' por SUBSTITUIÇÃO (e105102)' : ''}${motive ? ': ' + motive : ''}`
   const event = await insertTransmissionEvent(conn, institutionId, invoiceId, attempt, userId, {
-    kind: 'C', source, dh, message: (motive ? `Cancelada no fisco: ${motive}` : 'Cancelada no fisco').slice(0, 255),
+    kind: 'C', source, dh, message: voiceText.slice(0, 255),
   })
   return { event, inserted: true }
 }
@@ -552,7 +555,7 @@ export async function refreshServiceTransmission(
     }
     // C do fisco: só a VOZ (por KIND). O C local é do setes-api (D-F28).
     const v = await recordCancelVoice(conn, institutionId, userId, invoiceId, tx.attempt, source,
-      toDbDateTime(nfse.cancelled?.dhEvento), nfse.cancelled?.motive ?? null)
+      toDbDateTime(nfse.cancelled?.dhEvento), nfse.cancelled?.motive ?? null, nfse.cancelled?.eventCode ?? null)
     return { invoiceId, attempt: tx.attempt, changed: changed || v.inserted, kind: 'C', accessKey: nfse.accessKey, localCancelPending: pendingNow('C') }
   })
 

@@ -3,7 +3,7 @@
 ## ⚠️ Base de conhecimento central: D:\Gestao2027\Infra-IA
 
 Antes de qualquer tarefa neste projeto, consulte `D:\Gestao2027\Infra-IA\INDICE_CENTRAL.md` e
-**`Infra-IA/nfse-api/INDEX.md`** (START HERE). Decisões vigentes: D-F1…D-F59 em
+**`Infra-IA/nfse-api/INDEX.md`** (START HERE). Decisões vigentes: D-F1…D-F66 em
 `Infra-IA/prompts/prompt_apis_fiscais_isoladas.md` §7; plano no §12, modelo no §14, execução da F1 no **§15**. O núcleo comum vive
 em `D:\Gestao2027\fiscal-api` (biblioteca — `Infra-IA/fiscal-api/INDEX.md`).
 Ao concluir tarefa que gere conhecimento novo, siga `Infra-IA/skills-genericas/atualizar-infra-ia.md`.
@@ -44,11 +44,13 @@ cancelamento no fisco (D-F10).
 ## Estado (2026-10-10 — reconciliação da sessão 2026-10-10 com a 3ª sessão de 2026-10-04, §20 do prompt)
 
 **F1 + Rodadas 4–9 executadas (D-F46…D-F59 — §17–§20 do prompt; ramo fora do contrato = BLOQUEIO TOTAL, D-F46 (b) — a D-F55 desta
-máquina foi REVOGADA na reconciliação)** — `npm test` (240 unit; ao vivo: 8 suítes `*.live.test.ts`, 150 testes
+máquina foi REVOGADA na reconciliação; D-F61…D-F66 = leitura de eventos pelo contrato REAL da Sefin — `GET /nfse/{chave}/eventos/{tipo}/1`,
+o `GET /eventos` dá 405 — + Rodada 11, §21)** — `npm test` (273 unit; ao vivo: 8 suítes `*.live.test.ts`, 150 testes
 com `NFSE_ADV_LIVE=1 npx jest live --runInBand` — usa o banco do dev com fisco FALSO, em cópias `fiscal_api_adv_*`; o ATAQUE roda com
 o DB_USER do .env, que TEM de ser o `fiscal_api` — D-F53, `ops/grants.sql` 1b) · `npm run dev` (porta 3002;
 `.env` a partir do `.env.example`) ·
-`npm run db:migrate` · `npm run migrate:setes [-- --dry-run]` (re-sincronia até a virada) · `npm run token:dev` (só dev).
+`npm run db:migrate` · `npm run migrate:setes [-- --dry-run]` (re-sincronia até a virada) · `npm run token:dev` (só dev) · `npx tsx --require tsconfig-paths/register scripts/probe-query.ts <chave> [H|P]` (sonda SÓ DE LEITURA
+do adaptador contra o fisco — só NFS-e do próprio emitente).
 ⚠️ **A habilitação migrada está em PRODUÇÃO** (cópia do setes-api): nada de transmitir/consultar/cancelar no dev sem
 decisão — o setes-api segue sendo o caminho de produção até a virada (F2a). **CERCA DA VIRADA = FATO no banco** (D-F39,
 migration 003 do núcleo): `tb_establishment_issuer.cutover_at` NULL = RÉPLICA do ERP → ações e escritas do emitente dão 409

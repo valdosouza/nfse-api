@@ -530,7 +530,7 @@ describe('consulta ativa — ALUGUEL na linha do emissor, candidatas filtradas n
     const r = await refreshOpenServiceTransmissions(deps, A, { minMinutes: 7, limit: 3 })
     expect(r).toMatchObject({ checked: 2, skipped: false })
     expect(repo.listRefreshCandidates).toHaveBeenCalledWith(pool, 'setes_setes', 1, 7, 10, 3, { authorizedMaxDays: 90 })   // D-F38: sem PAM = 60 + 30
-    expect(fiscal.acquireRefreshLease).toHaveBeenCalledWith(conn, 1, 'SE', 90)        // pela conexão curta (D-F41)
+    expect(fiscal.acquireRefreshLease).toHaveBeenCalledWith(conn, 1, 'SE', 210)        // pela conexão curta (D-F41)
     expect(fiscal.renewRefreshLease).toHaveBeenCalledTimes(2)                // renovado antes de CADA candidata (gates R4)
     expect(fiscal.releaseRefreshLease).toHaveBeenCalledWith(conn, 1, 'SE', '2026-10-04 12:01:00')   // devolve SÓ o próprio
   })

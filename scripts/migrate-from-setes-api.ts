@@ -432,7 +432,8 @@ async function cutover(pool: ReturnType<typeof createFiscalPool>, keyring: Maste
       ...(f2aMissing ? { bloqueios: [`D-F50: a virada REAL seria recusada — migration "${F2A_MIGRATION_NAME}" (F2a do setes-api) ausente em ${s}._migrations`] } : {}),
       nota: 'D-F44: a habilitação SE do ERP foi aposentada no ato (deleted=S) — o setes-api não emite mais por ela; a série da nota segue \'1\'.' }, null, 2))
   } catch (err) {
-    await c.rollback()
+    // gate do delta (L6): rollback que falha (conexão morta) não pode esconder a CAUSA RAIZ do ato — molde do r9 da re-sincronia
+    try { await c.rollback() } catch (rbErr) { console.error('[migrate:setes] rollback do ato falhou (a conexão morta desfaz sozinha):', (rbErr as Error)?.message ?? rbErr) }
     throw err
   } finally {
     c.release()

@@ -35,7 +35,7 @@
 //    reexecuções, 409 RESOURCE_BUSY sem linha gravada (provado: 3/6 na 1ª execução, 14/24 na 2ª). A promessa do comentário
 //    ("a faixa ainda segurava o INSERT da institution VIZINHA" — a linha não) só vale para vizinha ACIMA de quem tem linha;
 //  - [LOW] F6 renovar sob contenção para a passada (ok), mas a devolução do `finally` esbarra na MESMA trava: o aluguel fica
-//    até vencer (≤ 90 s — nunca além do prazo) e a passada seguinte responde `skipped` ("outra passada em curso") sem passada
+//    até vencer (≤ REFRESH_LEASE_SECONDS — 210 s desde a D-F62; nunca além do prazo) e a passada seguinte responde `skipped` ("outra passada em curso") sem passada
 //    nenhuma rodando; e os comandos do aluguel não respeitam o orçamento da passada (lock wait do servidor: 50 s no tomar).
 //  Sem achado (provados): criação concorrente na MESMA institution (2 e 8 PUT → 1 linha virada, nunca 500/1213); a lacuna
 //  (b) fica FECHADA sob corrida (11 operações simultâneas, nenhuma linha/DPS/envio); institution populada não segura a
@@ -61,6 +61,7 @@ import type { TaxAuthorityAdapter, AuthorityContext } from '../authority/types'
 import {
   transmitServiceInvoice, refreshServiceTransmission, cancelServiceInvoiceAtAuthority, refreshOpenServiceTransmissions,
   resetMunicipalTermsCache,
+  REFRESH_LEASE_SECONDS,
 } from '../nfse/transmission'
 import { countLiveTransmissions } from '../nfse/repository'
 
@@ -638,10 +639,10 @@ d('GATE ADVERSARIAL r7 — delta da sessão 2026-10-04 (cópia descartável fisc
       expect(ren.pass).toEqual({ checked: 1, stoppedEarly: true, skipped: false, errors: [] })
       expect(ren.queries).toBe(1)
     })
-    it('sem achado: …e o aluguel NUNCA fica além do prazo — o que sobrou (devolução esbarrou) vence em ≤ 90 s, e só ele segura a próxima passada', () => {
+    it('sem achado: …e o aluguel NUNCA fica além do prazo — o que sobrou (devolução esbarrou) vence em ≤ REFRESH_LEASE_SECONDS (210 s desde a D-F62), e só ele segura a próxima passada', () => {
       if (ren.leaseAfter === null) { expect(ren.second).toMatchObject({ skipped: false }); return }   // a devolução conseguiu
       expect(ren.leaseAfter).toBe(ren.leaseWhileHeld)                                                 // não foi renovado depois de parar
-      expect(ren.leftS).toBeLessThanOrEqual(90)
+      expect(ren.leftS).toBeLessThanOrEqual(REFRESH_LEASE_SECONDS)                                  // D-F62: 210 s (era 90)
       expect(ren.second).toMatchObject({ skipped: true })
     })
     // LIMITAÇÃO ACEITA (§17 do prompt): parada por contenção na linha do emissor = a devolução esbarra na MESMA trava (agora
