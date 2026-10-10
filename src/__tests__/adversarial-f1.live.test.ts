@@ -22,6 +22,7 @@ import { disposableFiscalDb, DisposableFiscalDb } from './live-harness'
 import { createApp } from '../app'
 import type { TaxAuthorityAdapter, AuthorityContext } from '../authority/types'
 import { refreshOpenServiceTransmissions, resetMunicipalTermsCache, listPending } from '../nfse/transmission'
+import { hasFiscalObligation } from '../nfse/repository'
 
 // O ramo congelado das notas E do dev tem cTribMun "0102" (anterior à D-N26b) → 422 antes de reservar em
 // TODAS as notas. Para atacar a máquina da voz, o ramo é normalizado EM MEMÓRIA (cTribMun inválido →
@@ -322,13 +323,16 @@ d('GATE ADVERSARIAL F1 — banco real + fisco falso', () => {
     it('usuário comum sem TRANSMITIR/CANCELAR no ramo (ou ramo não contratado) → 403 sem tocar o fisco; emitente → 403 ADMIN_REQUIRED', async () => {
       const user = bearer(tok({ role: 'user', userId: 266 }))
       const iface = (await q(`SELECT interface_key AS k FROM \`${SCHEMA}\`.vw_order_interface WHERE tb_institution_id = ? AND tb_order_id = ?`, [INST, A]))[0]?.k
-      const expected = (await fiscal.erp.institutionHasInterface(ctx.pool, SCHEMA, INST, iface)) ? 'PRIVILEGE_REQUIRED' : 'INTERFACE_NOT_ALLOWED'
-      for (const [m, p, body] of [
-        ['post', `/v1/nfse/invoices/${A}/transmit`, undefined],
-        ['post', `/v1/nfse/invoices/${A}/cancel`, { reason: 'teste adversarial de privilégio' }],
-        ['post', `/v1/nfse/invoices/${A}/reconfirm`, undefined],
-        ['post', `/v1/nfse/invoices/${A}/refresh`, undefined],
+      const contracted = await fiscal.erp.institutionHasInterface(ctx.pool, SCHEMA, INST, iface)
+      // D-F47: a licença barra só a transmissão NOVA — sobre obrigação já assumida o que decide é o PRIVILÉGIO
+      const committed = contracted || await hasFiscalObligation(ctx.pool, INST, A)
+      for (const [m, p, body, isNew] of [
+        ['post', `/v1/nfse/invoices/${A}/transmit`, undefined, true],
+        ['post', `/v1/nfse/invoices/${A}/cancel`, { reason: 'teste adversarial de privilégio' }, false],
+        ['post', `/v1/nfse/invoices/${A}/reconfirm`, undefined, false],
+        ['post', `/v1/nfse/invoices/${A}/refresh`, undefined, false],
       ] as const) {
+        const expected = (isNew ? contracted : committed) ? 'PRIVILEGE_REQUIRED' : 'INTERFACE_NOT_ALLOWED'
         const r = track(`authz ${p}`, await (request(app) as any)[m](p).set(user).send(body))
         expect([p, r.status, r.body.code]).toEqual([p, 403, expected])
       }

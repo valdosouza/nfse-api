@@ -51,7 +51,8 @@ src/__tests__/adversarial-f1.live.test.ts --runInBand` usa o banco do dev com fi
 decisão — o setes-api segue sendo o caminho de produção até a virada (F2a). **CERCA DA VIRADA = FATO no banco** (D-F39,
 migration 003 do núcleo): `tb_establishment_issuer.cutover_at` NULL = RÉPLICA do ERP → ações e escritas do emitente dão 409
 `FISCAL_CUTOVER_PENDING`, e o NÚCLEO recusa abrir o emissor, cunhar nDPS, tomar o aluguel e escrever o A1 da réplica. A
-virada é o ato `npm run migrate:setes -- --cutover <id> --confirmo-setes-api-parado` (write-once). ⚠️ **D-F44: o ato
+virada é o ato `npm run migrate:setes -- --cutover <id> --confirmo-setes-api-parado --vai` (write-once) — **sem `--vai` é
+ENSAIO** (executa e desfaz) e argumento desconhecido FALHA (gate do delta da Rodada 6, M3 — 2026-10-10). ⚠️ **D-F44: o ato
 APOSENTA a habilitação SE do ERP** (`deleted='S'` — a única escrita no ERP, `scripts/cutover-erp.ts`): no dev o ERP é o que
 emite a produção da Setes — **NUNCA `--cutover` sem `--dry-run` fora da virada decidida**; os testes ao vivo só ensaiam. A variável
 `FISCAL_LEGACY_INSTITUTIONS` foi APOSENTADA (definida = boot falha). Ataques ao vivo rodam em CÓPIA descartável

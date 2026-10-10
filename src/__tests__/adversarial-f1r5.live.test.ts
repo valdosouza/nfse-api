@@ -249,7 +249,9 @@ const runScript = (script: string, args: string[], env: Record<string, string>) 
   const r = spawnSync('npm', ['run', script, '--', ...args], { cwd: ROOT, shell: true, encoding: 'utf8', timeout: 240_000, env: { ...process.env, ...env } })
   return { status: r.status, out: `${r.stdout ?? ''}\n${r.stderr ?? ''}` }
 }
-const copyEnv = () => ({ FISCAL_DB_NAME: COPY, DB_USER: setesUser, DB_PASSWORD: setesPass })
+// D-F48: a re-sincronia na CÓPIA roda com o usuário do SERVIÇO; só o ENSAIO do ato (escreve no ERP e desfaz) leva o DONO
+const copyEnv = () => ({ FISCAL_DB_NAME: COPY, DB_USER: process.env.DB_USER ?? '', DB_PASSWORD: process.env.DB_PASSWORD ?? '' })
+const ownerEnv = () => ({ FISCAL_DB_NAME: COPY, DB_USER: setesUser, DB_PASSWORD: setesPass })
 
 let realBefore: { sums: Record<string, string>; objects: string } = { sums: {}, objects: '' }
 let erpBefore: Record<string, string> = {}
@@ -679,7 +681,7 @@ d('GATE ADVERSARIAL r5 — re-prova do delta da Rodada 4 (cópia descartável fi
       it('sem achado: `--cutover` numa cópia JÁ virada falha alto ("já VIRADA") e o instante não muda', async () => {
         await restoreIssuerFromReal(); await turnCopy()
         const before = (await issuerOfCopy())?.c
-        const r = runScript('migrate:setes', ['--cutover', '1', '--confirmo-setes-api-parado', '--dry-run'], copyEnv())
+        const r = runScript('migrate:setes', ['--cutover', '1', '--confirmo-setes-api-parado', '--dry-run'], ownerEnv())
         expect(r.status).not.toBe(0)
         expect(r.out).toMatch(/já VIRADA/)
         expect((await issuerOfCopy())?.c).toBe(before)
@@ -703,7 +705,7 @@ d('GATE ADVERSARIAL r5 — re-prova do delta da Rodada 4 (cópia descartável fi
       it('sem achado: `--cutover` numa RÉPLICA cuja cópia tem tentativa EM VOO que a origem não tem → falha alto e NADA vira', async () => {
         await restoreIssuerFromReal()
         await seedInFlight(W)
-        const r = runScript('migrate:setes', ['--cutover', '1', '--confirmo-setes-api-parado', '--dry-run'], copyEnv())
+        const r = runScript('migrate:setes', ['--cutover', '1', '--confirmo-setes-api-parado', '--dry-run'], ownerEnv())
         await purge([W])
         // eslint-disable-next-line no-console
         console.log('[adv-r5] --cutover com tentativa só no fiscal_api', r.status, r.out.match(/FALHA[^\n]*/)?.[0])
@@ -742,19 +744,25 @@ d('GATE ADVERSARIAL r5 — re-prova do delta da Rodada 4 (cópia descartável fi
     // -----------------------------------------------------------------------
     describe('G. harness — detecta, não impede', () => {
       const h: any = {}
-      it('cenário: o pool do ataque usa o usuário do setes-api; a verificação do drop() cobre só as 5 tabelas copiadas', async () => {
+      it('[D-F48] o pool do ataque usa o usuário do SERVIÇO; a verificação do drop() cobre as tabelas copiadas', async () => {
         h.user = (await q('SELECT CURRENT_USER() AS u'))[0].u
         h.grants = (await q('SHOW GRANTS FOR CURRENT_USER()')).map((r: any) => String(Object.values(r)[0]).replace(/PASSWORD '[^']*'/, "PASSWORD '***'"))
         h.realBaseTables = (await rq(`SELECT table_name AS t FROM information_schema.tables WHERE table_schema = ? AND table_type = 'BASE TABLE' ORDER BY table_name`, [REAL])).map((r: any) => String(r.t))
         h.checked = [...FISCAL_COPY_TABLES, '_migrations']                         // o drop() confere também a _migrations (re-prova R4)
         // eslint-disable-next-line no-console
         console.log('[adv-r5] harness', JSON.stringify(h))
-        expect(h.user).toMatch(new RegExp(`^${setesUser}@`))
+        expect(h.user).toMatch(new RegExp(`^${process.env.DB_USER}@`))
+        expect(h.user).not.toMatch(new RegExp(`^${setesUser}@`))
         expect(h.realBaseTables).toEqual(expect.arrayContaining(h.checked))
       })
-      // Q-F53 (decisão do Valdo — GRANT no servidor que guarda a produção da Setes): até lá a defesa é DETECÇÃO (CHECKSUM do real e do ERP)
-      it.failing('[Q-F53] …e o pool do ataque NÃO tem privilégio de escrita no fiscal_api REAL (prevenção por privilégio; hoje ALL PRIVILEGES ON *.*)', () => {
-        expect(h.grants.some((g: string) => /ALL PRIVILEGES ON \*\.\*|\b(INSERT|UPDATE|DELETE|DROP)\b[^`]*ON \*\.\*|ON `?fiscal_api`?\.\*/.test(g))).toBe(false)
+      // D-F48 (= Q-F53 (a), "vai" do Valdo 2026-10-10): o ERP é protegido por PRIVILÉGIO (o usuário do serviço só lê o ERP)
+      it('[D-F48] …e o pool do ataque NÃO tem privilégio de escrita no ERP nem global (prevenção por privilégio)', () => {
+        expect(h.grants.some((g: string) => /ON \*\.\*/.test(g) && !/^GRANT USAGE ON/.test(g))).toBe(false)
+        expect(h.grants.some((g: string) => /\b(ALL PRIVILEGES|INSERT|UPDATE|DELETE|DROP|ALTER|CREATE)\b[^`]*ON `setes/.test(g))).toBe(false)
+      })
+      // LIMITE conhecido da D-F48: o `fiscal_api` REAL é o banco do próprio serviço — ali a defesa segue sendo DETECÇÃO (CHECKSUM)
+      it.failing('[D-F48 — limite] …o pool do ataque NÃO tem escrita no fiscal_api REAL (exigiria um usuário de teste próprio)', () => {
+        expect(h.grants.some((g: string) => /ON `?fiscal_api`?\.\*/.test(g))).toBe(false)
       })
       it('[corrigido] …e a verificação do drop() cobre TODAS as tabelas-base do fiscal_api real (inclusive `_migrations`)', () => {
         expect(h.checked).toEqual(expect.arrayContaining(h.realBaseTables))

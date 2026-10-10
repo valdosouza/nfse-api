@@ -11,6 +11,7 @@ import request from 'supertest'
 import * as fiscal from 'fiscal-api'
 import { MasterKeyRing, ProductTokenVerifier, FsFiscalStorage } from 'fiscal-api'
 import * as tx from '../nfse/transmission'
+import * as repo from '../nfse/repository'
 import { createApp, loadOpenApi } from '../app'
 import type { AppContext } from '../context'
 import { emitterRoutes } from '../modules/emitter/emitter.routes'
@@ -34,6 +35,10 @@ jest.mock('../nfse/transmission', () => {
     refreshOpenServiceTransmissions: jest.fn(),
   }
 })
+jest.mock('../nfse/repository', () => {
+  const actual = jest.requireActual('../nfse/repository')
+  return { __esModule: true, ...actual, hasFiscalObligation: jest.fn(), institutionHasFiscalObligation: jest.fn() }
+})
 
 const erpM = fiscal.erp as unknown as Record<string, jest.Mock>
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
@@ -56,6 +61,8 @@ beforeEach(() => {
   erpM.orderInterface.mockResolvedValue('service-orders')
   erpM.userHasPrivilege.mockResolvedValue(false)
   erpM.institutionHasInterface.mockResolvedValue(true)        // ramo contratado por padrão; a negação é explícita onde se testa
+  ;(repo.hasFiscalObligation as jest.Mock).mockResolvedValue(false)              // D-F47: sem obrigação assumida por padrão
+  ;(repo.institutionHasFiscalObligation as jest.Mock).mockResolvedValue(false)
   ;(fiscal.emissionStillInErp as unknown as jest.Mock).mockResolvedValue(false)   // D-F39: virada (o padrão dos testes)
   ;(tx.transmitServiceInvoice as jest.Mock).mockResolvedValue({ invoiceId: 10, attempt: 1, dpsId: 'D', accessKey: 'K', nfseNumber: '1', kind: 'A' })
   ;(tx.cancelServiceInvoiceAtAuthority as jest.Mock).mockResolvedValue({ invoiceId: 10, attempt: 1, atAuthority: true, transmissionEvent: 2, warnings: [], nextStep: 'apply-local-cancel' })
@@ -115,7 +122,7 @@ describe('autorização de AÇÃO e licença (D-F13/D-F14)', () => {
     expect(erpM.userHasPrivilege).toHaveBeenLastCalledWith(pool, 'setes_setes', 7, 'service-orders', fiscal.erp.PRIVILEGE_CANCELAR)
   })
 
-  it('licença também nas AÇÕES (gates da F1): privilégio antigo em ramo NÃO contratado → 403 INTERFACE_NOT_ALLOWED, nada executado', async () => {
+  it('licença também nas AÇÕES (gates da F1): privilégio antigo em ramo NÃO contratado e SEM obrigação assumida (D-F47) → 403 INTERFACE_NOT_ALLOWED, nada executado', async () => {
     erpM.userHasPrivilege.mockResolvedValue(true)
     erpM.institutionHasInterface.mockResolvedValue(false)
     const app = createApp(ctx())
@@ -127,6 +134,47 @@ describe('autorização de AÇÃO e licença (D-F13/D-F14)', () => {
     expect(tx.transmitServiceInvoice).not.toHaveBeenCalled()
     expect(tx.cancelServiceInvoiceAtAuthority).not.toHaveBeenCalled()
     expect(tx.refreshOpenServiceTransmissions).not.toHaveBeenCalled()
+  })
+
+  it('D-F47 (= Q-F52 (a)): ramo NÃO contratado com obrigação fiscal JÁ ASSUMIDA — transmissão NOVA continua 403; consulta, reconferência, cancelamento no fisco, leitura e passada seguem (com o PRIVILÉGIO)', async () => {
+    erpM.institutionHasInterface.mockResolvedValue(false)
+    erpM.userHasPrivilege.mockResolvedValue(true)
+    ;(repo.hasFiscalObligation as jest.Mock).mockResolvedValue(true)
+    ;(repo.institutionHasFiscalObligation as jest.Mock).mockResolvedValue(true)
+    ;(tx.refreshOpenServiceTransmissions as jest.Mock).mockResolvedValue({ checked: 0, changed: 0, errors: [], stoppedEarly: false, skipped: false })
+    const app = createApp(ctx())
+    const tr = await request(app).post('/v1/nfse/invoices/10/transmit').set('Authorization', `Bearer ${token()}`)
+    expect([tr.status, tr.body.code]).toEqual([403, 'INTERFACE_NOT_ALLOWED'])
+    expect(tx.transmitServiceInvoice).not.toHaveBeenCalled()
+    for (const [m, p, body] of [['post', '/v1/nfse/invoices/10/refresh', undefined], ['post', '/v1/nfse/invoices/10/reconfirm', undefined],
+      ['post', '/v1/nfse/invoices/10/cancel', { reason: 'erro na emissão' }], ['get', '/v1/nfse/invoices/10', undefined], ['post', '/v1/nfse/refresh', {}]] as const) {
+      const r = await (request(app) as any)[m](p).set('Authorization', `Bearer ${token()}`).send(body)
+      expect([p, r.status]).toEqual([p, 200])
+    }
+    expect(repo.hasFiscalObligation).toHaveBeenCalledWith(pool, 1, 10)
+    expect(tx.cancelServiceInvoiceAtAuthority).toHaveBeenCalled()
+    expect(tx.refreshOpenServiceTransmissions).toHaveBeenCalled()
+    // o PRIVILÉGIO continua valendo em tudo: sem ele, o mesmo pedido é 403 PRIVILEGE_REQUIRED (não INTERFACE_NOT_ALLOWED)
+    erpM.userHasPrivilege.mockResolvedValue(false)
+    for (const p of ['/v1/nfse/invoices/10/cancel', '/v1/nfse/refresh']) {
+      const r = await request(app).post(p).set('Authorization', `Bearer ${token()}`).send({ reason: 'erro na emissão' })
+      expect([p, r.status, r.body.code]).toEqual([p, 403, 'PRIVILEGE_REQUIRED'])
+    }
+    // admin: passa o privilégio, nunca a licença da transmissão nova (D-F37 intacta)
+    const adm = await request(app).post('/v1/nfse/invoices/10/transmit').set('Authorization', `Bearer ${token({ role: 'admin' })}`)
+    expect([adm.status, adm.body.code]).toEqual([403, 'INTERFACE_NOT_ALLOWED'])
+    expect((await request(app).post('/v1/nfse/invoices/10/reconfirm').set('Authorization', `Bearer ${token({ role: 'admin' })}`)).status).toBe(200)
+  })
+
+  it('D-F47: passada com UM ramo contratado e obrigação na institution — o privilégio do ramo NÃO contratado também conta; sem obrigação, só o contratado', async () => {
+    erpM.institutionHasInterface.mockImplementation(async (_p: any, _s: string, _i: number, key: string) => key === 'orders')
+    erpM.userHasPrivilege.mockImplementation(async (_p: any, _s: string, _u: number, key: string) => key === 'service-orders')
+    ;(tx.refreshOpenServiceTransmissions as jest.Mock).mockResolvedValue({ checked: 0, changed: 0, errors: [], stoppedEarly: false, skipped: false })
+    const app = createApp(ctx())
+    const no = await request(app).post('/v1/nfse/refresh').set('Authorization', `Bearer ${token()}`).send({})
+    expect([no.status, no.body.code]).toEqual([403, 'PRIVILEGE_REQUIRED'])
+    ;(repo.institutionHasFiscalObligation as jest.Mock).mockResolvedValue(true)
+    expect((await request(app).post('/v1/nfse/refresh').set('Authorization', `Bearer ${token()}`).send({})).status).toBe(200)
   })
 
   it('emitente é ato do ADMIN → usuário comum 403 ADMIN_REQUIRED', async () => {

@@ -4,11 +4,14 @@
 // cenário R2-2 que a D-F39 fechou). Agora cada suíte trabalha numa CÓPIA DESCARTÁVEL (`fiscal_api_adv_*`): migrations do
 // núcleo + família, as tabelas copiadas linha a linha, a virada aplicada SÓ na cópia; o ERP continua só LIDO (a nota é
 // travada por instantes, como em toda transmissão). No fim a cópia é apagada e o CHECKSUM do `fiscal_api` REAL tem de
-// ser o mesmo do início — senão a suíte falha. O usuário é o de ../setes-api/.env (o do serviço não cria banco — D-F31):
-// ele ESCREVE no ERP, então a garantia da D-F31 por GRANT não vale durante o ataque — por isso o `drop()` confere também o
-// CHECKSUM do ERP (tabelas que a nfse-api lê/trava) e a `_migrations` do real (re-prova R4; voltar ao usuário de SELECT
-// mínimo nas cópias depende de GRANT no servidor — Q-F53). Cópias `fiscal_api_adv_*` que SOBRARAM de uma execução morta
-// (jest matado no meio) são apagadas na criação da próxima — rode as suítes ao vivo com --runInBand.
+// ser o mesmo do início — senão a suíte falha. D-F48 (= Q-F53 (a), "vai" do Valdo 2026-10-10): o ATAQUE roda com o usuário
+// do SERVIÇO (`fiscal_api`, do .env da nfse-api — só SELECT no ERP; ALL nas cópias `fiscal_api_adv*` por GRANT do dev,
+// `ops/grants.sql` item 5): a defesa do ERP volta a ser por CONSTRUÇÃO. O DONO (usuário do ../setes-api/.env) só cria,
+// copia e apaga a cópia e vigia os CHECKSUMs; o ENSAIO do ato (`--cutover` sem `--vai`, que escreve no ERP e desfaz) é o
+// único que recebe a credencial do dono — e só por `ownerEnv`, EXPLÍCITO. LIMITE: o `fiscal_api` REAL é do próprio usuário
+// do serviço (é o banco dele) — ali a defesa segue sendo DETECÇÃO (CHECKSUM do real e da `_migrations` no `drop()`).
+// Cópias `fiscal_api_adv*` que SOBRARAM de uma execução morta (jest matado no meio) são apagadas na criação da próxima —
+// rode as suítes ao vivo com --runInBand.
 import fs from 'fs'
 import path from 'path'
 import dotenv from 'dotenv'
@@ -29,8 +32,10 @@ export interface DisposableFiscalDb {
   pool:     Pool
   user:     string
   password: string
-  /** Variáveis para um processo filho (ex.: `npm run migrate:setes`) apontar para a CÓPIA, nunca para o real. */
+  /** Processo filho (ex.: re-sincronia `npm run migrate:setes`) na CÓPIA, com o usuário do SERVIÇO (nunca escreve no ERP). */
   env:      Record<string, string>
+  /** D-F48: SÓ para o ENSAIO do ato (`--cutover` sem `--vai`) — credencial do DONO do ERP (o ato escreve no ERP e desfaz). */
+  ownerEnv: Record<string, string>
   drop():   Promise<void>
 }
 
@@ -38,9 +43,10 @@ export async function disposableFiscalDb(root: string, name: string, opts: { tur
   if (!/^fiscal_api_adv[a-z0-9_]*$/.test(name)) throw new Error(`Banco descartável inválido: ${name}`)
   const setesEnv = dotenv.parse(fs.readFileSync(path.resolve(root, '..', 'setes-api', '.env')))
   const user = setesEnv.DB_USER, password = setesEnv.DB_PASSWORD ?? ''
-  const base = dbConfigFromEnv()
+  const base = dbConfigFromEnv()                                        // usuário do SERVIÇO (nfse-api/.env)
   const real = base.database
   if (name === real) throw new Error(`O banco descartável não pode ser o real (${real})`)
+  if (base.user === user) throw new Error('D-F48: o ataque precisa do usuário do SERVIÇO (nfse-api/.env), não do dono do ERP')
   const admin = createFiscalPool({ ...base, user, password })
   const erpSchema = process.env.ADV_ERP_SCHEMA ?? 'setes_setes'
   const realSums = async () => JSON.stringify((await admin.query(
@@ -57,14 +63,15 @@ export async function disposableFiscalDb(root: string, name: string, opts: { tur
   const nulls = (JSON.parse(before) as any[]).filter(r => r.Checksum == null).map(r => r.Table)
   if (nulls.length) throw new Error(`Vigilância do harness com tabela inexistente: ${nulls.join(', ')} (ADV_ERP_SCHEMA?)`)
   await admin.query(`DROP DATABASE IF EXISTS \`${name}\``)
-  await runMigrations({ ...base, user, password, database: name }, MIGRATION_SETS)
+  await runMigrations({ ...base, database: name }, MIGRATION_SETS)        // como o serviço faz no boot (D-F48)
   for (const t of FISCAL_COPY_TABLES) await admin.query(`INSERT INTO \`${name}\`.${t} SELECT * FROM \`${real}\`.${t}`)
   if (opts.turned) await admin.query(`UPDATE \`${name}\`.tb_establishment_issuer SET cutover_at = NOW() WHERE cutover_at IS NULL`)
-  const cfg: FiscalDbConfig = { ...base, user, password, database: name }
+  const cfg: FiscalDbConfig = { ...base, database: name }              // D-F48: o ataque com o usuário do SERVIÇO
   const pool = createFiscalPool(cfg)
   return {
-    cfg, pool, user, password,
-    env: { FISCAL_DB_NAME: name, DB_USER: user, DB_PASSWORD: password },
+    cfg, pool, user: base.user, password: base.password,
+    env: { FISCAL_DB_NAME: name, DB_USER: base.user, DB_PASSWORD: base.password },
+    ownerEnv: { FISCAL_DB_NAME: name, DB_USER: user, DB_PASSWORD: password },
     async drop() {
       try { await pool.end() } catch { /* já encerrado */ }
       try {

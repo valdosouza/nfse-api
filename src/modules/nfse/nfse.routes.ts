@@ -40,7 +40,7 @@ export function nfseRoutes(ctx: AppContext): Router {
     const inst = institutionOf(req)
     const invoiceId = parseInvoiceId(req.params.invoiceId)
     await requireCutover(ctx, inst)
-    await requireBranchPrivilege(ctx, inst, invoiceId, erp.PRIVILEGE_TRANSMITIR)
+    await requireBranchPrivilege(ctx, inst, invoiceId, erp.PRIVILEGE_TRANSMITIR, { newTransmission: true })
     sendOk(res, await tx.transmitServiceInvoice(ctx, actorOf(inst), invoiceId), 201)
   }))
 
@@ -48,7 +48,7 @@ export function nfseRoutes(ctx: AppContext): Router {
     const inst = institutionOf(req)
     const invoiceId = parseInvoiceId(req.params.invoiceId)
     await requireCutover(ctx, inst)
-    await requireBranchPrivilege(ctx, inst, invoiceId, erp.PRIVILEGE_TRANSMITIR)
+    await requireBranchPrivilege(ctx, inst, invoiceId, erp.PRIVILEGE_TRANSMITIR, { newTransmission: false })
     sendOk(res, await tx.refreshServiceTransmission(ctx, actorOf(inst), invoiceId, 'Q'))
   }))
 
@@ -56,7 +56,7 @@ export function nfseRoutes(ctx: AppContext): Router {
     const inst = institutionOf(req)
     const invoiceId = parseInvoiceId(req.params.invoiceId)
     await requireCutover(ctx, inst)
-    await requireBranchPrivilege(ctx, inst, invoiceId, erp.PRIVILEGE_CANCELAR)
+    await requireBranchPrivilege(ctx, inst, invoiceId, erp.PRIVILEGE_CANCELAR, { newTransmission: false })
     sendOk(res, await tx.reconfirmBeforeLocalCancel(ctx, actorOf(inst), invoiceId))
   }))
 
@@ -64,7 +64,7 @@ export function nfseRoutes(ctx: AppContext): Router {
     const inst = institutionOf(req)
     const invoiceId = parseInvoiceId(req.params.invoiceId)
     await requireCutover(ctx, inst)
-    await requireBranchPrivilege(ctx, inst, invoiceId, erp.PRIVILEGE_CANCELAR)
+    await requireBranchPrivilege(ctx, inst, invoiceId, erp.PRIVILEGE_CANCELAR, { newTransmission: false })
     const body = parseWith(cancelDto, req.body)
     sendOk(res, await tx.cancelServiceInvoiceAtAuthority(ctx, actorOf(inst), invoiceId, body.reason))
   }))

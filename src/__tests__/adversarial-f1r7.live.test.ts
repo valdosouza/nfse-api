@@ -418,7 +418,7 @@ d('GATE ADVERSARIAL r7 — delta da sessão 2026-10-04 (cópia descartável fisc
       }
       // eslint-disable-next-line no-console
       console.log('[adv-r7] B1 vizinha × institution populada', JSON.stringify(out))
-      expect(out.held).toEqual({ rows: 1, replicas: 0 })
+      expect(out.held).toEqual({ rows: 1, replicas: 0, serviceRows: 1 })                        // D-F50: a contagem SE vem junto
       expect(out.explain.every((k: string) => /PRIMARY/.test(k) && !/^ALL/.test(k))).toBe(true)
       expect(out).toMatchObject({ create: 200, lease: 'alugou', update: 200 })
       expect(out.ms).toBeLessThan(5_000)

@@ -27,8 +27,19 @@ GRANT SELECT ON `setes\_%`.* TO 'fiscal_api'@'%';
 -- 3. Conferência (critério §12.8-2): pela conexão do 'fiscal_api', um INSERT em setes_<cliente>.tb_invoice_event
 --    tem que dar ER_TABLEACCESS_DENIED_ERROR; um SELECT … FOR UPDATE em setes_<cliente>.tb_invoice tem que passar.
 --
--- 4. O ATO da virada (`npm run migrate:setes -- --cutover <id> --confirmo-setes-api-parado` — D-F39/D-F44) roda com a
+-- 4. O ATO da virada (`npm run migrate:setes -- --cutover <id> --confirmo-setes-api-parado --vai` — D-F39/D-F44; sem `--vai` é
+--    ENSAIO) roda com a
 --    credencial do DONO do ERP (a do setes-api), passada SÓ ao processo do ato (DB_USER/DB_PASSWORD na linha de comando,
 --    nunca no .env do serviço): ele APOSENTA a habilitação SE do ERP (`UPDATE setes_<cliente>.tb_establishment_issuer SET
 --    deleted='S'`) — a única escrita de uma API fiscal no ERP (lista fechada da D-F31). Com o usuário 'fiscal_api' esse
 --    UPDATE é negado e o ato INTEIRO volta atrás (nada vira) — o GRANT acima NÃO ganha escrita no ERP.
+
+-- 5. D-F48 (= Q-F53 (a), "vai" do Valdo 2026-10-10) — SÓ NO DEV: os ataques ao vivo (cópias DESCARTÁVEIS do `fiscal_api`,
+--    `src/__tests__/live-harness.ts`) rodam com o usuário 'fiscal_api' — que não escreve no ERP — em vez do usuário do
+--    setes-api (ALL PRIVILEGES): a defesa volta a ser por CONSTRUÇÃO (antes era detecção pelo CHECKSUM no `drop()`).
+--    O padrão casa o que o validador do harness aceita (`^fiscal_api_adv[a-z0-9_]*$` — inclui `fiscal_api_adv4` e
+--    `fiscal_api_advr6`); os '\_' casam o '_' literal e NUNCA alcançam o `fiscal_api` real. Aplicado no dev em 2026-10-10
+--    nos quatro hosts do usuário (localhost, 127.0.0.1, ::1, %) e provado: cria/escreve/apaga a cópia; UPDATE no ERP →
+--    ER_TABLEACCESS_DENIED_ERROR; banco fora do padrão → ER_DBACCESS_DENIED_ERROR. NUNCA em produção.
+--    (o '@%' já tinha `fiscal\_api\_adv\_%` — origem não registrada; subconjunto deste, inofensivo)
+-- GRANT ALL PRIVILEGES ON `fiscal\_api\_adv%`.* TO 'fiscal_api'@'localhost';

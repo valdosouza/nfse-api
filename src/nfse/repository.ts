@@ -357,3 +357,25 @@ export async function countLiveTransmissions(q: Q, institutionId: number, enviro
     [institutionId, environment ?? null, environment ?? null])
   return Number(rows?.[0]?.n ?? 0)
 }
+
+/**
+ * D-F47 (= Q-F52 (a), Valdo 2026-10-10) — OBRIGAÇÃO FISCAL JÁ ASSUMIDA: a nota tem alguma tentativa declarada ao fisco
+ * por esta institution (qualquer vida, qualquer voz — inclusive a em voo sem voz, que pode ter virado NFS-e). É o que
+ * mantém consulta, cancelamento no fisco e leitura abertos quando o ramo deixa de ser contratado: a licença barra só a
+ * transmissão NOVA. Leitura NÃO travante pela PK (prefixo institution + nota).
+ */
+export async function hasFiscalObligation(q: Q, institutionId: number, invoiceId: number): Promise<boolean> {
+  const [rows] = await q.query(
+    `SELECT 1 FROM tb_invoice_service_transmission
+      WHERE tb_institution_id = ? AND tb_invoice_id = ? AND terminal = 0 AND deleted = 'N' LIMIT 1`,
+    [institutionId, invoiceId])
+  return (rows as any[]).length > 0
+}
+
+/** D-F47 — a institution tem ALGUMA obrigação fiscal assumida (a passada do rodízio só consulta tentativas — todas são obrigação).
+ *  Gate adversarial r8 (ADV-R8-05): o MESMO predicado de tentativa da obrigação da nota (`terminal = 0`). */
+export async function institutionHasFiscalObligation(q: Q, institutionId: number): Promise<boolean> {
+  const [rows] = await q.query(
+    `SELECT 1 FROM tb_invoice_service_transmission WHERE tb_institution_id = ? AND terminal = 0 AND deleted = 'N' LIMIT 1`, [institutionId])
+  return (rows as any[]).length > 0
+}

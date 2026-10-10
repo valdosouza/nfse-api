@@ -19,6 +19,7 @@ import {
   hasTransmissionEvent, findTransmissionEventByKind, touchQueriedAt, listRefreshCandidates,
   DEFAULT_CANCEL_DAYS, REFRESH_AUTHORIZED_MARGIN_DAYS,
 } from './repository'
+import { toTsString } from '../authority/dps-builder'
 
 /**
  * COMPOSIÇÃO DA NFS-e na nfse-api (F1 da extração fiscal — prompt_apis_fiscais_isoladas.md §12/§14).
@@ -168,9 +169,14 @@ export function buildSignedDps(base: DpsBase, serie: string | number, nDps: numb
 
 /** xMotivo 15–255: motivo curto ganha o complemento padrão; longo é cortado. */
 export function normalizeCancelMotive(reason: string): string {
-  let m = String(reason ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '').replace(/\s+/g, ' ').trim()
-  if (m.length < XMOTIVO_MIN) m = `${m}${m ? ' — ' : ''}Cancelamento solicitado pelo emissor`
-  return m.slice(0, XMOTIVO_MAX)
+  let m = toTsString(String(reason ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, ''))
+    // gate adversarial r8 (ADV-R8-07) + TSString do XSD (só U+0020–U+00FF): não-caractere, surrogate solto, invisível e TODO
+    // caractere acima de U+00FF saem (tipografia vira ASCII) ANTES do piso — o piso de 15 não pode ser cumprido por eles
+    .replace(/\s+/g, ' ').trim()
+  // complemento com hífen ASCII — o travessão (U+2014) estava FORA do TSString e o fisco recusava o evento (NFS-e 706, 2026-10-10)
+  if (m.length < XMOTIVO_MIN) m = `${m}${m ? ' - ' : ''}Cancelamento solicitado pelo emissor`
+  const cut = m.slice(0, XMOTIVO_MAX)
+  return /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut          // o corte em 255 nunca parte um par (emoji)
 }
 
 function buildSignedCancel(accessKey: string, reason: string, dhEvento: string, environment: AuthorityEnvironment, cnpjAutor: string, opened: OpenedIssuer): { xml: string; xMotivo: string } {
@@ -394,6 +400,17 @@ async function reconcileInterrupted(deps: NfseDeps, actor: Actor, tx: Transmissi
     await refreshServiceTransmission(deps, actor, tx.invoiceId, 'Q', { attempt: tx.attempt })
     return
   }
+  await closeInterruptedSend(deps, actor, tx)
+}
+
+/**
+ * D-F52 (= Q-F60 (a), Valdo 2026-10-10) — UMA regra, DOIS caminhos (a transmissão no passo 0b e a CONSULTA): reserva sem voz
+ * há mais de IN_FLIGHT_MINUTES cujo DPS o fisco disse NÃO ter NFS-e (E2404 — a única resposta conclusiva, Q-ADV2d) fecha com
+ * F "envio interrompido". A consulta é obrigação já assumida (D-F47): com o ramo fora do contrato ela conclui a tentativa
+ * sem declarar nada novo ao fisco. Devolve se fechou (sob a trava da nota a tentativa pode já ter voz).
+ */
+async function closeInterruptedSend(deps: NfseDeps, actor: Actor, tx: TransmissionRow): Promise<boolean> {
+  let closed = false
   await withInvoiceTx(deps, 'reconciliação do envio interrompido', actor, tx.invoiceId, async conn => {
     // sob a trava da nota a leitura é não travante (o snapshot nasce DEPOIS da trava — PADROES §9 regra 2)
     const cur = await getTransmission(conn, actor.institutionId, tx.invoiceId, tx.attempt)
@@ -402,7 +419,9 @@ async function reconcileInterrupted(deps: NfseDeps, actor: Actor, tx: Transmissi
     await insertTransmissionEvent(conn, actor.institutionId, tx.invoiceId, tx.attempt, actor.userId, {
       kind: 'F', source: 'Q', message: 'Sem resposta do fisco e nenhuma NFS-e gerada para este DPS — envio interrompido',
     })
+    closed = true
   })
+  return closed
 }
 
 // ---------------------------------------------------------------------------
@@ -466,7 +485,12 @@ export async function refreshServiceTransmission(
         // MEDIUM-1: sem chave (em voo, R ou F) a pergunta é pelo Id do DPS
         accessKey = await deps.adapter.queryDpsAccessKey(ctx, tx0.dpsId)
         if (!accessKey) {
-          await touchQueriedAt(deps.pool, institutionId, invoiceId, tx0.attempt)   // só "nós olhamos" — F só por recusa explícita
+          // D-F52: reserva INTERROMPIDA (sem voz > IN_FLIGHT_MINUTES) + fisco sem NFS-e para o Id (E2404) = F "envio
+          // interrompido" — a MESMA regra do passo 0b da transmissão; em voo recente, só "nós olhamos"
+          if (isInterruptedInFlight(tx0) && await closeInterruptedSend(deps, actor, tx0)) {
+            return { invoiceId, attempt: tx0.attempt, changed: true, kind: 'F', accessKey: null, localCancelPending: pendingOf('F') }
+          }
+          await touchQueriedAt(deps.pool, institutionId, invoiceId, tx0.attempt)   // só "nós olhamos" — F só por resposta conclusiva
           return unchanged(tx0)
         }
         target = holder ?? tx0
@@ -632,11 +656,10 @@ export async function cancelServiceInvoiceAtAuthority(deps: NfseDeps, actor: Act
   // "recusado" com a NFS-e já cancelada). Quem chega depois vê K → 409 FISCAL_CANCEL_IN_FLIGHT.
   type Decision = { already: { attempt: number; event: number } } | { authorized: TransmissionRow; dhEvento: string }
   const decision = await withInvoiceTx(deps, 'decisão do cancelamento fiscal', actor, invoiceId, async (conn, locked): Promise<Decision> => {
-    // re-prova final R4 (MEDIUM): a reserva K passa pela TRAVA da habilitação (ordem nota → habilitação → A1, a da reserva
-    // da transmissão) — sem ela o DELETE do A1 contava as vivas antes do K e apagava o certificado com o pedido em curso.
-    // Gates do delta de 2026-10-04: e confere o A1 SOB essa trava, ANTES do K (A1 ausente/vencido/ilegível = 409 sem K —
-    // o K→N deixava uma janela: processo caído entre os dois = K vivo sem A1, o estado que a guarda do DELETE impede)
-    await openIssuer(estDeps(deps), institutionId, SERVICE_MODEL, { conn, forUpdate: true, schemaName: s })
+    // gate do delta da Rodada 6 (M2): o ramo IDEMPOTENTE ("voz C já existe" — D-F28) e as recusas de estado vêm ANTES de
+    // abrir o emissor: com o cancelamento já feito no fisco, A1 vencido/excluído ou chave-mestra ausente não podem trocar o
+    // ok idempotente por 409/503 (o app ficava sem avançar para o C local). As leituras abaixo são NÃO travantes sob a trava
+    // da nota (todo escritor da família já está serializado nela) — a ordem das travas segue nota → habilitação → A1.
     const tx = await latestTransmission(conn, institutionId, invoiceId, locked.lifeEvent)
     if (tx?.lastKind === 'C') {
       const voice = await findTransmissionEventByKind(conn, institutionId, invoiceId, tx.attempt, 'C')
@@ -648,6 +671,11 @@ export async function cancelServiceInvoiceAtAuthority(deps: NfseDeps, actor: Act
     }
     if (tx.lastKind === null || tx.lastKind === 'S' || tx.lastKind === 'K') throw liveTransmissionError(tx)
     if (!tx.accessKey) throw new HttpError(409, `Transmissão ${tx.attempt} autorizada sem chave de acesso — consulte antes`, undefined, ErrorCodes.FISCAL_TRANSMISSION_IN_PROGRESS)
+    // re-prova final R4 (MEDIUM): a reserva K passa pela TRAVA da habilitação (ordem nota → habilitação → A1, a da reserva
+    // da transmissão) — sem ela o DELETE do A1 contava as vivas antes do K e apagava o certificado com o pedido em curso.
+    // Gates do delta de 2026-10-04: e confere o A1 SOB essa trava, ANTES do K (A1 ausente/vencido/ilegível = 409 sem K —
+    // o K→N deixava uma janela: processo caído entre os dois = K vivo sem A1, o estado que a guarda do DELETE impede)
+    await openIssuer(estDeps(deps), institutionId, SERVICE_MODEL, { conn, forUpdate: true, schemaName: s })
     const zone = await erp.institutionZone(conn, s, institutionId)
     const dhEvento = nowIsoIn(zone)
     // K e o N de liberação são fatos NOSSOS, não voz do fisco: dh NULL — a chave única (kind, dh) é a
