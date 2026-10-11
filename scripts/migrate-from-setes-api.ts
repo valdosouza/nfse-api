@@ -188,13 +188,25 @@ async function migrateInstitution(c: PoolConnection, keyring: MasterKeyRing, sto
          ON t.tb_institution_id = ev.tb_institution_id AND t.tb_invoice_id = ev.tb_invoice_id AND t.terminal = ev.terminal AND t.attempt = ev.attempt
       WHERE ev.tb_institution_id = ? AND t.dps_id IS NOT NULL`, [institutionId])
   rep.events = Number(e.affectedRows ?? 0)
-  // INSERT IGNORE calaria voz DIFERENTE no mesmo (tentativa, evento): confere kind a kind
+  // D-F75 (= Q-F82 (a)): o código da voz C é escrito uma vez e só SOBE para a substituição (105102), nunca volta — o que a
+  // origem preencheu ou promoveu depois da cópia chega à réplica pela MESMA regra de mão única do `setCancelEventCode` do
+  // setes-api (preenche NULL; sobe para 105102) — o INSERT IGNORE não atualiza voz já copiada (L6 do gate da Rodada 13: só a
+  // subida era espelhada e o preenchimento na origem virava falso "dual-write" na conferência abaixo)
+  await c.query(
+    `UPDATE tb_invoice_service_transmission_event f
+       JOIN \`${s}\`.tb_invoice_service_transmission_event src
+         ON src.tb_institution_id = f.tb_institution_id AND src.tb_invoice_id = f.tb_invoice_id AND src.terminal = f.terminal
+        AND src.attempt = f.attempt AND src.event = f.event
+        SET f.authority_code = src.authority_code, f.updated_at = UTC_TIMESTAMP()
+      WHERE f.tb_institution_id = ? AND f.kind = 'C' AND src.kind = 'C' AND src.authority_code IS NOT NULL
+        AND (f.authority_code IS NULL OR (src.authority_code = '105102' AND f.authority_code <> '105102'))`, [institutionId])
+  // INSERT IGNORE calaria voz DIFERENTE no mesmo (tentativa, evento): confere kind a kind — e, na voz C, o código (D-F68)
   const [evDiff] = await c.query<any[]>(
     `SELECT f.tb_invoice_id AS inv, f.attempt, f.event FROM tb_invoice_service_transmission_event f
        JOIN \`${s}\`.tb_invoice_service_transmission_event src
          ON src.tb_institution_id = f.tb_institution_id AND src.tb_invoice_id = f.tb_invoice_id AND src.terminal = f.terminal
         AND src.attempt = f.attempt AND src.event = f.event
-      WHERE f.tb_institution_id = ? AND NOT (src.kind <=> f.kind) LIMIT 5`, [institutionId])
+      WHERE f.tb_institution_id = ? AND (NOT (src.kind <=> f.kind) OR (f.kind = 'C' AND NOT (src.authority_code <=> f.authority_code))) LIMIT 5`, [institutionId])
   if (evDiff.length) throw new Error(`${s}: voz divergente entre origem e fiscal_api (${evDiff.map(x => `${x.inv}/${x.attempt}#${x.event}`).join(', ')}) — dual-write (D-F18); nada migrado`)
 
   // 6. conferências: contador do emissor ≥ maior nDPS migrado (D-N18); última voz igual nos dois lados

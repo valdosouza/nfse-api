@@ -326,16 +326,40 @@ describe('consultar — a voz do fisco, idempotente, SEM efeito no ERP', () => {
     expect(conn.query.mock.calls.filter(([sql]) => /setes_setes/.test(sql))).toEqual([])
   })
 
-  it('a mesma voz C 2× (idempotência por KIND) → nada novo; tentativa já C → não volta ao fisco', async () => {
+  it('a mesma voz C 2× (idempotência por KIND) → nada novo; tentativa já C → não volta ao fisco (com o XML do evento arquivado)', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     ;(repo.findTransmissionEventByKind as jest.Mock).mockResolvedValue({ attempt: 1, event: 2, kind: 'C' })
     adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'cancelled', nfseXml: NFSE_XML, dhProc: null, cancelled: { dhEvento: '2026-09-22T09:00:00-03:00', motive: 'x' } })
     await refreshServiceTransmission(deps, A, INVOICE, 'Q')
     expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()
     adapter.queryNfse.mockClear()
-    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'C' }))
-    await refreshServiceTransmission(deps, A, INVOICE, 'Q')
-    expect(adapter.queryNfse).not.toHaveBeenCalled()
+    const cTx = tx({ lastKind: 'C', lastCode: '101101' })
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(cTx)
+    deps.storage.save(CNPJ, `${KEY}-evt101101.xml`, '<evento/>', new Date(`${cTx.dhProc!.replace(' ', 'T')}Z`), 'H', 'America/Sao_Paulo')
+    try {
+      await refreshServiceTransmission(deps, A, INVOICE, 'Q')
+      expect(adapter.queryNfse).not.toHaveBeenCalled()
+    } finally { fs.rmSync(path.join(storageRoot, CNPJ), { recursive: true, force: true }) }
+  })
+  it('D-F78 (= Q-F85 (a)): tentativa já C SEM o XML do evento no arquivo → relê o fisco SÓ para arquivar (nenhuma voz); outro código não arquiva', async () => {
+    const cTx = tx({ lastKind: 'C', lastCode: '105102' })
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(cTx)
+    adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'cancelled', nfseXml: NFSE_XML, dhProc: null,
+      cancelled: { dhEvento: '2026-09-22T09:00:00-03:00', motive: 'x', eventCode: '101101', eventXml: '<evento>outro</evento>' } })
+    try {
+      await refreshServiceTransmission(deps, A, INVOICE, 'Q')
+      expect(adapter.queryNfse).toHaveBeenCalledTimes(1)
+      const hasFile = () => !!deps.storage.find(CNPJ, `${KEY}-evt101101.xml`, [cTx.dhProc, cTx.createdAt], 'H', 'America/Sao_Paulo')
+      expect(hasFile()).toBe(false)                                                     // o fisco falou de OUTRO código: nada arquivado
+      adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'cancelled', nfseXml: NFSE_XML, dhProc: null,
+        cancelled: { dhEvento: '2026-09-22T09:00:00-03:00', motive: 'x', eventCode: '105102', eventXml: '<evento>subst</evento>' } })
+      await refreshServiceTransmission(deps, A, INVOICE, 'Q')
+      expect(hasFile()).toBe(true)
+      expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()
+      adapter.queryNfse.mockClear()
+      await refreshServiceTransmission(deps, A, INVOICE, 'Q')                           // arquivado: não volta mais ao fisco
+      expect(adapter.queryNfse).not.toHaveBeenCalled()
+    } finally { fs.rmSync(path.join(storageRoot, CNPJ), { recursive: true, force: true }) }
   })
 
   it('nunca transmitida → 409 FISCAL_NOT_TRANSMITTED; situação "unknown" → 502 sem gravar voz', async () => {
@@ -648,5 +672,57 @@ describe('tela "No fisco" — estado derivado + pendência derivada', () => {
     const v = await getServiceFiscalView(deps, A, INVOICE)
     expect(v).toMatchObject({ state: 'cancelled', localCancelPending: true })
     expect(v.events[0].dh).toBe('2026-09-21 10:15:30')
+  })
+})
+
+describe('Rodada 13 (D-F67/D-F68/D-F71/D-F76, Valdo 2026-10-10) — código do evento na voz C e a SUBSTITUIÇÃO (e105102)', () => {
+  const SUBST_KEY = `${KEY.slice(0, -1)}9`
+  const substEventXml = (substitute: string | null) =>
+    `<evento versao="1.01"><infEvento Id="EVT${KEY}105102001"><dhProc>2026-10-10T18:43:04-03:00</dhProc><pedRegEvento><infPedReg>`
+    + `<chNFSe>${KEY}</chNFSe><e105102><xDesc>Cancelamento de NFS-e por Substituição</xDesc><cMotivo>1</cMotivo><xMotivo>erro no valor</xMotivo>`
+    + `${substitute ? `<chSubstituta>${substitute}</chSubstituta>` : ''}</e105102></infPedReg></pedRegEvento></infEvento></evento>`
+
+  it('cancelar no fisco: a voz C do NOSSO pedido grava authorityCode 101101 (D-F68)', async () => {
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A', dhProc: '2026-08-15 13:00:00' }))
+    ;(repo.insertTransmissionEvent as jest.Mock).mockResolvedValue(2)
+    adapter.registerEvent.mockResolvedValue({ dhEvento: '2026-09-22T09:00:00-03:00', protocol: 'EVT1', eventXml: '<evento/>', raw: {} })
+    await cancelServiceInvoiceAtAuthority(deps, A, INVOICE, 'cliente desistiu do serviço')
+    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(conn, 1, INVOICE, 1, A.userId, expect.objectContaining({ kind: 'C', source: 'P', authorityCode: '101101' }))
+  })
+
+  it('consulta lê o cancelamento: e105102 → authorityCode 105102 e localCancelPending FALSE (decisão humana — D-F64/D-F67); e101101 → true', async () => {
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
+    ;(repo.insertTransmissionEvent as jest.Mock).mockResolvedValue(2)
+    adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'cancelled', nfseXml: NFSE_XML, dhProc: null,
+      cancelled: { dhEvento: '2026-09-22T09:00:00-03:00', motive: 'erro no valor', eventCode: '105102' } })
+    expect(await refreshServiceTransmission(deps, A, INVOICE, 'Q')).toMatchObject({ kind: 'C', localCancelPending: false })
+    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(conn, 1, INVOICE, 1, A.userId,
+      expect.objectContaining({ kind: 'C', source: 'Q', authorityCode: '105102', message: expect.stringContaining('SUBSTITUIÇÃO (e105102)') }))
+    ;(repo.insertTransmissionEvent as jest.Mock).mockClear()
+    adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'cancelled', nfseXml: NFSE_XML, dhProc: null,
+      cancelled: { dhEvento: '2026-09-22T09:00:00-03:00', motive: 'x', eventCode: '101101' } })
+    expect(await refreshServiceTransmission(deps, A, INVOICE, 'Q')).toMatchObject({ kind: 'C', localCancelPending: true })
+    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(conn, 1, INVOICE, 1, A.userId, expect.objectContaining({ kind: 'C', authorityCode: '101101' }))
+  })
+
+  it('transmitir com a vigente C de SUBSTITUIÇÃO → 409 FISCAL_NFSE_SUBSTITUTED mesmo com a nota MANTIDA (não-C no ERP) — nunca reenvia o mesmo DPS; C comum com a nota viva → FISCAL_EFFECT_PENDING', async () => {
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'C', lastCode: '105102' }))
+    await expect(transmitServiceInvoice(deps, A, INVOICE)).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_NFSE_SUBSTITUTED' })
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'C', lastCode: '101101' }))
+    await expect(transmitServiceInvoice(deps, A, INVOICE)).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_EFFECT_PENDING' })
+    expect(adapter.transmit).not.toHaveBeenCalled()
+  })
+
+  it('tela "No fisco": a vigente C de SUBSTITUIÇÃO traz `substitution` com a chave da SUBSTITUTA lida do XML do evento arquivado (D-F76); sem XML = null; sem pendência derivada', async () => {
+    const current = tx({ attempt: 1, lastKind: 'C', lastCode: '105102', dhProc: '2026-10-10 21:43:04' })
+    ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [current], events: [] })
+    let v = await getServiceFiscalView(deps, A, INVOICE)
+    expect(v).toMatchObject({ state: 'cancelled', localCancelPending: false, substitution: { substituteAccessKey: null } })   // XML ausente
+    deps.storage.save(CNPJ, `${KEY}-evt101101.xml`, substEventXml(SUBST_KEY), new Date('2026-10-10T21:43:04Z'), 'H', 'America/Sao_Paulo')
+    v = await getServiceFiscalView(deps, A, INVOICE)
+    expect(v.substitution).toEqual({ substituteAccessKey: SUBST_KEY })
+    // C comum: nenhuma substituição na tela
+    ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [tx({ attempt: 1, lastKind: 'C', lastCode: '101101' })], events: [] })
+    expect((await getServiceFiscalView(deps, A, INVOICE)).substitution).toBeNull()
   })
 })

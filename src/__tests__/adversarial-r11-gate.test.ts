@@ -217,7 +217,7 @@ const insertedEvents = () => (repo.insertTransmissionEvent as jest.Mock).mock.ca
 // ===========================================================================
 
 describe('ACHADO R11-06 (LOW, LATENTE até a F2a) — D-F64 na nfse-api: a voz de SUBSTITUIÇÃO responde `localCancelPending: true` — pelo contrato da D-F28 isso diz ao app "envie o cancelamento ao setes-api" (a saga aplica o C local no próximo contato, sem humano decidir) — e o único marcador da substituição é TEXTO livre na mensagem', () => {
-  it.failing('[LOW R11-06] consulta lê e105102 desta chave → voz C gravada, mas `localCancelPending` NÃO manda o app aplicar o efeito', async () => {
+  it('[CORRIGIDO — D-F68] [LOW R11-06] consulta lê e105102 desta chave → voz C gravada, mas `localCancelPending` NÃO manda o app aplicar o efeito', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     sefinSubstituted()
     const r = await refreshServiceTransmission(realDeps(), A, INVOICE, 'Q')
@@ -227,7 +227,7 @@ describe('ACHADO R11-06 (LOW, LATENTE até a F2a) — D-F64 na nfse-api: a voz d
 })
 
 describe('ACHADO R11-03 (LOW) — nfse-api: a marca da substituição depende do código do XML LIDO, não do TIPO perguntado — /eventos/105102/1 trazendo um e101101 desta chave vira cancelamento comum (D-F63: "outro tipo" = ambíguo)', () => {
-  it.failing('[LOW R11-03a] adaptador da nfse-api: 101101 = 404 e 105102 = 200 com e101101 → nunca "cancelled" sem a marca 105102', async () => {
+  it('[CORRIGIDO — D-F69] [LOW R11-03a] adaptador da nfse-api: 101101 = 404 e 105102 = 200 com e101101 → nunca "cancelled" sem a marca 105102', async () => {
     sefin({ typed: code => (code === '105102' ? typedOk(typedItem(arquivo2(generatedEventXml({ code: '101101' })), '105102')) : undefined) })
     const out = await settle(adnAdapter.queryNfse(ctxH as any, KEY))
     expect(out?.status === 'cancelled' && out?.cancelled?.eventCode !== '105102').toBe(false)
@@ -339,5 +339,23 @@ describe('ACHADO R11-07 (LOW) — arquivo fiscal ROTULADO errado: o XML do event
     const subst = walk(storageRoot).filter(f => fs.readFileSync(f, 'utf8').includes('<e105102>'))
     expect(subst).toHaveLength(1)                                      // o evento foi arquivado…
     expect(path.basename(subst[0])).not.toMatch(/-evt101101\.xml$/)   // …com o nome do TIPO certo (hoje: -evt101101.xml)
+  })
+})
+
+// ===========================================================================
+// RODADA 14 (Valdo 2026-10-10, "siga as recomendações" do gate socrático da Rodada 13) — L6/L7 no adaptador (porte D-F43)
+// ===========================================================================
+describe('RODADA 14 — L6/L7 no adaptador ADN da nfse-api', () => {
+  it('L6: NFS-e com o bloco <e101101> embutido → cancelled COM eventCode 101101 (nunca voz C sem código depois da D-F68)', async () => {
+    const withBlock = NFSE_XML.replace('</infNFSe>', '<e101101><xDesc>Cancelamento de NFS-e</xDesc><cMotivo>1</cMotivo><xMotivo>erro na emissao do servico</xMotivo></e101101></infNFSe>')
+    sefin({ nfse: () => ok({ nfseXmlGZipB64: gz(withBlock) }) })
+    const out = await adnAdapter.queryNfse(ctxH as any, KEY)
+    expect(out).toMatchObject({ status: 'cancelled', cancelled: { eventCode: '101101' } })
+  })
+  it('L7: o GET tipado traz DOIS itens desta chave (outro tipo antes do perguntado) → vale o do tipo PERGUNTADO, sem 502', async () => {
+    const both = { ...SEFIN, eventos: [typedItem(arquivo2(generatedEventXml({ code: '305101' })), '305101'), typedItem(arquivo2(generatedEventXml({ code: '101101' })))] }
+    sefin({ typed: code => (code === '101101' ? ok(both) : undefined) })
+    const out = await adnAdapter.queryNfse(ctxH as any, KEY)
+    expect(out).toMatchObject({ status: 'cancelled', cancelled: { eventCode: '101101' } })
   })
 })
