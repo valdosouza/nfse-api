@@ -1006,6 +1006,14 @@ export async function getServiceFiscalView(deps: NfseDeps, actor: Actor, invoice
   }
 }
 
+/**
+ * D-F85: duas chaves de acesso da NFS-e são do MESMO emitente — chave 50 = cMun(7) + ambGer(1) + tpInsc(1) + inscrição(14) +
+ * nNFSe(13) + AAMM(4) + código(9) + DV(1) (Infra-IA/setes-api/integracoes/nfse-adn/README.md; provado nas chaves 704–706).
+ */
+function sameIssuerKey(a: string, b: string): boolean {
+  return a.length === 50 && b.length === 50 && a.slice(8, 23) === b.slice(8, 23)
+}
+
 /** D-F76: chave da SUBSTITUTA no XML do evento arquivado — só exibição; XML ausente/ilegível = null (a tela diz "indisponível"). */
 async function substituteKeyOf(deps: NfseDeps, institutionId: number, tx: TransmissionRow, zone: string): Promise<string | null> {
   if (!tx.accessKey) return null
@@ -1013,8 +1021,9 @@ async function substituteKeyOf(deps: NfseDeps, institutionId: number, tx: Transm
     const file = deps.storage.find(await emitterCnpj(deps.pool, institutionId), cancelEventFileName(tx.accessKey), [tx.dhProc, tx.createdAt], tx.environment, zone)
     if (!file) return null
     const key = parseEventXml(fs.readFileSync(file, 'utf8')).substituteKey
-    // R13-04 do gate adversarial: a própria chave não é a substituta
-    return key && /^[0-9A-Z]{50}$/.test(key) && key !== tx.accessKey ? key : null
+    // R13-04 do gate adversarial: a própria chave não é a substituta. D-F85 (= Q-F91, Valdo 2026-10-10): a substituta é do MESMO
+    // emitente — tipo de inscrição + inscrição embutidos na chave (posições 9–23 da chave de 50) iguais aos da substituída
+    return key && /^[0-9A-Z]{50}$/.test(key) && key !== tx.accessKey && sameIssuerKey(key, tx.accessKey!) ? key : null
   } catch { return null }
 }
 

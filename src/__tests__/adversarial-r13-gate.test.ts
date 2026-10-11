@@ -367,12 +367,12 @@ describe('ACHADO R13-02 (LOW) — backfill da 002 (o MESMO da 067 do setes-api) 
 
 describe('ACHADO R13-03 (LOW) — D-F69 no adaptador da nfse-api: o 200 tipado de /eventos/101101/1 com [e101101, e105102] desta chave (contraditório) devolve "cancelled 101101" — o PRIMEIRO que se confere, não o mais restritivo; a voz nasce como cancelamento comum e `localCancelPending` manda o app aplicar o C local', () => {
   const both = () => typedOk(typedItem(arquivo2(generatedEventXml({ code: '101101' })), '101101'), typedItem(arquivo2(generatedEventXml({ code: '105102' })), '105102'))
-  it.failing('[LOW R13-03] adaptador: nunca "cancelled" sem a marca 105102 (unknown/502 ou eventCode 105102)', async () => {
+  it('[CORRIGIDO — D-F84] [LOW R13-03] adaptador: nunca "cancelled" sem a marca 105102 (unknown/502 ou eventCode 105102)', async () => {
     sefin({ typed: code => (code === '101101' ? both() : undefined) })
     const out = await settle(adnAdapter.queryNfse(ctxH as any, KEY))
     expect(out?.status === 'cancelled' && out?.cancelled?.eventCode !== '105102').toBe(false)
   })
-  it.failing('[LOW R13-03] composição: a consulta com essa resposta NÃO devolve localCancelPending=true (o app aplicaria o C local sem humano)', async () => {
+  it('[CORRIGIDO — D-F84] [LOW R13-03] composição: a consulta com essa resposta NÃO devolve localCancelPending=true (o app aplicaria o C local sem humano)', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     sefin({ typed: code => (code === '101101' ? both() : undefined) })
     const r = await settle(refreshServiceTransmission(realDeps(), A, INVOICE, 'Q'))
@@ -388,6 +388,16 @@ describe('ACHADO R13-04 (LOW) — D-F76 na nfse-api: `chSubstituta` igual à PR�
     deps.storage.save(CNPJ, `${KEY}-evt101101.xml`, substEventXml(KEY), new Date('2026-10-10T21:43:04Z'), 'H', 'America/Sao_Paulo')
     const v = await getServiceFiscalView(deps, A, INVOICE)
     expect(v.substitution?.substituteAccessKey).toBeNull()       // hoje: a própria KEY
+  })
+  it('D-F85 (= Q-F91): chSubstituta de OUTRO emitente (posições 9–23 diferentes) → null; do mesmo emitente → exibida', async () => {
+    const current = tx({ attempt: 1, lastKind: 'C', lastCode: '105102' })
+    ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [current], events: [] })
+    const otherIssuer = `${SUBST_KEY.slice(0, 8)}2${'98765432000188'}${SUBST_KEY.slice(23)}`
+    for (const [key, expected] of [[otherIssuer, null], [SUBST_KEY, SUBST_KEY]] as const) {
+      fs.rmSync(path.join(storageRoot, CNPJ), { recursive: true, force: true })
+      deps.storage.save(CNPJ, `${KEY}-evt101101.xml`, substEventXml(key), new Date('2026-10-10T21:43:04Z'), 'H', 'America/Sao_Paulo')
+      expect((await getServiceFiscalView(deps, A, INVOICE)).substitution?.substituteAccessKey).toBe(expected)
+    }
   })
 })
 

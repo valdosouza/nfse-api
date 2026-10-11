@@ -352,9 +352,15 @@ describe('RODADA 14 — L6/L7 no adaptador ADN da nfse-api', () => {
     const out = await adnAdapter.queryNfse(ctxH as any, KEY)
     expect(out).toMatchObject({ status: 'cancelled', cancelled: { eventCode: '101101' } })
   })
-  it('L7: o GET tipado traz DOIS itens desta chave (outro tipo antes do perguntado) → vale o do tipo PERGUNTADO, sem 502', async () => {
+  it('D-F84 (= Q-F90 — supera o L7): o GET tipado traz DOIS tipos desta chave (305101 antes do 101101 perguntado) → AMBÍGUO (unknown)', async () => {
     const both = { ...SEFIN, eventos: [typedItem(arquivo2(generatedEventXml({ code: '305101' })), '305101'), typedItem(arquivo2(generatedEventXml({ code: '101101' })))] }
     sefin({ typed: code => (code === '101101' ? ok(both) : undefined) })
+    const out = await adnAdapter.queryNfse(ctxH as any, KEY)
+    expect(out.status).toBe('unknown')
+  })
+  it('D-F84: dois itens do MESMO tipo desta chave (repetição) → vale (não é contradição)', async () => {
+    const twice = { ...SEFIN, eventos: [typedItem(arquivo2(generatedEventXml({ code: '101101' }))), typedItem(arquivo2(generatedEventXml({ code: '101101' })))] }
+    sefin({ typed: code => (code === '101101' ? ok(twice) : undefined) })
     const out = await adnAdapter.queryNfse(ctxH as any, KEY)
     expect(out).toMatchObject({ status: 'cancelled', cancelled: { eventCode: '101101' } })
   })
