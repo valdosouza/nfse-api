@@ -365,3 +365,51 @@ describe('RODADA 14 — L6/L7 no adaptador ADN da nfse-api', () => {
     expect(out).toMatchObject({ status: 'cancelled', cancelled: { eventCode: '101101' } })
   })
 })
+
+// ===========================================================================
+// RODADA 16 (Valdo 2026-10-11, "siga as recomendações" — gates da Rodada 15): D-F86 (o laço para no primeiro tipo — fixado) e
+// D-F87 (a passada registra o ambíguo persistente COM a nota, para o alarme da F3)
+// ===========================================================================
+describe('RODADA 16 — D-F86/D-F87 na nfse-api', () => {
+  it('D-F86 (CONHECIMENTO NEGATIVO): rota 101101 limpa + um e105102 na rota dele → "cancelled 101101" e a rota 105102 NEM é perguntada (cancelamento é único por NFS-e — D-F61)', async () => {
+    sefin({ typed: code => (code === '101101' ? typedOk(typedItem(arquivo2(generatedEventXml({ code: '101101' }))))
+      : code === '105102' ? typedOk(typedItem(arquivo2(generatedEventXml({ code: '105102' })), '105102')) : undefined) })
+    const out = await adnAdapter.queryNfse(ctxH as any, KEY)
+    expect(out).toMatchObject({ status: 'cancelled', cancelled: { eventCode: '101101' } })
+    const asked = mockHttp.mock.calls.map((c: any[]) => String(c[0].url).match(/\/eventos\/(\d+)\/1$/)?.[1]).filter(Boolean)
+    expect(asked).toEqual(['101101'])
+  })
+  it('D-F87: a passada com resposta AMBÍGUA persistente registra "Fisco ambíguo persistente" COM institution, nota e tentativa (o alarme da F3 sabe QUAL nota)', async () => {
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
+    ;(repo.listRefreshCandidates as jest.Mock).mockResolvedValue([tx({ lastKind: 'A' })])
+    sefin({ typed: code => (code === '101101' ? typedOk(typedItem(arquivo2(generatedEventXml({ code: '101101' }))), typedItem(arquivo2(generatedEventXml({ code: '105102' })), '105102')) : undefined) })
+    const r = await refreshOpenServiceTransmissions(realDeps(), A)
+    expect(r.errors[0]).toMatchObject({ code: 'FISCAL_AUTHORITY_UNKNOWN_RESPONSE' })
+    const logged = ((fiscal.logger as any).error as jest.Mock).mock.calls.find((c: any[]) => /Fisco ambíguo persistente/.test(String(c[0])))
+    expect(logged?.[1]).toMatchObject({ institutionId: A.institutionId, invoiceId: INVOICE, attempt: 1 })
+  })
+})
+
+// ===========================================================================
+// RODADA 17 (Valdo 2026-10-11, "siga as recomendações"): D-F91 — o alarme do ambíguo também na consulta da TELA e na RECONFERÊNCIA
+// ===========================================================================
+describe('RODADA 17 — D-F91 na nfse-api', () => {
+  const ambiguousLogs = () => ((fiscal.logger as any).error as jest.Mock).mock.calls.filter((c: any[]) => /Fisco ambíguo persistente/.test(String(c[0])))
+  const CONTRA = (code: string) => (code === '101101' ? typedOk(typedItem(arquivo2(generatedEventXml({ code: '101101' }))), typedItem(arquivo2(generatedEventXml({ code: '105102' })), '105102')) : undefined)
+  it('D-F91: a consulta da TELA com resposta ambígua → 502 e UM alarme "consulta" com institution e nota', async () => {
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
+    sefin({ typed: CONTRA })
+    const out = await settle(refreshServiceTransmission(realDeps(), A, INVOICE, 'Q'))
+    expect(out).toMatchObject({ statusCode: 502, code: 'FISCAL_AUTHORITY_UNKNOWN_RESPONSE' })
+    expect(ambiguousLogs()).toHaveLength(1)
+    expect(ambiguousLogs()[0][1]).toMatchObject({ origin: 'consulta', institutionId: A.institutionId, invoiceId: INVOICE })
+  })
+  it('D-F91: o rodízio registra UMA vez (origem "rodizio", tentativa e última voz)', async () => {
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
+    ;(repo.listRefreshCandidates as jest.Mock).mockResolvedValue([tx({ lastKind: 'A' })])
+    sefin({ typed: CONTRA })
+    await refreshOpenServiceTransmissions(realDeps(), A)
+    expect(ambiguousLogs()).toHaveLength(1)
+    expect(ambiguousLogs()[0][1]).toMatchObject({ origin: 'rodizio', invoiceId: INVOICE, attempt: 1, lastKind: 'A' })
+  })
+})

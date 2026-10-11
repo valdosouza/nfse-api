@@ -228,9 +228,11 @@ describe('D-F51 — ordem de travas, corrida com o POST em curso, prova da recon
     expect(touchOrder).toBeLessThan(insOrder)
     expect(erpM.lockInvoice.mock.calls[0][0]).toBe(conn)
     expect(fM.openIssuer.mock.calls.every(c => !c[3]?.forUpdate && !c[3]?.conn)).toBe(true)       // emissor fora da transação
-    // touch (NOW() do 1º comando) ≤ voz (NOW() do 2º): no mesmo segundo ou antes — a prova exige ESTRITAMENTE maior
-    expect(actualFiscal.reconfirmationProven({ lastQueriedAt: '2026-10-04 10:00:00', lastEventAt: '2026-10-04 10:00:00' })).toBe(false)
-    expect(actualFiscal.reconfirmationProven({ lastQueriedAt: '2026-10-04 10:00:00', lastEventAt: '2026-10-04 10:00:01' })).toBe(false)
+    // D-F90: a prova é o E2404 explícito (`nfseNotGeneratedAt`), não o touch; e mesmo ele, no mesmo segundo do F (a consulta que o
+    // GEROU) ou antes, não prova — estritamente maior. O F que fecha a reserva nunca grava a prova (recordInterruptedFailure)
+    expect(actualFiscal.reconfirmationProven({ nfseNotGeneratedAt: '2026-10-04 10:00:00', lastEventAt: '2026-10-04 10:00:00' })).toBe(false)
+    expect(actualFiscal.reconfirmationProven({ nfseNotGeneratedAt: '2026-10-04 10:00:00', lastEventAt: '2026-10-04 10:00:01' })).toBe(false)
+    expect(conn.query.mock.calls.some((c: any[]) => /nfse_not_generated_at/.test(String(c[0])))).toBe(false)
     expect(conn.commit).toHaveBeenCalled()
   })
 

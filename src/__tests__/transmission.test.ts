@@ -484,13 +484,23 @@ describe('cancelar no fisco — operação EM LINHA (D-F28)', () => {
 describe('reconfirmar (Q-ADV1b → D-F29) — a PROVA lida no banco', () => {
   const fq = (over: any = {}) => tx({ lastKind: 'F', lastSource: 'Q', accessKey: null, environment: 'P', ...over })
 
-  it('F por consulta em P sem chave: fisco não acha → grava last_queried_at na CANDIDATA (a prova) e nada mais', async () => {
+  it('F por consulta em P sem chave: fisco não acha (E2404) → grava a PROVA na CANDIDATA (`nfse_not_generated_at`, D-F90) e nada mais', async () => {
     ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [fq({ attempt: 1 }), tx({ attempt: 2, lastKind: 'R', accessKey: null, environment: 'P' })], events: [] })
     adapter.queryDpsAccessKey.mockResolvedValue(null)
+    const base = pool.query.getMockImplementation()
+    pool.query.mockImplementation(async (sql: string, p: any[]) => (/nfse_not_generated_at = NOW\(\)/.test(sql) ? [{ affectedRows: 1 }] : base!(sql, p)))
     const r = await reconfirmBeforeLocalCancel(deps, A, INVOICE)
     expect(r).toEqual({ invoiceId: INVOICE, needed: true, found: false, attempt: 1, accessKey: null })
     expect(repo.touchQueriedAt).toHaveBeenCalledWith(pool, 1, INVOICE, 1)
+    expect(pool.query.mock.calls.filter((c: any[]) => /nfse_not_generated_at = NOW\(\)/.test(String(c[0])))).toHaveLength(1)
     expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()
+  })
+  it('LOW-4 do gate da Rodada 16: a guarda da prova recusa (a voz mudou durante a pergunta) → 409 RESOURCE_BUSY "consulte de novo", nunca "reconferido"', async () => {
+    ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [fq({ attempt: 1 })], events: [] })
+    adapter.queryDpsAccessKey.mockResolvedValue(null)
+    const base = pool.query.getMockImplementation()
+    pool.query.mockImplementation(async (sql: string, p: any[]) => (/nfse_not_generated_at = NOW\(\)/.test(sql) ? [{ affectedRows: 0 }] : base!(sql, p)))
+    await expect(reconfirmBeforeLocalCancel(deps, A, INVOICE)).rejects.toMatchObject({ statusCode: 409, code: 'RESOURCE_BUSY' })
   })
 
   it('o fisco AGORA acha a NFS-e → reconcilia (A) — e se nada pousou, 409 (não cancela no escuro)', async () => {

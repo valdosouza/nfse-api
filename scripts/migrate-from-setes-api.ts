@@ -12,6 +12,9 @@
 // NULL — §13.3), se uma vida tem DOIS Ids de DPS (premissa da D-F30) ou se o `fiscal_api` tem fato que a
 // origem não tem / diverge dela (DPS de outra vida, tentativa a mais, voz com kind trocado) — isso é
 // DUAL-WRITE, que a cerca da virada impede. `--dry-run` desfaz no fim.
+// D-F90 (Valdo 2026-10-11): `nfse_not_generated_at` (a PROVA da D-F29 — E2404 explícito) NÃO existe na origem e não é copiado:
+// nasce NULL na réplica e o valor do destino é preservado. Um F por consulta migrado do ERP chega SEM prova — depois da virada
+// o cancelamento local exige reconferência nova (falha fechada, desejado).
 //
 // D-F39 (Valdo 2026-10-04): a cerca é o FATO `cutover_at` na habilitação do `fiscal_api` (migration 003 do núcleo) —
 // NULL = RÉPLICA do ERP. Escopo DERIVADO DO DADO (sem variável de ambiente): toda institution com habilitação SE no ERP

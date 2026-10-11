@@ -17,7 +17,7 @@ import {
 import {
   TransmissionRow, TransmissionEventRow, getLifeDps, insertLifeDps, getTransmission, latestTransmission,
   findTransmissionByDpsId, findKeyHolder, listLifeTransmissions, insertTransmission, fillAuthorityData, insertTransmissionEvent,
-  hasTransmissionEvent, findTransmissionEventByKind, touchQueriedAt, listRefreshCandidates,
+  hasTransmissionEvent, findTransmissionEventByKind, touchQueriedAt, recordNfseNotGenerated, listRefreshCandidates,
   DEFAULT_CANCEL_DAYS, REFRESH_AUTHORIZED_MARGIN_DAYS,
 } from './repository'
 import { toTsString } from '../authority/dps-builder'
@@ -34,7 +34,8 @@ import { toTsString } from '../authority/dps-builder'
  *  - D-F30: o DPS de cada VIDA (série + nDPS + Id) nasce UMA vez em `tb_invoice_service_dps`;
  *  - D-F11/D-F28: NENHUM efeito no ERP — a voz C é gravada e devolvida; o C local é do setes-api, e a
  *    pendência (voz C × nota ainda não-C) é DERIVADA; a voz C não volta ao rodízio;
- *  - D-F29: a reconfirmação no fisco (Q-ADV1b) virou ato próprio, e grava a PROVA (`last_queried_at`);
+ *  - D-F29: a reconfirmação no fisco (Q-ADV1b) virou ato próprio, e grava a PROVA — o E2404 EXPLÍCITO
+ *    (`nfse_not_generated_at`, D-F90), nunca o carimbo do rodízio (`last_queried_at`);
  *  - sem `Map/Set` de controle em memória: o rodízio usa um ALUGUEL na linha do emissor; o lote é do app.
  * Gates da F1 (2026-10-04 — §15.4): titular da chave só no MESMO ambiente; nenhuma leitura travante
  * redundante sob a trava da nota; cancelamento com RESERVA em voo (K antes do fisco); rodízio filtrado no SQL.
@@ -462,9 +463,36 @@ async function recordCancelVoice(
   return { event, inserted: true, code: eventCode && CANCEL_EVENT_CODES.has(eventCode) ? eventCode : null }
 }
 
+/**
+ * D-F87/D-F91 (= Q-F93 (a)/Q-F97 (a), Valdo 2026-10-11): resposta AMBÍGUA do fisco é fail-closed (nada grava) — a saída é o ALARME
+ * da F3, que AGREGA por nota; só a composição sabe QUAL nota: o log leva institution, nota, tentativa (quando conhecida) e a ORIGEM
+ * (rodízio, consulta pela tela, reconferência). Nunca a chave de acesso.
+ */
+export function logAmbiguousFiscal(
+  origin: 'rodizio' | 'consulta' | 'reconferencia',
+  at: { institutionId: number; invoiceId: number; attempt?: number | null; lastKind?: string | null }, err: unknown,
+): void {
+  if (!(err instanceof HttpError) || err.code !== ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE) return
+  logger.error('Fisco ambíguo persistente: a nota não pôde ser concluída no fisco',
+    { origin, institutionId: at.institutionId, invoiceId: at.invoiceId, attempt: at.attempt ?? null, lastKind: at.lastKind ?? null, err: errMsg(err) })
+}
+
 export async function refreshServiceTransmission(
   deps: NfseDeps, actor: Actor, invoiceId: number, source: Exclude<TransmissionSource, 'P'> = 'Q',
-  opts: { query?: NfseQuery; attempt?: number } = {},
+  opts: { query?: NfseQuery; attempt?: number; fromRun?: boolean } = {},
+): Promise<RefreshResult> {
+  try {
+    return await refreshServiceTransmissionInner(deps, actor, invoiceId, source, opts)
+  } catch (err) {
+    // D-F91: a consulta pedida pela TELA; o rodízio (`fromRun`) e a reconferência (`query` pronta) registram por si, com mais contexto
+    if (!opts.query && !opts.fromRun) logAmbiguousFiscal('consulta', { institutionId: actor.institutionId, invoiceId, attempt: opts.attempt ?? null }, err)
+    throw err
+  }
+}
+
+async function refreshServiceTransmissionInner(
+  deps: NfseDeps, actor: Actor, invoiceId: number, source: Exclude<TransmissionSource, 'P'>,
+  opts: { query?: NfseQuery; attempt?: number; fromRun?: boolean },
 ): Promise<RefreshResult> {
   const { schemaName: s, institutionId, userId } = actor
   const life = await erp.invoiceLife(deps.pool, s, institutionId, invoiceId)
@@ -509,7 +537,9 @@ export async function refreshServiceTransmission(
             // LIDA e NÃO carimba last_queried_at: este GET /dps é ANTERIOR à voz do vencedor (a prova da D-F29 exige posterior)
             if (closed.current) return unchanged(closed.current)
           }
-          await touchQueriedAt(deps.pool, institutionId, invoiceId, tx0.attempt)   // em voo recente (ou já com voz): só "nós olhamos"
+          await touchQueriedAt(deps.pool, institutionId, invoiceId, tx0.attempt)   // em voo recente (ou já com voz): "nós olhamos"
+          // D-F90: o E2404 desta pergunta é fato (inclusive na revisita do F — D-F52); só pousa se a voz vista ainda é a última
+          await recordNfseNotGenerated(deps.pool, institutionId, invoiceId, tx0.attempt, tx0.lastEvent ?? null)
           return unchanged(tx0)
         }
         target = holder ?? tx0
@@ -638,8 +668,9 @@ export interface ReconfirmResult {
 
 /**
  * A conferência que o setes-api fazia dentro do cancelamento local agora é pedida pelo APP aqui. Não
- * achou → grava `last_queried_at` na candidata: é a PROVA que o setes-api exige (consulta POSTERIOR ao
- * F) antes de cancelar localmente. Fisco fora → o erro sobe (fail-closed: não se prova no escuro).
+ * achou (E2404 explícito) → grava `nfse_not_generated_at` na candidata: é a PROVA que o setes-api exige (resposta
+ * POSTERIOR ao F — D-F90) antes de cancelar localmente. Fisco fora/ambíguo → o erro sobe (fail-closed: não se prova
+ * no escuro) e nada é carimbado como prova.
  */
 export async function reconfirmBeforeLocalCancel(deps: NfseDeps, actor: Actor, invoiceId: number): Promise<ReconfirmResult> {
   const { schemaName: s, institutionId } = actor
@@ -648,11 +679,30 @@ export async function reconfirmBeforeLocalCancel(deps: NfseDeps, actor: Actor, i
   const { transmissions } = await listLifeTransmissions(deps.pool, institutionId, invoiceId, life.lifeEvent)
   const cand = reconfirmationCandidate(transmissions)
   if (!cand) return { invoiceId, needed: false, found: false, attempt: null, accessKey: null }
+  try {
+    return await reconfirmCandidate(deps, actor, invoiceId, cand, transmissions, life.lifeEvent)
+  } catch (err) {
+    logAmbiguousFiscal('reconferencia', { institutionId, invoiceId, attempt: cand.attempt }, err)   // D-F91
+    throw err
+  }
+}
+
+async function reconfirmCandidate(
+  deps: NfseDeps, actor: Actor, invoiceId: number, cand: TransmissionRow, transmissions: TransmissionRow[], lifeEvent: number | null,
+): Promise<ReconfirmResult> {
+  const { institutionId } = actor
   const opened = await openIssuer(estDeps(deps), institutionId, SERVICE_MODEL, { schemaName: actor.schemaName })
   const ctx = ctxFor(opened, cand.environment)
   const key = await deps.adapter.queryDpsAccessKey(ctx, cand.dpsId!)
   if (!key) {
     await touchQueriedAt(deps.pool, institutionId, invoiceId, cand.attempt)
+    // D-F90: a prova é o E2404 desta pergunta, gravado só se a voz vista (o F da candidata) ainda é a última. LOW-4 do gate da
+    // Rodada 16: se a guarda recusou (outra voz nasceu durante a pergunta), a resposta NÃO afirma a reconferência — o app consulta
+    // de novo (a F2a recusaria o cancelamento local de qualquer jeito; a resposta não pode dizer um fato que não foi gravado)
+    if (!(await recordNfseNotGenerated(deps.pool, institutionId, invoiceId, cand.attempt, cand.lastEvent ?? null))) {
+      throw new HttpError(409, 'A tentativa mudou durante a reconferência no fisco — consulte a nota de novo antes de cancelar',
+        [{ field: 'fiscal', message: 'Tentativa mudou' }], ErrorCodes.RESOURCE_BUSY)
+    }
     return { invoiceId, needed: true, found: false, attempt: cand.attempt, accessKey: null }
   }
   logger.warn('NFS-e achada no fisco para DPS dado como sem resposta — reconciliando antes do cancelamento local',
@@ -663,7 +713,7 @@ export async function reconfirmBeforeLocalCancel(deps: NfseDeps, actor: Actor, i
   const minter = [...transmissions].sort((a, b) => a.attempt - b.attempt)
     .find(t => t.dpsId === cand.dpsId && t.environment === cand.environment) ?? cand
   await refreshServiceTransmission(deps, actor, invoiceId, 'Q', { attempt: minter.attempt, query })
-  const after = await listLifeTransmissions(deps.pool, institutionId, invoiceId, life.lifeEvent)
+  const after = await listLifeTransmissions(deps.pool, institutionId, invoiceId, lifeEvent)
   if (!after.transmissions.some(t => !!t.accessKey)) {
     throw new HttpError(409, `A NFS-e deste DPS existe no fisco (chave ${key}) mas não foi reconciliada — consulte a nota antes de cancelar`,
       [{ field: 'fiscal', message: 'NFS-e existe no fisco' }], ErrorCodes.FISCAL_TRANSMISSION_IN_PROGRESS)
@@ -928,7 +978,7 @@ export async function refreshOpenServiceTransmissions(
       lease = renewed
       try {
         report.checked += 1
-        const r = await refreshServiceTransmission(deps, actor, tx.invoiceId, 'Q', { attempt: tx.attempt })
+        const r = await refreshServiceTransmission(deps, actor, tx.invoiceId, 'Q', { attempt: tx.attempt, fromRun: true })
         if (r.changed) report.changed += 1
       } catch (err) {
         const busy = err instanceof HttpError ? null : contentionToHttpError(err)
@@ -948,6 +998,7 @@ export async function refreshOpenServiceTransmissions(
         if (stopsTheRun(err)) { report.stoppedEarly = true; break }
         // falha PERSISTENTE também conta como "tentamos olhar" — senão monopoliza o rodízio
         if (isPersistentRefreshFailure(err)) {
+          logAmbiguousFiscal('rodizio', { institutionId: actor.institutionId, invoiceId: tx.invoiceId, attempt: tx.attempt, lastKind: tx.lastKind ?? null }, err)   // D-F87
           try { await touchQueriedAt(deps.pool, actor.institutionId, tx.invoiceId, tx.attempt) }
           catch (touchErr) { logger.warn('Consulta ativa: não marcou last_queried_at', { institutionId: actor.institutionId, invoiceId: tx.invoiceId, err: errMsg(touchErr) }) }
         }

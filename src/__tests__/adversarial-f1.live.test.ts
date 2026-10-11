@@ -598,8 +598,9 @@ d('GATE ADVERSARIAL F1 — banco real + fisco falso', () => {
       const r0 = track('reconf fisco fora', await request(app).post(`/v1/nfse/invoices/${tgt}/reconfirm`).set(a))
       fakeAdapter.queryDpsAccessKey = realDps
       expect([r0.status, r0.body.code]).toEqual([503, 'FISCAL_AUTHORITY_UNAVAILABLE'])
-      const proof0 = (await q(`SELECT last_queried_at qa, last_event_at ea FROM vw_invoice_service_transmission WHERE tb_institution_id = ? AND tb_invoice_id = ? AND attempt = ?`, [INST, tgt, cand.attempt]))[0]
-      expect(proof0.qa === null || proof0.qa <= proof0.ea).toBe(true)          // nada provado no escuro
+      // D-F90: a prova é o E2404 explícito (`nfse_not_generated_at`), nunca o carimbo do rodízio
+      const proof0 = (await q(`SELECT nfse_not_generated_at ng, last_event_at ea FROM vw_invoice_service_transmission WHERE tb_institution_id = ? AND tb_invoice_id = ? AND attempt = ?`, [INST, tgt, cand.attempt]))[0]
+      expect(proof0.ng === null || proof0.ng <= proof0.ea).toBe(true)          // nada provado no escuro
       const r1 = track('reconf não acha', await request(app).post(`/v1/nfse/invoices/${tgt}/reconfirm`).set(a))
       expect(r1.body.data).toMatchObject({ needed: true, found: false, attempt: cand.attempt })
       const v1 = (await q(`${fiscal.transmissionViewSelect(ctx.fiscalDb)} WHERE v.tb_institution_id = ? AND v.tb_invoice_id = ? AND v.attempt = ?`, [INST, tgt, cand.attempt])).map(fiscal.mapTransmissionView)[0]

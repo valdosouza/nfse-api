@@ -160,7 +160,7 @@ import { refreshOpenServiceTransmissions, reconfirmBeforeLocalCancel, IN_FLIGHT_
 const OTHER_KEY = `${KEY.slice(0, 40)}9999999999`
 const item = (code: string, o: { key?: string; inner?: string } = {}) =>
   typedItem(arquivo2(generatedEventXml({ code, key: o.key, inner: o.inner })), code, o.key ?? KEY)
-const divergentLogged = () => ((fiscal.logger as any).error as jest.Mock).mock.calls.some((c: any[]) => /tipos diferentes de cancelamento/.test(String(c[0])))
+const divergentLogged = () => ((fiscal.logger as any).error as jest.Mock).mock.calls.some((c: any[]) => /tipos diferentes de (cancelamento|evento)/.test(String(c[0])))   // D-F88: o log diz "de evento"
 const pooledTouches = () => (repo.touchQueriedAt as jest.Mock).mock.calls.filter((c: any[]) => c[0] === pool)
 
 /** A Sefin falsa com `/dps/{id}` (a revisita do F e a reconferência perguntam a chave pelo Id do DPS). */
@@ -192,12 +192,12 @@ beforeEach(() => {
 
 describe('ACHADO R15-01 (LOW) — D-F84 na nfse-api só conta tipos DO DOMÍNIO de cancelamento: [e105105 (cancelamento INDEFERIDO), e105104 (DEFERIDO)] gerados desta chave em /eventos/105104/1 → o 105105 cai no filtro `CANCEL_EVENT_CODES` antes do conjunto de tipos e a resposta antagônica vira cancelled 105104 (C local automático)', () => {
   const deferredAndRefused = (code: string) => (code === '105104' ? typedOk(item('105105'), item('105104')) : undefined)
-  it.failing('[LOW R15-01] adaptador: tipos diferentes gerados desta chave no mesmo GET tipado → unknown (502), nunca "cancelled"', async () => {
+  it('[CORRIGIDO — D-F88] [LOW R15-01] adaptador: tipos diferentes gerados desta chave no mesmo GET tipado → unknown (502), nunca "cancelled"', async () => {
     fisco({ typed: deferredAndRefused })
     const out = await settle(adnAdapter.queryNfse(ctxH as any, KEY))
     expect(out?.status === 'cancelled').toBe(false)              // hoje: cancelled 105104
   })
-  it.failing('[LOW R15-01] composição: a consulta com essa resposta NÃO devolve localCancelPending=true (o app aplicaria o C local sem humano)', async () => {
+  it('[CORRIGIDO — D-F88] [LOW R15-01] composição: a consulta com essa resposta NÃO devolve localCancelPending=true (o app aplicaria o C local sem humano)', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     fisco({ typed: deferredAndRefused })
     const r = await settle(refreshServiceTransmission(realDeps(), A, INVOICE, 'Q'))
@@ -213,7 +213,7 @@ describe('ACHADO R15-02 (MEDIUM — pré-existente D-F52 × D-F63, latente até 
     expect(reconfirmationCandidate([f])).toMatchObject({ attempt: 1 })
     expect(reconfirmationProven(f)).toBe(false)
   })
-  it.failing('[MEDIUM R15-02] rodízio: revisita do F + GET /dps ACHA a chave + /eventos/101101/1 contraditório (D-F84) → a prova da D-F29 continua FALSA (o fisco mostrou a NFS-e: "não se prova no escuro")', async () => {
+  it('[CORRIGIDO — D-F90] [MEDIUM R15-02] rodízio: revisita do F + GET /dps ACHA a chave + /eventos/101101/1 contraditório (D-F84) → a prova da D-F29 continua FALSA (o fisco mostrou a NFS-e: "não se prova no escuro")', async () => {
     const f = F()
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(f)
     ;(repo.listRefreshCandidates as jest.Mock).mockResolvedValue([f])
@@ -226,7 +226,7 @@ describe('ACHADO R15-02 (MEDIUM — pré-existente D-F52 × D-F63, latente até 
     expect(reconfirmationCandidate([after])).not.toBeNull()
     expect(reconfirmationProven(after)).toBe(false)              // hoje: true — o setes-api (F2a) cancelaria localmente
   })
-  it.failing('[MEDIUM R15-02] mesma raiz, sem a D-F84: revisita do F + GET /dps AMBÍGUO (404 sem o corpo do fisco — gateway) → a prova da D-F29 continua FALSA ("404 vazio não é conclusivo" — Q-ADV1a)', async () => {
+  it('[CORRIGIDO — D-F90] [MEDIUM R15-02] mesma raiz, sem a D-F84: revisita do F + GET /dps AMBÍGUO (404 sem o corpo do fisco — gateway) → a prova da D-F29 continua FALSA ("404 vazio não é conclusivo" — Q-ADV1a)', async () => {
     const f = F()
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(f)
     ;(repo.listRefreshCandidates as jest.Mock).mockResolvedValue([f])
@@ -325,5 +325,72 @@ describe('RESISTIU — D-F85 na nfse-api: `chSubstituta` × emitente embutido na
       new Date('2026-10-10T21:43:04Z'), 'H', 'America/Sao_Paulo')
     const v = await getServiceFiscalView(deps, A, INVOICE)
     expect(v.substitution?.substituteAccessKey ?? null).toBe(expected ? sub.trim() : null)
+  })
+})
+
+// ===========================================================================
+// D-F90 (= Q-F96 (c), Valdo 2026-10-11 — parecer do guardião): a prova da D-F29 é o E2404 EXPLÍCITO (`nfse_not_generated_at`),
+// gravado por escritor PRÓPRIO e só quando a voz vista ainda é a última; o carimbo do rodízio nunca prova
+// ===========================================================================
+describe('D-F90 — prova explícita do "NFS-e não gerada" (E2404)', () => {
+  const F = () => tx({ environment: 'P', accessKey: null, nfseNumber: null, dhProc: null, lastKind: 'F', lastSource: 'Q', lastEvent: 2,
+    lastEventAt: '2026-10-09 10:00:00', lastQueriedAt: '2026-10-09 10:00:00' })
+  const notGeneratedWrites = () => pool.query.mock.calls.filter((c: any[]) => /nfse_not_generated_at = NOW\(\)/.test(String(c[0])))
+  it('o ATO da reconferência com E2404 grava a prova pelo escritor próprio, guardado pela voz VISTA (o F da candidata, evento 2)', async () => {
+    const f = F()
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(f)
+    ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [f], events: [] })
+    fisco({})                                                                  // GET /dps → 404 {erro:{codigo:'E2404'}}
+    const base = pool.query.getMockImplementation()
+    pool.query.mockImplementation(async (sql: string, p: any[]) => (/nfse_not_generated_at = NOW\(\)/.test(sql) ? [{ affectedRows: 1 }] : base!(sql, p)))
+    const r = await reconfirmBeforeLocalCancel(realDeps(), A, INVOICE)
+    expect(r).toMatchObject({ needed: true, found: false, attempt: 1 })
+    expect(notGeneratedWrites()).toHaveLength(1)
+    expect(notGeneratedWrites()[0][1]).toEqual([A.institutionId, INVOICE, 1, 2])
+    expect(String(notGeneratedWrites()[0][0]).replace(/\s+/g, ' ')).toContain('COALESCE(MAX(e.event), 0) FROM tb_invoice_service_transmission_event e')
+  })
+  it('a revisita do F pelo rodízio com E2404 também grava (guardada pela voz vista); com resposta AMBÍGUA nunca grava', async () => {
+    const f = F()
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(f)
+    ;(repo.listRefreshCandidates as jest.Mock).mockResolvedValue([f])
+    fisco({})
+    await refreshOpenServiceTransmissions(realDeps(), A)
+    expect(notGeneratedWrites().map((c: any[]) => c[1])).toEqual([[A.institutionId, INVOICE, 1, 2]])
+    pool.query.mockClear()
+    fisco({ dpsKey: KEY, typed: CONTRADICTION_101101 })                     // a NFS-e existe; a leitura é ambígua (502)
+    await refreshOpenServiceTransmissions(realDeps(), A)
+    expect(notGeneratedWrites()).toHaveLength(0)
+    fisco({ dps: () => ({ status: 404, headers: {}, text: '' }) })            // 404 sem o corpo do fisco: não é E2404
+    await refreshOpenServiceTransmissions(realDeps(), A)
+    expect(notGeneratedWrites()).toHaveLength(0)
+  })
+  it('o escritor devolve false quando a voz mudou desde a pergunta (resposta velha não pousa — gate r10)', async () => {
+    const actualRepo = jest.requireActual('../nfse/repository')
+    const q = { query: jest.fn(async () => [{ affectedRows: 0 }]) }
+    expect(await actualRepo.recordNfseNotGenerated(q, 1, INVOICE, 1, 2)).toBe(false)
+    q.query.mockResolvedValueOnce([{ affectedRows: 1 }] as any)
+    expect(await actualRepo.recordNfseNotGenerated(q, 1, INVOICE, 1, null)).toBe(true)
+    expect((q.query.mock.calls[1] as any[])[1]).toEqual([1, INVOICE, 1, 0])      // sem voz vista = 0
+  })
+  it('a prova: E2404 no MESMO instante do F (a consulta que o gerou) não prova; posterior prova; o carimbo do rodízio nunca', () => {
+    const f = F()
+    expect(reconfirmationProven({ ...f, nfseNotGeneratedAt: f.lastEventAt })).toBe(false)
+    expect(reconfirmationProven({ ...f, nfseNotGeneratedAt: '2026-10-10 09:00:00' })).toBe(true)
+    expect(reconfirmationProven({ ...f, nfseNotGeneratedAt: null, lastQueriedAt: '2026-10-10 09:00:00' })).toBe(false)
+  })
+})
+
+describe('D-F91 (Rodada 17) — reconferência ambígua alimenta o alarme', () => {
+  it('reconferência com GET /dps achando a chave e resposta contraditória → 502 fail-closed, UM alarme "reconferencia" com a tentativa, nenhuma prova', async () => {
+    const f = tx({ environment: 'P', accessKey: null, nfseNumber: null, dhProc: null, lastKind: 'F', lastSource: 'Q', lastEvent: 2,
+      lastEventAt: '2026-10-09 10:00:00', lastQueriedAt: '2026-10-09 10:00:00' })
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(f)
+    ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [f], events: [] })
+    fisco({ dpsKey: KEY, typed: CONTRADICTION_101101 })
+    expect(await settle(reconfirmBeforeLocalCancel(realDeps(), A, INVOICE))).toMatchObject(fiscalUnknown)
+    const logs = ((fiscal.logger as any).error as jest.Mock).mock.calls.filter((c: any[]) => /Fisco ambíguo persistente/.test(String(c[0])))
+    expect(logs).toHaveLength(1)
+    expect(logs[0][1]).toMatchObject({ origin: 'reconferencia', institutionId: A.institutionId, invoiceId: INVOICE, attempt: 1 })
+    expect(pool.query.mock.calls.some((c: any[]) => /nfse_not_generated_at = NOW/.test(String(c[0])))).toBe(false)
   })
 })

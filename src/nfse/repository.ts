@@ -285,12 +285,32 @@ export async function findTransmissionEventByKind(
   return { ...r, attempt: Number(r.attempt), event: Number(r.event), userId: n(r.userId) } as TransmissionEventRow
 }
 
-/** "Nós olhamos o fisco" (com ou sem novidade) — rodízio e PROVA da reconfirmação (D-F29). */
+/** "Nós olhamos o fisco" (com ou sem novidade) — só o throttle do rodízio; NUNCA prova (D-F90). */
 export async function touchQueriedAt(q: Q, institutionId: number, invoiceId: number, attempt: number): Promise<void> {
   await q.query(
     `UPDATE tb_invoice_service_transmission SET last_queried_at = NOW()
       WHERE tb_institution_id = ? AND tb_invoice_id = ? AND terminal = 0 AND attempt = ?`,
     [institutionId, invoiceId, attempt])
+}
+
+/**
+ * D-F90 (= Q-F96 (c), Valdo 2026-10-11 — parecer do guardião): o fisco respondeu E2404 ("nenhuma NFS-e para este Id de DPS")
+ * a uma pergunta desta tentativa — a PROVA da reconfirmação (D-F29). Só pousa se a última voz da tentativa ainda é a que a
+ * pergunta VIU (`seenLastEvent`, null = sem voz): resposta velha nunca prova (gate r10 — outro escritor gravou o F depois do GET).
+ * Relógio NOSSO (`NOW()`, o mesmo do `created_at` da voz). Comando único, sem trava longa.
+ */
+export async function recordNfseNotGenerated(
+  q: Q, institutionId: number, invoiceId: number, attempt: number, seenLastEvent: number | null,
+): Promise<boolean> {
+  const [r]: any = await q.query(
+    `UPDATE tb_invoice_service_transmission t
+        SET t.nfse_not_generated_at = NOW()
+      WHERE t.tb_institution_id = ? AND t.tb_invoice_id = ? AND t.terminal = 0 AND t.attempt = ?
+        AND (SELECT COALESCE(MAX(e.event), 0) FROM tb_invoice_service_transmission_event e
+              WHERE e.tb_institution_id = t.tb_institution_id AND e.tb_invoice_id = t.tb_invoice_id
+                AND e.terminal = t.terminal AND e.attempt = t.attempt AND e.deleted = 'N') = ?`,
+    [institutionId, invoiceId, attempt, seenLastEvent ?? 0])
+  return Number(r?.affectedRows ?? 0) > 0
 }
 
 /** D-N21: autorizadas revisitadas a cada 24 h (o fisco pode ter cancelado sem nós). */
