@@ -300,30 +300,30 @@ function refreshCallSites(roots: string[]): string[] {
 // ===========================================================================
 
 describe('ACHADO R18-01 (LOW) — D-F94: o `reason` é a MENSAGEM inteira com os dígitos trocados — texto EXTERNO interpolado nela (o `infDPS/@Id` da resposta TROCADA, `parsed.dpsId` em nfse/transmission.ts:564) passa menos os dígitos: com o CNPJ ALFANUMÉRICO de um terceiro (inscrições novas desde 07/2026) as LETRAS do documento alheio vão ao alarme', () => {
-  it('contexto: consulta da tela com a NFS-e de OUTRO DPS (terceiro com CNPJ alfanumérico) → 502, UM alarme "consulta", sem dígitos — e com o Id alheio mascarado ("DPS#ABC#DE#") dentro do rótulo', async () => {
+  it('[CORRIGIDO — D-F98] consulta da tela com a NFS-e de OUTRO DPS (terceiro com CNPJ alfanumérico) → 502, UM alarme "consulta" com a causa FECHADA `nfse-de-outro-dps`', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     adapter.queryNfse.mockResolvedValue(foreignVoice(FOREIGN_ALNUM_DPS_ID))
     expect(await settle(refreshServiceTransmission(deps, A, INVOICE, 'Q', SCREEN))).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
     expect(origins()).toEqual(['consulta'])
     expect(reasonOf()).not.toMatch(/\d/)
-    expect(reasonOf()).toContain(FOREIGN_ALNUM_DPS_ID.replace(/\d+/g, '#'))
+    expect(reasonOf()).toBe('nfse-de-outro-dps')                                   // D-F98 (b): a causa da lista FECHADA, nunca texto
   })
-  it.failing('[LOW R18-01] consulta da tela: o alarme não leva fragmento do identificador de TERCEIRO (nem as letras do CNPJ alfanumérico)', async () => {
+  it('[CORRIGIDO — D-F98] [LOW R18-01] consulta da tela: o alarme não leva fragmento do identificador de TERCEIRO (nem as letras do CNPJ alfanumérico)', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     adapter.queryNfse.mockResolvedValue(foreignVoice(FOREIGN_ALNUM_DPS_ID))
     await settle(refreshServiceTransmission(deps, A, INVOICE, 'Q', SCREEN))
     expect(reasonOf()).not.toContain('ABC')
   })
-  it('contexto: passo 0b do transmitir (reserva interrompida → o GET /dps acha a chave → a NFS-e lida é de OUTRO DPS) → 502, nada reservado, UM alarme "transmissao" com o Id alheio mascarado', async () => {
+  it('[CORRIGIDO — D-F98] passo 0b do transmitir (reserva interrompida → o GET /dps acha a chave → a NFS-e lida é de OUTRO DPS) → 502, nada reservado, UM alarme "transmissao" com a causa FECHADA', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(interrupted())
     adapter.queryDpsAccessKey.mockResolvedValue(KEY)
     adapter.queryNfse.mockResolvedValue(foreignVoice(FOREIGN_ALNUM_DPS_ID))
     expect(await settle(transmitServiceInvoice(deps, A, INVOICE))).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
     expect(adapter.transmit).not.toHaveBeenCalled(); expect(repo.insertTransmission).not.toHaveBeenCalled()
     expect(origins()).toEqual(['transmissao'])
-    expect(reasonOf()).toContain(FOREIGN_ALNUM_DPS_ID.replace(/\d+/g, '#'))
+    expect(reasonOf()).toBe('nfse-de-outro-dps')                                   // D-F98 (b): a causa da lista FECHADA, nunca texto
   })
-  it.failing('[LOW R18-01] passo 0b do transmitir: o alarme "transmissao" idem — nenhum fragmento do Id alheio', async () => {
+  it('[CORRIGIDO — D-F98] [LOW R18-01] passo 0b do transmitir: o alarme "transmissao" idem — nenhum fragmento do Id alheio', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(interrupted())
     adapter.queryDpsAccessKey.mockResolvedValue(KEY)
     adapter.queryNfse.mockResolvedValue(foreignVoice(FOREIGN_ALNUM_DPS_ID))
@@ -340,17 +340,18 @@ describe('ACHADO R18-02 (LOW, FORA do delta — a mesma classe do R17-02) — a 
     postForeign()
     expect(await settle(adnAdapter.transmit(ctxH as any, signedDps))).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
   })
-  it.failing('[LOW R18-02] …e NENHUM log carrega o documento do terceiro', async () => {
+  it('[CORRIGIDO — D-F98 (c)] [LOW R18-02] …e NENHUM log carrega o documento do terceiro', async () => {
     postForeign()
     await settle(adnAdapter.transmit(ctxH as any, signedDps))
     expect(JSON.stringify([logger.warn.mock.calls, logger.error.mock.calls, logger.info.mock.calls])).not.toContain(THIRD_CPF)
   })
-  it('contexto: o 502 da CONSULTA (OUTRO DPS) devolve ao app a mensagem com o Id alheio INTEIRO (CPF do terceiro incluso) — o alarme mascara, a resposta HTTP não', async () => {
+  it('[CORRIGIDO — D-F98 (c)] o 502 da CONSULTA (OUTRO DPS) não leva o Id alheio ao app — nem o CPF do terceiro, nem o Id inteiro; o alarme também não', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     adapter.queryNfse.mockResolvedValue(foreignVoice(FOREIGN_DPS_ID))
     const out = await settle(refreshServiceTransmission(deps, A, INVOICE, 'Q', SCREEN))
     expect(out).toMatchObject({ statusCode: 502 })
-    expect(String(out.message)).toContain(THIRD_CPF)
+    expect(String(out.message)).not.toContain(THIRD_CPF)
+    expect(String(out.message)).not.toContain(FOREIGN_DPS_ID)
     expect(JSON.stringify(ambiguousLogs()[0][1])).not.toContain(THIRD_CPF)
   })
 })
@@ -390,7 +391,7 @@ describe('ACHADO R18-07 (LOW — regressão do D-F96) — o `firstText` DES-ESCA
 // ===========================================================================
 
 describe('CONTEXTO R18-05 (LOW — Q-F105) — a reconferência da nfse-api GRAVA a prova (E2404 na candidata) mesmo com uma tentativa da MESMA identidade EM VOO; a D-F97 conta a apresentação dela pelo `createdAt` da RESERVA', () => {
-  it('contexto: vida = [F por consulta (1), em voo (2, mesmo Id, P)] → a nfse-api responde "reconferido, não gerada" (needed, !found) e carimba a prova na 1; a prova LIDA pela regra do núcleo passa se o carimbo cair depois da reserva da 2 — a recusa hoje depende do plano de cancelamento olhar a tentativa VIVA', async () => {
+  it('[CORRIGIDO — D-F99] vida = [F por consulta (1), em voo (2, mesmo Id, P)] → a nfse-api ainda responde "reconferido, não gerada" e carimba a prova na 1 (Q-F105 (c) não foi escolhida), mas a prova LIDA pela regra do núcleo NÃO passa enquanto a 2 estiver sem voz', async () => {
     const f1 = F({ attempt: 1, lastEventAt: '2026-10-09 10:00:00' })
     const v2 = inFlight({ attempt: 2, createdAt: '2026-10-11 10:00:00' })
     maxEvent = 2
@@ -401,7 +402,7 @@ describe('CONTEXTO R18-05 (LOW — Q-F105) — a reconferência da nfse-api GRAV
     expect(stamps).toEqual([{ attempt: 1, seen: 2 }])
     // o que a F2a vai ler: o carimbo (NOW() da nfse-api) 2 s depois da RESERVA da 2 — o POST dela pode chegar ao fisco depois disso
     const proof = { ...f1, nfseNotGeneratedAt: '2026-10-11 10:00:02' }
-    expect(reconfirmationProven(proof as any, [f1, v2] as any)).toBe(true)
+    expect(reconfirmationProven(proof as any, [f1, v2] as any)).toBe(false)              // D-F99: tentativa da mesma identidade sem voz
   })
   it('resistiu: a mesma vida com a 2 já RESPONDIDA (R às 10:00:05) → a prova de 10:00:02 não vale; uma reconferência nova (10:00:06) vale', () => {
     const f1 = F({ attempt: 1, lastEventAt: '2026-10-09 10:00:00' })

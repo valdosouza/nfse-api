@@ -5,6 +5,7 @@ import {
   isLiveTransmission, isAuthorized, fiscalStateOf, localCancelPending, isSubstitutionCancel, CANCEL_EVENT_CODES, reconfirmationCandidate, currentOf,
   acquireRefreshLease, releaseRefreshLease, renewRefreshLease, getIssuer, newCrashRef, contentionToHttpError, emissionStillInErp,
   ServiceFiscalState, TransmissionEventKind, TransmissionSource, AuthorityEnvironment, AuthorityContext, Queryable, runShortCommand,
+  tagAmbiguous, ambiguousCauseOf,
 } from 'fiscal-api'
 import type { TaxAuthorityAdapter, NfseQuery, MunicipalTerms } from '../authority/types'
 import fs from 'fs'
@@ -480,10 +481,10 @@ export function logAmbiguousFiscal(
 ): void {
   if (!(err instanceof HttpError) || err.code !== ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE) return
   logger.error('Fisco ambíguo persistente: a nota não pôde ser concluída no fisco',
-    // D-F94 (= Q-F100 (b), Valdo 2026-10-11): só o CÓDIGO + um rótulo SEM DÍGITOS — a mensagem inteira podia levar o Id de DPS de OUTRA
-    // nota (que embute o CPF/CNPJ de outro prestador) ao alarme (R17-02)
+    // D-F94 (= Q-F100 (b)) → D-F98 (= Q-F104 (b), Valdo 2026-10-11): só o CÓDIGO + a CAUSA da lista FECHADA (`ambiguousCauseOf`) —
+    // nunca texto da mensagem/resposta: a máscara de dígitos da D-F94 deixava passar as LETRAS de um CNPJ alfanumérico (R18-01)
     { origin, institutionId: at.institutionId, invoiceId: at.invoiceId, attempt: at.attempt ?? null, lastKind: at.lastKind ?? null,
-      code: err.code, reason: errMsg(err).replace(/\d+/g, '#').slice(0, 160) })
+      code: err.code, reason: ambiguousCauseOf(err) })
 }
 
 export async function refreshServiceTransmission(
@@ -561,8 +562,9 @@ async function refreshServiceTransmissionInner(
   const parsed = parseNfseXml(nfse.nfseXml)
   // R2-2 (c): a NFS-e embute o DPS — tem que ser o DESTA tentativa; resposta trocada nunca grava chave alheia
   if (parsed.dpsId && target.dpsId && parsed.dpsId !== target.dpsId) {
-    throw new HttpError(502, `Fisco devolveu a NFS-e de OUTRO DPS (${parsed.dpsId}) para a consulta de ${target.dpsId} — nada gravado`,
-      undefined, ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE)
+    // D-F98 (c) (= Q-F104, Valdo 2026-10-11): o Id que veio é de TERCEIRO (embute o CPF/CNPJ dele) — nunca na mensagem (que vai ao app)
+    throw tagAmbiguous(new HttpError(502, 'Fisco devolveu a NFS-e de OUTRO DPS para a consulta desta tentativa (Id divergente) — nada gravado',
+      undefined, ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE), 'nfse-de-outro-dps')
   }
   const dhA = toDbDateTime(nfse.dhProc ?? parsed.dhProc)
 
@@ -582,8 +584,8 @@ async function refreshServiceTransmissionInner(
       }
     }
     if (nfse.status === 'unknown') {
-      throw new HttpError(502, 'Fisco respondeu sem situação legível para a NFS-e — nada gravado; verifique o adaptador',
-        undefined, ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE)
+      throw tagAmbiguous(new HttpError(502, 'Fisco respondeu sem situação legível para a NFS-e — nada gravado; verifique o adaptador',
+        undefined, ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE), nfse.unknownCause ?? 'situacao-ilegivel')   // gate R19 (S3)
     }
     await fillAuthorityData(conn, institutionId, invoiceId, tx.attempt, { accessKey: nfse.accessKey, nfseNumber: parsed.nNFSe, dhProc: dhA })
     let changed = false

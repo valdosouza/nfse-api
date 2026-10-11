@@ -10,7 +10,7 @@
  */
 
 // Ambiente e contexto mTLS são COMUNS às famílias: vêm do núcleo `fiscal-api` (D-F17).
-import type { AuthorityEnvironment, AuthorityContext } from 'fiscal-api'
+import type { AuthorityEnvironment, AuthorityContext, AmbiguousCause } from 'fiscal-api'
 export type { AuthorityEnvironment, AuthorityContext }
 
 // ---------------------------------------------------------------------------
@@ -173,6 +173,8 @@ export interface NfseQuery {
   /** eventXml (Q-N38): o XML do evento GERADO pelo fisco, para o arquivo fiscal do contribuinte. */
   /** eventCode (D-F64): 101101 · 105102 (substituição) · 105104 · 305101 — o efeito local depende dele */
   cancelled?: { dhEvento: string | null; motive: string | null; eventXml?: string | null; eventCode?: string | null }
+  /** Gate R19 (S3): POR QUE a situação ficou ilegível (só com `status: 'unknown'`) — a composição marca o ambíguo com ela (D-F98). */
+  unknownCause?: AmbiguousCause
 }
 
 export interface EventRegisterResult {
