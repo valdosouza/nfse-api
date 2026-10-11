@@ -147,6 +147,12 @@ import { transport, HttpsCall, reconfirmationCandidate, reconfirmationProven, Er
 import { adnAdapter } from '../authority/adn'
 import { refreshOpenServiceTransmissions, reconfirmBeforeLocalCancel } from '../nfse/transmission'
 
+/** Gate da Rodada 18 (R18-03/R18-04): a prova exige a IDENTIDADE da candidata e a VIDA — os testes antigos de 1 argumento passam por aqui. */
+const proven = (c: any, life?: any[]) => {
+  const cc = { dpsId: 'DPS-TESTE', environment: 'P', ...c }
+  return reconfirmationProven(cc, life ?? [cc])
+}
+
 const realTransport = transport.request
 const mockHttp = jest.fn()
 beforeAll(() => { transport.request = mockHttp as any })
@@ -269,8 +275,8 @@ describe('RESISTIU — D-F90: a guarda pela última voz VISTA', () => {
     expect(stamps).toEqual([{ attempt: 1, seen: 0 }])
     // o F nasce depois (relógio do mesmo servidor: created_at = NOW() do INSERT); a prova exige E2404 ESTRITAMENTE posterior
     const at = '2026-10-11 10:00:00'
-    expect(reconfirmationProven({ nfseNotGeneratedAt: at, lastEventAt: at })).toBe(false)
-    expect(reconfirmationProven({ nfseNotGeneratedAt: at, lastEventAt: '2026-10-11 10:00:01' })).toBe(false)
+    expect(proven({ nfseNotGeneratedAt: at, lastEventAt: at })).toBe(false)
+    expect(proven({ nfseNotGeneratedAt: at, lastEventAt: '2026-10-11 10:00:01' })).toBe(false)
   })
   it('resistiu: E2404 obtido ANTES de um F concorrente (o F nasce durante o GET /dps) → a guarda usa a voz lida ANTES da pergunta e recusa', async () => {
     const t = inFlight()
@@ -301,7 +307,7 @@ describe('RESISTIU — D-F90: a guarda pela última voz VISTA', () => {
     await reconfirmBeforeLocalCancel(realDeps(), A, INVOICE)
     await reconfirmBeforeLocalCancel(realDeps(), A, INVOICE)
     expect(stamps).toEqual([{ attempt: 1, seen: 2 }, { attempt: 1, seen: 2 }])
-    expect(reconfirmationProven({ nfseNotGeneratedAt: '2026-10-11 10:00:02', lastEventAt: f.lastEventAt })).toBe(true)
+    expect(proven({ nfseNotGeneratedAt: '2026-10-11 10:00:02', lastEventAt: f.lastEventAt })).toBe(true)
   })
   it('resistiu: reconferência em HOMOLOGAÇÃO — a candidata é só P (Q-CA5b): nada a reconfirmar, nenhum GET, nenhuma prova', async () => {
     const f = F({ environment: 'H' })

@@ -199,6 +199,12 @@ const ambiguousLogs = () => ((fiscal.logger as any).error as jest.Mock).mock.cal
 import { HttpError, AuthorityHttpError } from 'fiscal-api'
 import { transmitServiceInvoice, logAmbiguousFiscal, IN_FLIGHT_MINUTES } from '../nfse/transmission'
 
+/** Gate da Rodada 18 (R18-03/R18-04): a prova exige a IDENTIDADE da candidata e a VIDA — os testes antigos de 1 argumento passam por aqui. */
+const proven = (c: any, life?: any[]) => {
+  const cc = { dpsId: 'DPS-TESTE', environment: 'P', ...c }
+  return reconfirmationProven(cc, life ?? [cc])
+}
+
 const origins = () => ambiguousLogs().map((c: any[]) => c[1]?.origin)
 const unknownBoom = () => new HttpError(502, 'Fisco respondeu sem situação legível para a NFS-e', undefined, ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE)
 const unavailable = () => new AuthorityHttpError(503, 'Fisco indisponível', ErrorCodes.FISCAL_AUTHORITY_UNAVAILABLE, 0, '')
@@ -255,53 +261,58 @@ const orderIndependent = async (a: string, b: string) => {
 // ACHADOS — falham no código atual (prova do bug); passam depois da correção
 // ===========================================================================
 
+/** D-F95 (Rodada 18): a consulta pedida pela TELA diz a origem — o invólucro não a deduz mais pela ausência de flags. */
+const SCREEN = { origin: 'consulta' as const }
+
 describe('ACHADO R17-01 (LOW) — D-F93: `tagText` é MAIS ESTRITO que o `firstText` do parseEventXml (atributos, CDATA, entidades): com atributo ou CDATA nos 4 campos novos os dois lados leem null → divergência real passa como "repetição" e o XML ARQUIVADO (Q-N38/D-F78) volta a depender da ordem da lista — a R16-01 reabre por outra forma', () => {
   const base = generatedEventXml({ code: '101101' })
   const attrA = base.replace('<nDFSe>1</nDFSe>', '<nDFSe versao="1">1</nDFSe>')
   const attrB = base.replace('<nDFSe>1</nDFSe>', '<nDFSe versao="1">2</nDFSe>')
   const cdataA = base.replace('<tpAmb>2</tpAmb>', '<tpAmb><![CDATA[2]]></tpAmb>')
   const cdataB = base.replace('<tpAmb>2</tpAmb>', '<tpAmb><![CDATA[1]]></tpAmb>')
-  it.failing('[LOW R17-01] nDFSe com ATRIBUTO (`versao="1"`, valores 1 × 2, mesmo Id) → ambíguo nas duas ordens OU o mesmo XML nas duas ordens', async () => {
+  it('[CORRIGIDO — Rodada 18] [LOW R17-01] nDFSe com ATRIBUTO (`versao="1"`, valores 1 × 2, mesmo Id) → ambíguo nas duas ordens OU o mesmo XML nas duas ordens', async () => {
     expect((await orderIndependent(attrA, attrB)).ok).toBe(true)
   })
-  it.failing('[LOW R17-01] tpAmb em CDATA (2 × 1 — ambientes DIFERENTES, mesmo Id) → ambíguo nas duas ordens OU o mesmo XML', async () => {
+  it('[CORRIGIDO — Rodada 18] [LOW R17-01] tpAmb em CDATA (2 × 1 — ambientes DIFERENTES, mesmo Id) → ambíguo nas duas ordens OU o mesmo XML', async () => {
     expect((await orderIndependent(cdataA, cdataB)).ok).toBe(true)
   })
-  it('contexto [prova do R17-01]: hoje as duas formas dão "cancelled" nas DUAS ordens, cada uma arquivando o XML do 1º item da sua lista', async () => {
+  it('[D-F96] as duas formas (atributo, CDATA divergentes) → AMBÍGUO nas DUAS ordens (o leitor do parse lê o valor)', async () => {
     for (const [a, b] of [[attrA, attrB], [cdataA, cdataB]]) {
       const r = await orderIndependent(a, b)
-      expect([r.ab.status, r.ba.status]).toEqual(['cancelled', 'cancelled'])
-      expect(r.ab.cancelled?.eventXml).toBe(a); expect(r.ba.cancelled?.eventXml).toBe(b)
+      expect([r.ab.status, r.ba.status]).toEqual(['unknown', 'unknown'])
     }
   })
-  it('contexto [liveness, fail-closed]: o MESMO valor serializado de outro jeito (CDATA × texto; entidade numérica × literal; `<nDFSe >` com espaço) conta como conteúdo diferente → ambíguo (nunca efeito errado)', async () => {
-    for (const v of [base.replace('<nDFSe>1</nDFSe>', '<nDFSe><![CDATA[1]]></nDFSe>'), base.replace('<ambGer>2</ambGer>', '<ambGer>&#50;</ambGer>'), base.replace('<nDFSe>1</nDFSe>', '<nDFSe >1</nDFSe>')]) {
-      mockHttp.mockReset(); fisco({ typed: code => (code === '101101' ? typedOk(typedItemRaw(base), typedItemRaw(v)) : undefined) })
-      expect((await adnAdapter.queryNfse(ctxH as any, KEY)).status).toBe('unknown')
+  it('[D-F96] liveness: CDATA × texto segue ambíguo (fail-closed); entidade numérica × literal e `<nDFSe >` com espaço nunca deixam o arquivo depender da ordem', async () => {
+    mockHttp.mockReset(); fisco({ typed: code => (code === '101101' ? typedOk(typedItemRaw(base), typedItemRaw(base.replace('<nDFSe>1</nDFSe>', '<nDFSe><![CDATA[1]]></nDFSe>'))) : undefined) })
+    expect((await adnAdapter.queryNfse(ctxH as any, KEY)).status).toBe('unknown')
+    for (const v of [base.replace('<ambGer>2</ambGer>', '<ambGer>&#50;</ambGer>'), base.replace('<nDFSe>1</nDFSe>', '<nDFSe >1</nDFSe>')]) {
+      expect((await orderIndependent(base, v)).ok).toBe(true)
     }
   })
-  it('contexto [resíduo da Q-F99 (a)]: `verAplic` do infEvento (preenchido pelo fisco) fica FORA da assinatura → passa como repetição e o XML arquivado depende da ordem', async () => {
+  it('[D-F96 (c)] `verAplic` (fora da assinatura) passa como repetição — e o XML arquivado é o MESMO nas duas ordens (escolha determinística)', async () => {
     const r = await orderIndependent(base, base.replace('<verAplic>SEFIN</verAplic>', '<verAplic>SEFIN-2</verAplic>'))
     expect([r.ab.status, r.ba.status]).toEqual(['cancelled', 'cancelled'])
-    expect(r.ok).toBe(false)
+    expect(r.ok).toBe(true)
   })
 })
 
 describe('ACHADO R17-02 (LOW) — D-F91: o alarme leva `err: errMsg(err)`; o 502 "NFS-e de OUTRO DPS" (resposta trocada) traz o Id do DPS ALHEIO, que embute o documento do prestador de OUTRA nota (tpInsc 1 = CPF) — a consulta da tela e a reconferência passaram a jogar isso no log de ERRO', () => {
   const foreign = () => ({ accessKey: KEY, status: 'authorized' as const, nfseXml: nfseXmlWithDps(KEY, FOREIGN_DPS_ID), dhProc: '2026-09-21T10:15:30-03:00' })
-  it('contexto: a consulta da tela com a NFS-e de OUTRO DPS → 502, nada gravado, UM alarme "consulta" cujo `err` contém o Id do DPS alheio', async () => {
+  it('[D-F94] a consulta da tela com a NFS-e de OUTRO DPS → 502, nada gravado, UM alarme "consulta" com o CÓDIGO e rótulo SEM DÍGITOS', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     adapter.queryNfse.mockResolvedValue(foreign())
-    const out = await settle(refreshServiceTransmission(deps, A, INVOICE, 'Q'))
+    const out = await settle(refreshServiceTransmission(deps, A, INVOICE, 'Q', SCREEN))
     expect(out).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
     expect(origins()).toEqual(['consulta'])
-    expect(String(ambiguousLogs()[0][1].err)).toContain(FOREIGN_DPS_ID)
+    expect(ambiguousLogs()[0][1]).toMatchObject({ code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
+    expect(ambiguousLogs()[0][1].err).toBeUndefined()
+    expect(String(ambiguousLogs()[0][1].reason)).not.toMatch(/\d/)
     expect(repo.insertTransmissionEvent).not.toHaveBeenCalled(); expect(repo.fillAuthorityData).not.toHaveBeenCalled()
   })
-  it.failing('[LOW R17-02] o alarme do ambíguo nunca carrega documento (CPF/CNPJ) de TERCEIRO', async () => {
+  it('[CORRIGIDO — Rodada 18] [LOW R17-02] o alarme do ambíguo nunca carrega documento (CPF/CNPJ) de TERCEIRO', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     adapter.queryNfse.mockResolvedValue(foreign())
-    await settle(refreshServiceTransmission(deps, A, INVOICE, 'Q'))
+    await settle(refreshServiceTransmission(deps, A, INVOICE, 'Q', SCREEN))
     expect(ambiguousLogs()).toHaveLength(1)
     expect(JSON.stringify(ambiguousLogs()[0][1])).not.toContain(THIRD_CPF)
   })
@@ -309,28 +320,28 @@ describe('ACHADO R17-02 (LOW) — D-F91: o alarme leva `err: errMsg(err)`; o 502
 
 describe('ACHADO R17-03 (LOW) — D-F91: "sem `query` e sem `fromRun`" ≠ "consulta da TELA": o TRANSMITIR (passo 0b, reserva interrompida → `reconcileInterrupted`) chama o refresh assim e o ambíguo da transmissão vai ao alarme rotulado "consulta"; o GET /dps ambíguo do MESMO passo (fora do refresh) não vai', () => {
   const interrupted = () => inFlight({ ageMinutes: IN_FLIGHT_MINUTES + 5 })
-  it('contexto: transmitir com a reserva interrompida; GET /dps acha a chave e a leitura é ambígua → 502 (nada reservado, nada enviado) e UM alarme rotulado "consulta"', async () => {
+  it('[D-F95] transmitir com a reserva interrompida; GET /dps acha a chave e a leitura é ambígua → 502 (nada reservado, nada enviado) e UM alarme "transmissao"', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(interrupted())
     adapter.queryDpsAccessKey.mockResolvedValue(KEY)
     adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'unknown', nfseXml: nfseXmlOf(KEY), dhProc: null })
     const out = await settle(transmitServiceInvoice(deps, A, INVOICE))
     expect(out).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
     expect(adapter.transmit).not.toHaveBeenCalled(); expect(repo.insertTransmission).not.toHaveBeenCalled()
-    expect(origins()).toEqual(['consulta'])
+    expect(origins()).toEqual(['transmissao'])
   })
-  it.failing('[LOW R17-03] o ambíguo que nasce no TRANSMITIR nunca é rotulado como a consulta pedida pela TELA', async () => {
+  it('[CORRIGIDO — Rodada 18] [LOW R17-03] o ambíguo que nasce no TRANSMITIR nunca é rotulado como a consulta pedida pela TELA', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(interrupted())
     adapter.queryDpsAccessKey.mockResolvedValue(KEY)
     adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'unknown', nfseXml: nfseXmlOf(KEY), dhProc: null })
     await settle(transmitServiceInvoice(deps, A, INVOICE))
     expect(origins()).not.toContain('consulta')
   })
-  it('contexto: no MESMO passo 0b o GET /dps AMBÍGUO (antes do refresh) sobe 502 SEM alarme — a mesma nota alarma ou não conforme ONDE a ambiguidade nasceu', async () => {
+  it('[D-F95] no MESMO passo 0b o GET /dps AMBÍGUO (antes do refresh) sobe 502 e alarma "transmissao" — onde quer que a ambiguidade nasça', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(interrupted())
     adapter.queryDpsAccessKey.mockRejectedValue(unknownBoom())
     const out = await settle(transmitServiceInvoice(deps, A, INVOICE))
     expect(out).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
-    expect(ambiguousLogs()).toHaveLength(0)
+    expect(origins()).toEqual(['transmissao'])
   })
 })
 
@@ -342,7 +353,7 @@ describe('RESISTIU — D-F91: o invólucro do `refreshServiceTransmission` não 
   it('resistiu: caminho feliz — a consulta da tela devolve o MESMO resultado (autorizada, sem mudança, sem pendência) e não alarma', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     fisco({})
-    const r = await refreshServiceTransmission(realDeps(), A, INVOICE, 'Q')
+    const r = await refreshServiceTransmission(realDeps(), A, INVOICE, 'Q', SCREEN)
     expect(r).toEqual({ invoiceId: INVOICE, attempt: 1, changed: false, kind: 'A', accessKey: KEY, localCancelPending: false })
     expect(ambiguousLogs()).toHaveLength(0)
   })
@@ -350,23 +361,23 @@ describe('RESISTIU — D-F91: o invólucro do `refreshServiceTransmission` não 
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     const boom = unknownBoom()
     adapter.queryNfse.mockRejectedValueOnce(boom)
-    expect(await settle(refreshServiceTransmission(deps, A, INVOICE, 'Q'))).toBe(boom)
+    expect(await settle(refreshServiceTransmission(deps, A, INVOICE, 'Q', SCREEN))).toBe(boom)
     expect(origins()).toEqual(['consulta'])
     for (const e of [unavailable(), new Error('ECONNRESET do banco'), 'lançamento cru'] as unknown[]) {
       ;((fiscal.logger as any).error as jest.Mock).mockClear()
       adapter.queryNfse.mockRejectedValueOnce(e)
-      expect(await settle(refreshServiceTransmission(deps, A, INVOICE, 'Q'))).toBe(e)
+      expect(await settle(refreshServiceTransmission(deps, A, INVOICE, 'Q', SCREEN))).toBe(e)
       expect(ambiguousLogs()).toHaveLength(0)
     }
   })
-  it('resistiu: `logAmbiguousFiscal` filtra pelo CÓDIGO na classe certa e nunca lança; o payload é só origem/institution/nota/tentativa/última voz/err', () => {
+  it('resistiu: `logAmbiguousFiscal` filtra pelo CÓDIGO na classe certa e nunca lança; o payload é só origem/institution/nota/tentativa/última voz/código/rótulo (D-F94)', () => {
     const at = { institutionId: 1, invoiceId: INVOICE }
     for (const e of [undefined, null, { code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE, message: 'imitação' }, new HttpError(502, 'x', undefined, ErrorCodes.FISCAL_AUTHORITY_UNAVAILABLE)]) {
       expect(() => logAmbiguousFiscal('consulta', at, e)).not.toThrow()
     }
     expect(ambiguousLogs()).toHaveLength(0)
     logAmbiguousFiscal('reconferencia', at, new AuthorityHttpError(502, 'ambíguo', ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE, 200, '{}'))
-    expect(Object.keys(ambiguousLogs()[0][1]).sort()).toEqual(['attempt', 'err', 'institutionId', 'invoiceId', 'lastKind', 'origin'])
+    expect(Object.keys(ambiguousLogs()[0][1]).sort()).toEqual(['attempt', 'code', 'institutionId', 'invoiceId', 'lastKind', 'origin', 'reason'])
   })
 })
 
@@ -455,7 +466,7 @@ describe('RESISTIU — D-F91: a passada (`fromRun`) e a tela', () => {
       ;((fiscal.logger as any).error as jest.Mock).mockClear()
       ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
       mockHttp.mockReset(); fisco({ typed })
-      expect(await settle(refreshServiceTransmission(realDeps(), A, INVOICE, 'Q'))).toMatchObject({ statusCode: 502 })
+      expect(await settle(refreshServiceTransmission(realDeps(), A, INVOICE, 'Q', SCREEN))).toMatchObject({ statusCode: 502 })
       expect(origins()).toEqual(['consulta'])
       expect(JSON.stringify(ambiguousLogs()[0][1])).not.toContain(KEY)
     }
@@ -497,16 +508,17 @@ describe('RESISTIU — D-F93 no adaptador ADN da nfse-api', () => {
 })
 
 describe('CONTEXTO — D-F92 (a prova não tem prazo) × D-N3/D-F30 (as tentativas da MESMA vida reapresentam o MESMO Id do DPS)', () => {
-  it('contexto [Q-F103]: F por consulta (tentativa 1) com E2404 posterior; depois a tentativa 2 reapresenta o MESMO Id e o fisco a RECUSA — a candidata segue sendo a 1 e a prova ANTIGA (anterior à 2ª apresentação) ainda vale', () => {
+  it('[D-F97 = Q-F103 (b)] F por consulta (tentativa 1) com E2404 posterior; depois a tentativa 2 reapresenta o MESMO Id e o fisco a RECUSA — a candidata segue sendo a 1, mas a prova ANTIGA (anterior à 2ª apresentação) NÃO vale mais', () => {
     const t1 = { ...F({ attempt: 1, lastEventAt: '2026-10-01 10:00:00' }), nfseNotGeneratedAt: '2026-10-02 10:00:00' }
     const t2 = { ...F({ attempt: 2, lastKind: 'R', lastSource: 'P', lastEvent: 1, lastEventAt: '2026-10-20 10:00:00' }), nfseNotGeneratedAt: null }
     expect(t2.dpsId).toBe(t1.dpsId)
     const cand = reconfirmationCandidate([t1, t2] as any)
     expect(cand).toMatchObject({ attempt: 1 })
-    expect(reconfirmationProven(cand as any)).toBe(true)              // E2404 de 02/10 prova, embora o Id tenha voltado ao fisco em 20/10
+    expect(reconfirmationProven(cand as any, [t1, t2] as any)).toBe(false)   // o Id voltou ao fisco em 20/10: o E2404 de 02/10 não prova
+    expect(reconfirmationProven({ ...cand, nfseNotGeneratedAt: '2026-10-21 10:00:00' } as any, [t1, t2] as any)).toBe(true)
   })
   it('resistiu: D-F92 — a revisita de 24 h semanas antes do cancelamento ainda prova; E2404 no MESMO instante do F não prova', () => {
-    expect(reconfirmationProven({ lastEventAt: '2026-10-01 10:00:00', nfseNotGeneratedAt: '2026-11-15 10:00:00' })).toBe(true)
-    expect(reconfirmationProven({ lastEventAt: '2026-10-01 10:00:00', nfseNotGeneratedAt: '2026-10-01 10:00:00' })).toBe(false)
+    expect(proven({ lastEventAt: '2026-10-01 10:00:00', nfseNotGeneratedAt: '2026-11-15 10:00:00' })).toBe(true)
+    expect(proven({ lastEventAt: '2026-10-01 10:00:00', nfseNotGeneratedAt: '2026-10-01 10:00:00' })).toBe(false)
   })
 })

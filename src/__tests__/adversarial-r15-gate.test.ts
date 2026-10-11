@@ -157,6 +157,12 @@ const fiscoCalls = () => mockHttp.mock.calls.filter((c: any[]) => !/convenio/.te
 import { reconfirmationCandidate, reconfirmationProven, ErrorCodes } from 'fiscal-api'
 import { refreshOpenServiceTransmissions, reconfirmBeforeLocalCancel, IN_FLIGHT_MINUTES } from '../nfse/transmission'
 
+/** Gate da Rodada 18 (R18-03/R18-04): a prova exige a IDENTIDADE da candidata e a VIDA — os testes antigos de 1 argumento passam por aqui. */
+const proven = (c: any, life?: any[]) => {
+  const cc = { dpsId: 'DPS-TESTE', environment: 'P', ...c }
+  return reconfirmationProven(cc, life ?? [cc])
+}
+
 const OTHER_KEY = `${KEY.slice(0, 40)}9999999999`
 const item = (code: string, o: { key?: string; inner?: string } = {}) =>
   typedItem(arquivo2(generatedEventXml({ code, key: o.key, inner: o.inner })), code, o.key ?? KEY)
@@ -211,7 +217,7 @@ describe('ACHADO R15-02 (MEDIUM — pré-existente D-F52 × D-F63, latente até 
   it('contexto [R15-02]: a candidata é a da reconferência (F por consulta, em P, sem chave) e a prova ainda NÃO existe antes da passada', () => {
     const f = F()
     expect(reconfirmationCandidate([f])).toMatchObject({ attempt: 1 })
-    expect(reconfirmationProven(f)).toBe(false)
+    expect(proven(f)).toBe(false)
   })
   it('[CORRIGIDO — D-F90] [MEDIUM R15-02] rodízio: revisita do F + GET /dps ACHA a chave + /eventos/101101/1 contraditório (D-F84) → a prova da D-F29 continua FALSA (o fisco mostrou a NFS-e: "não se prova no escuro")', async () => {
     const f = F()
@@ -224,7 +230,7 @@ describe('ACHADO R15-02 (MEDIUM — pré-existente D-F52 × D-F63, latente até 
     const stamped = pooledTouches().some((c: any[]) => c[2] === INVOICE && c[3] === 1)
     const after = { ...f, lastQueriedAt: stamped ? '2026-10-10 22:00:00' : f.lastQueriedAt }  // o UPDATE … SET last_queried_at = NOW()
     expect(reconfirmationCandidate([after])).not.toBeNull()
-    expect(reconfirmationProven(after)).toBe(false)              // hoje: true — o setes-api (F2a) cancelaria localmente
+    expect(proven(after)).toBe(false)              // hoje: true — o setes-api (F2a) cancelaria localmente
   })
   it('[CORRIGIDO — D-F90] [MEDIUM R15-02] mesma raiz, sem a D-F84: revisita do F + GET /dps AMBÍGUO (404 sem o corpo do fisco — gateway) → a prova da D-F29 continua FALSA ("404 vazio não é conclusivo" — Q-ADV1a)', async () => {
     const f = F()
@@ -234,7 +240,7 @@ describe('ACHADO R15-02 (MEDIUM — pré-existente D-F52 × D-F63, latente até 
     const r = await refreshOpenServiceTransmissions(realDeps(), A)
     expect(r.errors.map(e => e.code)).toEqual([ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE])
     const stamped = pooledTouches().some((c: any[]) => c[2] === INVOICE && c[3] === 1)
-    expect(reconfirmationProven({ ...f, lastQueriedAt: stamped ? '2026-10-10 22:00:00' : f.lastQueriedAt })).toBe(false)   // hoje: true
+    expect(proven({ ...f, lastQueriedAt: stamped ? '2026-10-10 22:00:00' : f.lastQueriedAt })).toBe(false)   // hoje: true
   })
   it('resistiu [R15-02]: o ATO da reconferência (`reconfirmBeforeLocalCancel`) com o mesmo fisco → 502 fail-closed, SEM carimbo (a prova não nasce por aqui)', async () => {
     const f = F()
@@ -373,10 +379,10 @@ describe('D-F90 — prova explícita do "NFS-e não gerada" (E2404)', () => {
     expect((q.query.mock.calls[1] as any[])[1]).toEqual([1, INVOICE, 1, 0])      // sem voz vista = 0
   })
   it('a prova: E2404 no MESMO instante do F (a consulta que o gerou) não prova; posterior prova; o carimbo do rodízio nunca', () => {
-    const f = F()
-    expect(reconfirmationProven({ ...f, nfseNotGeneratedAt: f.lastEventAt })).toBe(false)
-    expect(reconfirmationProven({ ...f, nfseNotGeneratedAt: '2026-10-10 09:00:00' })).toBe(true)
-    expect(reconfirmationProven({ ...f, nfseNotGeneratedAt: null, lastQueriedAt: '2026-10-10 09:00:00' })).toBe(false)
+    const f = { ...F(), createdAt: '2026-10-09 09:59:00' }   // D-F97: a reserva (apresentação) é anterior ao F
+    expect(proven({ ...f, nfseNotGeneratedAt: f.lastEventAt })).toBe(false)
+    expect(proven({ ...f, nfseNotGeneratedAt: '2026-10-10 09:00:00' })).toBe(true)
+    expect(proven({ ...f, nfseNotGeneratedAt: null, lastQueriedAt: '2026-10-10 09:00:00' })).toBe(false)
   })
 })
 

@@ -54,7 +54,7 @@ export function nfseRoutes(ctx: AppContext): Router {
     const invoiceId = parseInvoiceId(req.params.invoiceId)
     await requireCutover(ctx, inst)
     await requireBranchPrivilege(ctx, inst, invoiceId, erp.PRIVILEGE_TRANSMITIR)
-    sendOk(res, await tx.refreshServiceTransmission(ctx, actorOf(inst), invoiceId, 'Q'))
+    sendOk(res, await tx.refreshServiceTransmission(ctx, actorOf(inst), invoiceId, 'Q', { origin: 'consulta' }))   // D-F95
   }))
 
   router.post('/invoices/:invoiceId/reconfirm', route('POST /v1/nfse/invoices/:invoiceId/reconfirm', async (req, res) => {

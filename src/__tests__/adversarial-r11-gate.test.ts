@@ -399,7 +399,7 @@ describe('RODADA 17 — D-F91 na nfse-api', () => {
   it('D-F91: a consulta da TELA com resposta ambígua → 502 e UM alarme "consulta" com institution e nota', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     sefin({ typed: CONTRA })
-    const out = await settle(refreshServiceTransmission(realDeps(), A, INVOICE, 'Q'))
+    const out = await settle(refreshServiceTransmission(realDeps(), A, INVOICE, 'Q', { origin: 'consulta' }))   // D-F95: a tela diz a origem
     expect(out).toMatchObject({ statusCode: 502, code: 'FISCAL_AUTHORITY_UNKNOWN_RESPONSE' })
     expect(ambiguousLogs()).toHaveLength(1)
     expect(ambiguousLogs()[0][1]).toMatchObject({ origin: 'consulta', institutionId: A.institutionId, invoiceId: INVOICE })

@@ -23,6 +23,12 @@ import { createApp } from '../app'
 import type { TaxAuthorityAdapter, AuthorityContext } from '../authority/types'
 import { refreshOpenServiceTransmissions, resetMunicipalTermsCache, listPending } from '../nfse/transmission'
 
+/** Gate da Rodada 18 (R18-03/R18-04): a prova exige a IDENTIDADE da candidata e a VIDA — os testes antigos de 1 argumento passam por aqui. */
+const proven = (c: any, life?: any[]) => {
+  const cc = { dpsId: 'DPS-TESTE', environment: 'P', ...c }
+  return fiscal.reconfirmationProven(cc, life ?? [cc])
+}
+
 // O ramo congelado das notas E do dev tem cTribMun "0102" (anterior à D-N26b) → 422 antes de reservar em
 // TODAS as notas. Para atacar a máquina da voz, o ramo é normalizado EM MEMÓRIA (cTribMun inválido →
 // ausente). Nada é escrito no ERP; locks, views, repositório e banco fiscal continuam REAIS.
@@ -604,7 +610,7 @@ d('GATE ADVERSARIAL F1 — banco real + fisco falso', () => {
       const r1 = track('reconf não acha', await request(app).post(`/v1/nfse/invoices/${tgt}/reconfirm`).set(a))
       expect(r1.body.data).toMatchObject({ needed: true, found: false, attempt: cand.attempt })
       const v1 = (await q(`${fiscal.transmissionViewSelect(ctx.fiscalDb)} WHERE v.tb_institution_id = ? AND v.tb_invoice_id = ? AND v.attempt = ?`, [INST, tgt, cand.attempt])).map(fiscal.mapTransmissionView)[0]
-      expect(fiscal.reconfirmationProven(v1)).toBe(true)
+      expect(proven(v1)).toBe(true)
       generate('P', cand.dpsId)                                                 // agora o fisco tem a NFS-e daquele Id
       const r2 = track('reconf acha', await request(app).post(`/v1/nfse/invoices/${tgt}/reconfirm`).set(a))
       const after = await txRows(tgt)

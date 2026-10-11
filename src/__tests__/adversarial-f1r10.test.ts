@@ -23,6 +23,12 @@ import { FsFiscalStorage, MasterKeyRing } from 'fiscal-api'
 import type { NfseDeps } from '../nfse/transmission'
 import { adnAdapter } from '../authority/adn'
 
+/** Gate da Rodada 18 (R18-03/R18-04): a prova exige a IDENTIDADE da candidata e a VIDA — os testes antigos de 1 argumento passam por aqui. */
+const proven = (c: any, life?: any[]) => {
+  const cc = { dpsId: 'DPS-TESTE', environment: 'P', ...c }
+  return actualFiscal.reconfirmationProven(cc, life ?? [cc])
+}
+
 jest.mock('dotenv/config', () => ({}))
 jest.mock('fiscal-api', () => {
   const actual = jest.requireActual('fiscal-api')
@@ -230,8 +236,8 @@ describe('D-F51 — ordem de travas, corrida com o POST em curso, prova da recon
     expect(fM.openIssuer.mock.calls.every(c => !c[3]?.forUpdate && !c[3]?.conn)).toBe(true)       // emissor fora da transação
     // D-F90: a prova é o E2404 explícito (`nfseNotGeneratedAt`), não o touch; e mesmo ele, no mesmo segundo do F (a consulta que o
     // GEROU) ou antes, não prova — estritamente maior. O F que fecha a reserva nunca grava a prova (recordInterruptedFailure)
-    expect(actualFiscal.reconfirmationProven({ nfseNotGeneratedAt: '2026-10-04 10:00:00', lastEventAt: '2026-10-04 10:00:00' })).toBe(false)
-    expect(actualFiscal.reconfirmationProven({ nfseNotGeneratedAt: '2026-10-04 10:00:00', lastEventAt: '2026-10-04 10:00:01' })).toBe(false)
+    expect(proven({ nfseNotGeneratedAt: '2026-10-04 10:00:00', lastEventAt: '2026-10-04 10:00:00' })).toBe(false)
+    expect(proven({ nfseNotGeneratedAt: '2026-10-04 10:00:00', lastEventAt: '2026-10-04 10:00:01' })).toBe(false)
     expect(conn.query.mock.calls.some((c: any[]) => /nfse_not_generated_at/.test(String(c[0])))).toBe(false)
     expect(conn.commit).toHaveBeenCalled()
   })
