@@ -25,7 +25,7 @@ import { adnAdapter } from '../authority/adn'
 
 /** Gate da Rodada 18 (R18-03/R18-04): a prova exige a IDENTIDADE da candidata e a VIDA — os testes antigos de 1 argumento passam por aqui. */
 const proven = (c: any, life?: any[]) => {
-  const cc = { dpsId: 'DPS-TESTE', environment: 'P', ...c }
+  const cc = { dpsId: 'DPS-TESTE', environment: 'P', lastKind: 'F', ...c }   // D-F101: a candidata é a F por consulta (lastKind ausente = viva)
   return actualFiscal.reconfirmationProven(cc, life ?? [cc])
 }
 
