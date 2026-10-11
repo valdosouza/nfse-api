@@ -139,6 +139,7 @@ beforeEach(() => {
 import { transport, HttpsCall, reconfirmationCandidate, reconfirmationProven, isLiveTransmission, currentOf, ErrorCodes, sendError } from 'fiscal-api'
 import { adnAdapter } from '../authority/adn'
 import { reconfirmBeforeLocalCancel, transmitServiceInvoice, isInterruptedInFlight, IN_FLIGHT_MINUTES } from '../nfse/transmission'
+import { voiceSProducers } from './voice-kind-fence'
 
 const realTransport = transport.request
 const mockHttp = jest.fn()
@@ -277,20 +278,19 @@ describe('ACHADO R20-01 (LOW latente — S não tem produtor; questão Q-F108) �
     expect(out).toMatchObject({ statusCode: 409, code: ErrorCodes.FISCAL_TRANSMISSION_IN_PROGRESS })
     expect(mockHttp.mock.calls.some((c: any[]) => /\/dps\//.test(String(c[0].url)))).toBe(false)
   })
-  it.failing('[LOW R20-01] irmã S (sem chave) com E2404 e voz S há ≥ IN_FLIGHT_MINUTES → a consulta a FECHA com F (o veredito da D-F51) — a prova volta pela próxima reconferência (sem isso o falso negativo da D-F101 é permanente)', async () => {
+  it('[CONHECIMENTO NEGATIVO — D-F102 (= Q-F108 (a))] irmã S (sem chave) com E2404 e voz S há ≥ IN_FLIGHT_MINUTES → a consulta NÃO a fecha: S não tem saída de propósito (sem produtor). Quem criar produtor de S dá a ela a saída da D-F51 na mesma entrega — e troca este teste pelo veredito F', async () => {
     lifeScenario(sibling('S'))
     fiscoP({})
+    // R21-04 do gate da Rodada 21: SEM `settle` — a chamada tem de CHEGAR à decisão (o `settle` deixava o teste verde com o fisco em 503)
     const r = await refreshServiceTransmission(realDeps(), A, INVOICE, 'Q', { attempt: 2, fromRun: true })
-    expect(r).toMatchObject({ attempt: 2, changed: true, kind: 'F' })
-    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(expect.anything(), 1, INVOICE, 2, A.userId, expect.objectContaining({ kind: 'F', source: 'Q' }))
+    expect(r).toMatchObject({ attempt: 2, changed: false, kind: 'S' })
+    expect(repo.touchQueriedAt).toHaveBeenCalledWith(expect.anything(), 1, INVOICE, 2)
+    expect(repo.insertTransmissionEvent).not.toHaveBeenCalledWith(expect.anything(), 1, INVOICE, 2, A.userId, expect.objectContaining({ kind: 'F' }))
   })
-  it('resistiu (é o que torna o R20-01 LATENTE): nenhum produtor de voz S — nem na nfse-api, nem no núcleo, nem na composição de produção do setes-api; o `OUTCOME_KIND` (recusa/credencial) só dá R/F', () => {
-    const producers = [path.join(SRC_ROOT), path.join(WORKSPACE, 'fiscal-api', 'src')].flatMap(walkTs)
-      .filter(f => /kind:\s*'S'/.test(uncomment(fs.readFileSync(f, 'utf8'))))
-      .map(f => path.relative(WORKSPACE, f).replace(/\\/g, '/'))
-    expect(producers).toEqual([])
-    const setes = path.join(WORKSPACE, 'setes-api', 'src', 'shared', 'invoice-transmission', 'invoice-transmission.ts')
-    if (fs.existsSync(setes)) expect(uncomment(fs.readFileSync(setes, 'utf8'))).not.toMatch(/kind:\s*'S'/)
+  it('resistiu — CERCA da D-F102 (é o que torna o R20-01 LATENTE; quebra no dia em que S ganhar produtor): nenhum produtor de voz S — nem na nfse-api, nem no núcleo, nem na composição de produção do setes-api; o `OUTCOME_KIND` (recusa/credencial) só dá R/F', () => {
+    // R21-01 do gate da Rodada 21: a cerca é a peça COMPARTILHADA `voice-kind-fence.ts` — AST (qualquer grafia, comentário fora pelo
+    // compilador) sobre TODO lugar que escreve na voz (nfse-api src/scripts/migrations, núcleo, setes-api — pasta + migrations)
+    expect(voiceSProducers()).toEqual([])
     const { OUTCOME_KIND } = jest.requireActual('../nfse/transmission') as typeof import('../nfse/transmission')
     expect(Object.values(OUTCOME_KIND).sort()).toEqual(['F', 'F', 'R'])
   })
