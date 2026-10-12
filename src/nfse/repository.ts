@@ -238,6 +238,8 @@ export async function fillAuthorityData(
  * FUNIL abaixo confere a mesma lista em EXECUÇÃO (gate R22, R22-03 — cast, spread, JSON: o tipo some no JS). Ampliar = decisão.
  * A lista é UMA constante e o tipo DERIVA dela (o `satisfies` garante que cada kind existe no vocabulário comum; se o comum virar
  * `any`/`string`, o tipo da família continua a lista literal — a ressalva do adversarial da Rodada 22).
+ * D-F107: o CHECK da migration da F2a protege EXATAMENTE esta lista (teste e sonda do boot comparam com o DDL). D-F108: na NE-1a ela vira
+ * o `writeKinds` do DESCRITOR da família de serviço no núcleo — o escritor comum é genérico nela (nota no prompt da NF-e §12.8).
  */
 export const SERVICE_VOICE_WRITE_KINDS = ['A', 'R', 'C', 'K', 'F', 'N'] as const satisfies readonly TransmissionEventKind[]
 export type ServiceVoiceWriteKind = typeof SERVICE_VOICE_WRITE_KINDS[number]

@@ -312,7 +312,7 @@ describe('ATAQUE 2 — D-F105: no núcleo a cerca só olha SQL na tabela da NFS-
     expect(tsProducesS(src)).toBe(true)
     expect(core(src)).toBe(true)
   })
-  it('contexto (Q-F114, R22-08 — Rodada 23): a forma NATURAL da NE-1a (D-NE13: máquina tentativa × voz no núcleo; tabelas irmãs POR FAMÍLIA — `tb_invoice_<ramo>_transmission_event`; D-NE14: vocabulário comum com P/D) é INVISÍVEL às defesas da NFS-e: a cerca no núcleo (sqlOnly: o `kind: \'S\'` é ignorado e a tabela vem do descritor da família), a cerca de chamada (só conhece `insertTransmissionEvent`) e o tipo (o escritor do núcleo é tipado pelo vocabulário COMUM — S/P/D)', () => {
+  it('contexto (R22-08 → D-F108 = Q-F114 (a): na NE-1a a lista vai no DESCRITOR da família — nota no prompt da NF-e §12.8): a forma NATURAL (literal) da NE-1a (D-NE13: máquina tentativa × voz no núcleo; tabelas irmãs POR FAMÍLIA — `tb_invoice_<ramo>_transmission_event`; D-NE14: vocabulário comum com P/D) é INVISÍVEL às defesas da NFS-e: a cerca no núcleo (sqlOnly: o `kind: \'S\'` é ignorado e a tabela vem do descritor da família), a cerca de chamada (só conhece `insertTransmissionEvent`) e o tipo (o escritor do núcleo é tipado pelo vocabulário COMUM — S/P/D)', () => {
     const generic = [
       'export async function insertVoice(conn: Conn, family: VoiceFamily, at: Attempt, e: { kind: TransmissionEventKind; source: TransmissionSource }) {',
       "  await conn.query(`INSERT INTO ${family.eventTable} (tb_institution_id, tb_invoice_id, terminal, attempt, event, kind, source) VALUES (?, ?, ?, ?, ?, ?, ?)`,",
