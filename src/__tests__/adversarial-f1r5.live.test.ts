@@ -178,7 +178,7 @@ async function waitBlocked(blockerCid: number, patterns: RegExp[], count = 1, ms
 }
 
 // ---- linhas SINTÉTICAS (só na cópia) ------------------------------------------------------------------------------
-const lifeOf = async (inv: number) => (await fiscal.erp.invoiceLife(ctx.pool, SCHEMA, INST, inv))!.lifeEvent!
+const lifeOf = async (inv: number) => (await fiscal.erp.invoiceLife(ctx.pool, SCHEMA, fiscal.invoiceRef(INST, inv, fiscal.WEB_TERMINAL)))!.lifeEvent!
 async function seedDps(inst: number, inv: number, life: number, n: number): Promise<string> {
   const dpsId = `DPS4106902${'2'}${CNPJ}00999${String(n).padStart(15, '0')}`
   expect(dpsId).toHaveLength(45)

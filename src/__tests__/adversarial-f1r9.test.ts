@@ -160,7 +160,8 @@ function whereOracle(sql: string, params: unknown[]): { pred: (r: Row) => boolea
 
 const fakeQ = () => {
   const calls: { sql: string; params: unknown[] }[] = []
-  const q = { query: jest.fn(async (sql: string, params: unknown[]) => { calls.push({ sql, params }); return [[{ n: 0 }], []] }) }
+  // NE-1a (gates da parte 1): o `mapTx` é estrito — a linha de contagem `{ n: 0 }` só para o COUNT; as listas de tentativas voltam vazias
+  const q = { query: jest.fn(async (sql: string, params: unknown[]) => { calls.push({ sql, params }); return [/COUNT\(\*\)/i.test(sql) ? [{ n: 0 }] : [], []] }) }
   return { q: q as any, calls }
 }
 

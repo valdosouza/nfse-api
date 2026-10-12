@@ -14,6 +14,7 @@
 //  - [LOW — D-F39] a garantia do NÚCLEO não cobre as composições nem as escritas do emitente: numa RÉPLICA o
 //    cancelamento grava K/N antes da cerca recusar, a passada do rodízio responde "outra passada em curso" e o
 //    `storeCertificate` grava o A1 — só a BORDA da nfse-api (requireCutover) protege.
+import { withRecord } from './fixture-record'   // NE-1a (D-NE56): a tentativa traz o FATO do registro
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -75,7 +76,7 @@ const KEY = ('4106902' + '2' + CNPJ + '0'.repeat(50)).slice(0, 50)
 const NFSE_XML = `<NFSe xmlns="http://www.sped.fazenda.gov.br/nfse" versao="1.01"><infNFSe Id="NFS${KEY}"><nNFSe>42</nNFSe><dhProc>2026-10-04T10:00:00-03:00</dhProc><cStat>100</cStat><emit><CNPJ>${CNPJ}</CNPJ></emit><DPS><infDPS Id="${DPS_ID}"></infDPS></DPS></infNFSe></NFSe>`
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
-const tx = (over: any = {}) => ({
+const tx = (over: any = {}) => withRecord({
   institutionId: 1, invoiceId: INVOICE, attempt: 1, lifeEvent: 1, environment: 'P', serie: '1', dpsNumber: 42, dpsId: DPS_ID,
   accessKey: KEY, nfseNumber: '42', dhProc: '2026-09-30 13:00:00', createdAt: '2026-09-30 13:00:00', ageMinutes: 6000, lastQueriedAt: null,
   lastEvent: 1, lastKind: 'A', lastCode: null, lastMessage: null, lastSource: 'P', lastDh: '2026-09-30 13:00:00', lastEventAt: '2026-09-30 13:00:00',

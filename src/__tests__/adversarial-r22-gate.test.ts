@@ -347,10 +347,9 @@ describe('ATAQUE 3 — NE-1a simulada: o tipo comum ganha P/D (e casos-limite)',
     ['mapa P', `const M: Record<'x', ServiceVoiceWriteKind> = { x: 'P' }`],
     ['F', `insertTransmissionEvent(conn, 1, 1, 1, null, { kind: 'F', source: 'P' })`],
   ]
-  it('resistiu: com `TransmissionEventKind` += P/D, o escritor da NFS-e RECUSA P, D, S, o comum e o mapa com P; aceita F; e a produção da nfse-api (repository.ts, transmission.ts) segue compilando sem erro', () => {
-    const r = compileInMemory(NFSE, VIRTUAL_NFSE, HEADER_NFSE, PROBES, {
-      overrides: { [CORE_KINDS]: widen(`export type TransmissionEventKind = 'S' | 'A' | 'R' | 'C' | 'K' | 'F' | 'N' | 'P' | 'D'`) }, alsoCheck: PROD,
-    })
+  it('resistiu [NE-1a — D-NE14: a simulação virou o REAL]: com `TransmissionEventKind` += P/D no núcleo de verdade, o escritor da NFS-e RECUSA P, D, S, o comum e o mapa com P; aceita F; e a produção da nfse-api (repository.ts, transmission.ts) segue compilando sem erro', () => {
+    expect(kinds).toMatch(/export type TransmissionEventKind = 'S' \| 'A' \| 'R' \| 'C' \| 'K' \| 'F' \| 'N' \| 'P' \| 'D'/)
+    const r = compileInMemory(NFSE, VIRTUAL_NFSE, HEADER_NFSE, PROBES, { alsoCheck: PROD })
     expect(PROBES.map(([l]) => [l, r.snippet.get(l)!.length > 0])).toEqual([['P', true], ['D', true], ['S', true], ['comum', true], ['mapa P', true], ['F', false]])
     expect([...r.real.values()]).toEqual([[], []])
   })

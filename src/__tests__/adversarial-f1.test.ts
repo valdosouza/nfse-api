@@ -3,6 +3,7 @@
 // Os achados CORRIGIDOS no retrabalho (2026-10-04) viraram `it` (a regra que os fecha); o admin × licença
 // (Q-F46) virou a D-F37 e também é `it`. A prova contra o banco REAL (fisco falso)
 // está em `adversarial-f1.live.test.ts` (NFSE_ADV_LIVE=1); aqui ficam as reproduções sem banco.
+import { withRecord } from './fixture-record'   // NE-1a (D-NE56): a tentativa traz o FATO do registro
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -62,7 +63,7 @@ const opened = (env: 'H' | 'P' = 'P') => ({
   cert: Buffer.from('CERT'), key: Buffer.from('KEY'),
   info: { subject: `CN=SETES:${CNPJ}`, issuer: 'AC', notBefore: '2026-01-01', notAfter: '2027-01-01', daysToExpire: 100, expired: false, notYetValid: false, cnpj: CNPJ, fingerprint256: 'x' },
 })
-const tx = (over: any = {}) => ({
+const tx = (over: any = {}) => withRecord({
   institutionId: 1, invoiceId: INVOICE, attempt: 1, lifeEvent: 1, environment: 'P', serie: '1', dpsNumber: 42, dpsId: DPS_ID,
   accessKey: null, nfseNumber: null, dhProc: null, createdAt: '2026-09-21 13:15:00', ageMinutes: 0, lastQueriedAt: null,
   lastEvent: 1, lastKind: null, lastCode: null, lastMessage: null, lastSource: 'P', lastDh: null, lastEventAt: '2026-09-21 13:15:30', lastEventAgeMinutes: 0, ...over,

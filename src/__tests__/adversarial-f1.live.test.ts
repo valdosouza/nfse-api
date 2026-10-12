@@ -188,8 +188,9 @@ let dpsBefore = new Set<number>()
 const TOUCHED: number[] = []
 
 async function txRows(invoiceId: number) {
-  return q(`SELECT attempt, environment, access_key AS accessKey, last_kind AS lastKind, last_source AS lastSource, dps_id AS dpsId,
-                   DATE_FORMAT(last_queried_at, '%Y-%m-%d %H:%i:%s') AS lastQueriedAt
+  // NE-1a (D-NE56): a projeção à mão traz o FATO do registro publicado pela view 004 (os predicados do núcleo falham alto sem ele — D-NE66)
+  return q(`SELECT attempt, environment, access_key AS accessKey, authority_recorded AS authorityRecorded, last_kind AS lastKind,
+                   last_source AS lastSource, dps_id AS dpsId, DATE_FORMAT(last_queried_at, '%Y-%m-%d %H:%i:%s') AS lastQueriedAt
               FROM vw_invoice_service_transmission WHERE tb_institution_id = ? AND tb_invoice_id = ? ORDER BY attempt`, [INST, invoiceId])
 }
 async function newAttempts(invoiceId: number) {
@@ -524,7 +525,7 @@ d('GATE ADVERSARIAL F1 — banco real + fisco falso', () => {
     })
 
     it('[corrigido — LOW] nota com voz C e C local pendente NÃO está no lote de pendentes (só daria 409 FISCAL_EFFECT_PENDING)', async () => {
-      const life = await fiscal.erp.invoiceLife(ctx.pool, SCHEMA, INST, B)
+      const life = await fiscal.erp.invoiceLife(ctx.pool, SCHEMA, fiscal.invoiceRef(INST, B, fiscal.WEB_TERMINAL))
       expect(life?.lastKind).toBe('E')
       expect((await lastOf(B)).lastKind).toBe('C')
       const listed = (await listPending(ctx, { schemaName: SCHEMA, institutionId: INST, userId: ADV_USER }, { page: 1, pageSize: 100_000 }, null)).data.some(x => x.invoiceId === B)
@@ -617,7 +618,8 @@ d('GATE ADVERSARIAL F1 — banco real + fisco falso', () => {
       // eslint-disable-next-line no-console
       console.log('[adv] reconfirm acha →', r2.status, JSON.stringify(r2.body.data ?? r2.body), JSON.stringify(after.map(x => `${x.attempt}:${x.environment}:${x.lastKind}/${x.lastSource}:${x.accessKey ? 'CHAVE' : '-'}`)))
       expect(r2.body.data).toMatchObject({ needed: true, found: true })
-      expect(fiscal.reconfirmationCandidate(after.map(x => ({ ...x, attempt: Number(x.attempt) })))).toBeNull()
+      // o fato vem da VIEW real ('S'/'N' → boolean); a tentativa reconciliada com a NFS-e está registrada
+      expect(fiscal.reconfirmationCandidate(after.map(x => ({ ...x, attempt: Number(x.attempt), authorityRecorded: x.authorityRecorded === 'S' })))).toBeNull()
     })
 
     it('K em voo bloqueia transmitir/cancelar; N só depois da carência; depois o cancelamento passa', async () => {

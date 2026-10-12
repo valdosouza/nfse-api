@@ -23,6 +23,7 @@
 // REGRAS DO GATE: nenhum socket (transport.request do núcleo trocado), nenhum banco (pool/conn/repositório/erp mockados — harness
 // copiado do r20), nada no disco (o arquivo fiscal aponta para uma pasta que NUNCA é criada — conferido), nada que fale com o fisco.
 // Lê o setes-api, os scripts e as migrations só como TEXTO.
+import { withRecord } from './fixture-record'   // NE-1a (D-NE56): a tentativa traz o FATO do registro
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -84,7 +85,7 @@ const INVOICE = 6200
 const CNPJ = '12345678000199'
 const DPS_ID = 'DPS410690221234567800019900001000000000000042'
 
-const tx = (over: any = {}) => ({
+const tx = (over: any = {}) => withRecord({
   institutionId: 1, invoiceId: INVOICE, attempt: 1, lifeEvent: 1, environment: 'P', serie: '1', dpsNumber: 42, dpsId: DPS_ID,
   accessKey: null, nfseNumber: null, dhProc: null, createdAt: '2026-10-09 09:59:00', ageMinutes: 0, lastQueriedAt: null,
   lastEvent: 2, lastKind: 'F', lastCode: null, lastMessage: null, lastSource: 'Q', lastDh: null, lastEventAt: '2026-10-09 10:00:00', lastEventAgeMinutes: 0, ...over,

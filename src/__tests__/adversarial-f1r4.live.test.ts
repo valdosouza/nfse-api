@@ -151,7 +151,7 @@ async function purgeSynthetic(): Promise<void> {
 
 /** Autorizada SINTÉTICA (H) na nota fresca [inv], com dh_proc há [daysAgo] dias; a NFS-e "existe" no fisco falso. */
 async function seedAuthorized(inv: number, daysAgo: number): Promise<{ key: string; dpsId: string }> {
-  const life = (await fiscal.erp.invoiceLife(ctx.pool, SCHEMA, INST, inv))!.lifeEvent!
+  const life = (await fiscal.erp.invoiceLife(ctx.pool, SCHEMA, fiscal.invoiceRef(INST, inv, fiscal.WEB_TERMINAL)))!.lifeEvent!
   const nDps = 990_000_000 + inv
   const dpsId = `DPS4106902${'2'}${CNPJ}00999${String(nDps).padStart(15, '0')}`
   const key = (`41069022${CNPJ}99${String(inv).padStart(8, '0')}` + '0'.repeat(50)).slice(0, 50)

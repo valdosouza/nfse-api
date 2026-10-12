@@ -14,6 +14,7 @@
 //    um servidor TLS local que pinga bytes); uma consulta ao convênio que nunca termina congela o prazo do município para
 //    TODAS as institutions dele (e ambiente) até reiniciar o processo — o cache vence, mas a pendurada é reaproveitada
 //    para sempre; cada passada e cada cancelamento pagam os 3 s, e a closure da pendurada retém o A1 decifrado.
+import { withRecord } from './fixture-record'   // NE-1a (D-NE56): a tentativa traz o FATO do registro
 import forge from 'node-forge'
 import fs from 'fs'
 import os from 'os'
@@ -76,7 +77,7 @@ const DPS_ID = 'DPS410690220774209400011300001000000000000043'
 const KEY = ('4106902' + '2' + CNPJ + '0'.repeat(50)).slice(0, 50)
 const NFSE_XML = `<NFSe xmlns="http://www.sped.fazenda.gov.br/nfse" versao="1.01"><infNFSe Id="NFS${KEY}"><nNFSe>43</nNFSe><dhProc>2026-10-04T10:00:00-03:00</dhProc><cStat>100</cStat><emit><CNPJ>${CNPJ}</CNPJ></emit><DPS><infDPS Id="${DPS_ID}"></infDPS></DPS></infNFSe></NFSe>`
 
-const tx = (over: any = {}) => ({
+const tx = (over: any = {}) => withRecord({
   institutionId: 1, invoiceId: INVOICE, attempt: 1, lifeEvent: 1, environment: 'P', serie: '1', dpsNumber: 43, dpsId: DPS_ID,
   accessKey: KEY, nfseNumber: '43', dhProc: '2026-09-30 13:00:00', createdAt: '2026-09-30 13:00:00', ageMinutes: 6000, lastQueriedAt: null,
   lastEvent: 1, lastKind: 'A', lastCode: null, lastMessage: null, lastSource: 'P', lastDh: '2026-09-30 13:00:00', lastEventAt: '2026-09-30 13:00:00',

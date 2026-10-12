@@ -13,6 +13,7 @@
 //    de LER a voz final; e ainda grava `last_queried_at` DEPOIS do F do vencedor com o GET /dps feito ANTES dele — a prova
 //    D-F29 (`last_queried_at` > instante do F) nasce de uma consulta que não é posterior ao F. Variante nova da D-F51
 //    (rodízio × tela, ambos escritores de F); a do transmitir × consulta já existia.
+import { withRecord } from './fixture-record'   // NE-1a (D-NE56): a tentativa traz o FATO do registro
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -83,7 +84,7 @@ const mkDeps = (a: any = adapter): NfseDeps =>
 const deps = mkDeps()
 const ACTOR = { schemaName: 'setes_setes', institutionId: 1, userId: 990010 }
 
-const tx = (over: Record<string, any> = {}) => ({
+const tx = (over: Record<string, any> = {}) => withRecord({
   institutionId: 1, invoiceId: INVOICE, attempt: 1, lifeEvent: 1, environment: 'P', serie: '1', dpsNumber: 72, dpsId: DPS,
   accessKey: null, nfseNumber: null, dhProc: null, createdAt: '2026-10-04 10:00:00', ageMinutes: 15, lastQueriedAt: null,
   lastEvent: null, lastKind: null, lastCode: null, lastMessage: null, lastSource: null, lastDh: null, lastEventAt: null, lastEventAgeMinutes: null,
@@ -191,7 +192,7 @@ describe('D-F51 — idade (do BANCO), ambiente da tentativa, holder', () => {
     expect(adapter.queryDpsAccessKey.mock.calls[0][0].environment).toBe('H')
     expect(repoM.findTransmissionByDpsId).toHaveBeenCalledWith(pool, 1, INVOICE, 1, DPS, 'H')
     expect(fKinds()).toEqual(['F'])
-    const fH = { attempt: 1, lastKind: 'F', lastSource: 'Q', environment: 'H', accessKey: null, dpsId: DPS }
+    const fH = { attempt: 1, lastKind: 'F', lastSource: 'Q', environment: 'H', accessKey: null, authorityRecorded: false, dpsId: DPS }   // NE-1a: o fato do registro
     expect(actualFiscal.reconfirmationCandidate([fH])).toBeNull()
     expect(actualFiscal.reconfirmationCandidate([{ ...fH, environment: 'P' }])).toMatchObject({ attempt: 1 })   // o de P exige a reconfirmação
   })
@@ -272,7 +273,7 @@ describe('D-F51 — ordem de travas, corrida com o POST em curso, prova da recon
     await txMod.refreshServiceTransmission(deps, ACTOR, INVOICE, 'Q', { attempt: 1 })
     const ev = repoM.insertTransmissionEvent.mock.calls[0][5]
     expect(ev).toMatchObject({ kind: 'F', source: 'Q' })
-    expect(actualFiscal.reconfirmationCandidate([{ attempt: 1, lastKind: ev.kind, lastSource: ev.source, environment: 'P', accessKey: null, dpsId: DPS }]))
+    expect(actualFiscal.reconfirmationCandidate([{ attempt: 1, lastKind: ev.kind, lastSource: ev.source, environment: 'P', accessKey: null, authorityRecorded: false, dpsId: DPS }]))
       .toMatchObject({ attempt: 1 })
   })
 

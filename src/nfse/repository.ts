@@ -25,6 +25,8 @@ export interface TransmissionRow {
   dpsNumber:      number | null
   dpsId:          string | null
   accessKey:      string | null
+  /** D-NE56 (NE-1a): o fisco REGISTROU a NFS-e desta tentativa — a MESMA expressão da view 004 (na NFS-e a chave vem do fisco). */
+  authorityRecorded: boolean
   nfseNumber:     string | null
   dhProc:         string | null
   createdAt:      string | null
@@ -61,10 +63,17 @@ export interface LifeDps {
   dpsId:     string
 }
 
+/**
+ * D-NE56 (NE-1a): definição do REGISTRO pelo fisco na família de serviço — a MESMA expressão que a view 004 publica como
+ * `authority_recorded` (teste confere o texto das duas). A família é a dona dela (D-F35); o núcleo só lê o fato. Colação FIXA
+ * (binária): literal sem colação compara mal entre conexões de colações diferentes (erro 1267 — ver a 004).
+ */
+export const SERVICE_AUTHORITY_RECORDED_SQL = "IF(t.`access_key` IS NULL, 'N', 'S') COLLATE utf8mb4_bin"
+
 const TX_SELECT = `
   SELECT t.tb_institution_id AS institutionId, t.tb_invoice_id AS invoiceId, t.attempt, t.life_event AS lifeEvent,
          t.environment, d.serie, d.dps_number AS dpsNumber, d.dps_id AS dpsId,
-         t.access_key AS accessKey, t.nfse_number AS nfseNumber,
+         t.access_key AS accessKey, ${SERVICE_AUTHORITY_RECORDED_SQL} AS authorityRecorded, t.nfse_number AS nfseNumber,
          DATE_FORMAT(t.dh_proc, '%Y-%m-%d %H:%i:%s') AS dhProc,
          DATE_FORMAT(t.created_at, '%Y-%m-%d %H:%i:%s') AS createdAt,
          TIMESTAMPDIFF(MINUTE, t.created_at, NOW()) AS ageMinutes,
@@ -86,12 +95,24 @@ const TX_SELECT = `
 
 function n(v: unknown): number | null { return v === null || v === undefined ? null : Number(v) }
 
+/**
+ * Linha interna da família (tabelas do `fiscal_api`). Gates da NE-1a parte 1 (NE1A-08 / D-NE68 (b)): ESTRITO como o mapa do núcleo — a
+ * coluna do registro tem de vir ('S'/'N') e COERENTE com a chave (na NFS-e registro ⇔ chave, pela definição da view 004): linha sem a
+ * coluna (SELECT novo que a esqueça) ou incoerente falha ALTO, nunca vira "não registrada" calada.
+ */
 export function mapTx(r: any): TransmissionRow {
+  if (r.authorityRecorded !== 'S' && r.authorityRecorded !== 'N') {
+    throw new Error(`Linha de tentativa sem authorityRecorded ('S'/'N') — SELECT sem a definição da família? (recebido: ${JSON.stringify(r.authorityRecorded)})`)
+  }
+  if ((r.authorityRecorded === 'S') !== (r.accessKey != null)) {
+    throw new Error(`Linha de tentativa INCOERENTE: authorityRecorded=${r.authorityRecorded} com chave ${r.accessKey == null ? 'ausente' : 'presente'} (NFS-e: registro ⇔ chave)`)
+  }
   return {
     institutionId: Number(r.institutionId), invoiceId: Number(r.invoiceId), attempt: Number(r.attempt),
     lifeEvent: Number(r.lifeEvent), environment: r.environment === 'P' ? 'P' : 'H',
     serie: r.serie ?? null, dpsNumber: n(r.dpsNumber), dpsId: r.dpsId ?? null,
-    accessKey: r.accessKey ?? null, nfseNumber: r.nfseNumber ?? null, dhProc: r.dhProc ?? null, createdAt: r.createdAt ?? null,
+    accessKey: r.accessKey ?? null, authorityRecorded: r.authorityRecorded === 'S',
+    nfseNumber: r.nfseNumber ?? null, dhProc: r.dhProc ?? null, createdAt: r.createdAt ?? null,
     ageMinutes: n(r.ageMinutes), lastQueriedAt: r.lastQueriedAt ?? null,
     lastEvent: n(r.lastEvent), lastKind: r.lastKind ?? null, lastCode: r.lastCode ?? null, lastMessage: r.lastMessage ?? null,
     lastSource: r.lastSource ?? null, lastDh: r.lastDh ?? null, lastEventAt: r.lastEventAt ?? null,

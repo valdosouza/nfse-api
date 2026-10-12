@@ -171,7 +171,7 @@ const outcome = (p: Promise<any>) => p.then(() => 'ok', (e: any) => [e?.statusCo
 const httpOut = (r: request.Response) => (r.status < 300 ? r.status : [r.status, r.body?.code ?? null])
 
 // ---- linhas SINTÉTICAS (só na cópia) ------------------------------------------------------------------------------
-const lifeOf = async (inv: number) => (await fiscal.erp.invoiceLife(ctx.pool, SCHEMA, INST, inv))!.lifeEvent!
+const lifeOf = async (inv: number) => (await fiscal.erp.invoiceLife(ctx.pool, SCHEMA, fiscal.invoiceRef(INST, inv, fiscal.WEB_TERMINAL)))!.lifeEvent!
 async function seedDps(inst: number, inv: number, life: number, n: number): Promise<string> {
   const dpsId = `DPS4106902${'2'}${CNPJ}00999${String(n).padStart(15, '0')}`
   await w(`INSERT INTO tb_invoice_service_dps (tb_institution_id, tb_invoice_id, terminal, life_event, serie, dps_number, dps_id, tb_user_id, created_at, updated_at, deleted)
@@ -286,7 +286,7 @@ d('GATE ADVERSARIAL r11 (o "r8" de 2026-10-10) — delta da sessão 2026-10-10 (
     for (const r of rows) {
       const id = Number(r.id)
       if (busy.has(id)) continue
-      const key = await fiscal.erp.orderInterface(ctx.pool, SCHEMA, INST, id)
+      const key = await fiscal.erp.orderInterface(ctx.pool, SCHEMA, fiscal.invoiceRef(INST, id, fiscal.WEB_TERMINAL))
       if (!(await fiscal.erp.institutionHasInterface(ctx.pool, SCHEMA, INST, key))) continue
       if (!X) {
         try {

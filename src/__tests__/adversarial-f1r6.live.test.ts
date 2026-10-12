@@ -160,7 +160,7 @@ async function waitBlocked(blockerCid: number, patterns: RegExp[], count = 1, ms
 }
 
 // ---- linhas SINTÉTICAS (só na cópia) ------------------------------------------------------------------------------
-const lifeOf = async (inv: number) => (await fiscal.erp.invoiceLife(ctx.pool, SCHEMA, INST, inv))!.lifeEvent!
+const lifeOf = async (inv: number) => (await fiscal.erp.invoiceLife(ctx.pool, SCHEMA, fiscal.invoiceRef(INST, inv, fiscal.WEB_TERMINAL)))!.lifeEvent!
 async function seedDps(inv: number, life: number, n: number): Promise<string> {
   const dpsId = `DPS4106902${'2'}${CNPJ}00999${String(n).padStart(15, '0')}`
   await w(`INSERT INTO tb_invoice_service_dps (tb_institution_id, tb_invoice_id, terminal, life_event, serie, dps_number, dps_id, tb_user_id, created_at, updated_at, deleted)

@@ -16,6 +16,7 @@
 //  - [LOW — D-F38] o cache do prazo do PAM não tem "uma consulta por vez" nem ordem: convênio PENDURADO (o transporte só
 //    tem timeout de INATIVIDADE) é relançado a cada passada (cada uma paga os 3 s e deixa mais uma chamada viva, com o
 //    A1 decifrado na closure); uma falha TARDIA sobrescreve o sucesso mais NOVO por 10 min (o teto encolhe).
+import { withRecord } from './fixture-record'   // NE-1a (D-NE56): a tentativa traz o FATO do registro
 import forge from 'node-forge'
 import fs from 'fs'
 import os from 'os'
@@ -77,7 +78,7 @@ const KEY = ('4106902' + '2' + CNPJ + '0'.repeat(50)).slice(0, 50)
 const NFSE_XML = `<NFSe xmlns="http://www.sped.fazenda.gov.br/nfse" versao="1.01"><infNFSe Id="NFS${KEY}"><nNFSe>42</nNFSe><dhProc>2026-10-04T10:00:00-03:00</dhProc><cStat>100</cStat><emit><CNPJ>${CNPJ}</CNPJ></emit><DPS><infDPS Id="${DPS_ID}"></infDPS></DPS></infNFSe></NFSe>`
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
-const tx = (over: any = {}) => ({
+const tx = (over: any = {}) => withRecord({
   institutionId: 1, invoiceId: INVOICE, attempt: 1, lifeEvent: 1, environment: 'P', serie: '1', dpsNumber: 42, dpsId: DPS_ID,
   accessKey: KEY, nfseNumber: '42', dhProc: '2026-09-30 13:00:00', createdAt: '2026-09-30 13:00:00', ageMinutes: 6000, lastQueriedAt: null,
   lastEvent: 1, lastKind: 'A', lastCode: null, lastMessage: null, lastSource: 'P', lastDh: '2026-09-30 13:00:00', lastEventAt: '2026-09-30 13:00:00',

@@ -16,6 +16,7 @@
 //
 // REGRAS DO GATE: nenhum socket (transport.request do núcleo trocado), nenhum banco (pool/conn/repositório/erp mockados — harness
 // copiado do `adversarial-r19-gate.test.ts`), nenhuma migration, nada que fale com o fisco. Lê o setes-api só como TEXTO.
+import { withRecord } from './fixture-record'   // NE-1a (D-NE56): a tentativa traz o FATO do registro
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -78,7 +79,7 @@ const DPS_ID = 'DPS410690221234567800019900001000000000000042'
 const nfseXmlOf = (key: string) =>
   `<NFSe xmlns="http://www.sped.fazenda.gov.br/nfse"><infNFSe Id="NFS${key}"><nNFSe>123</nNFSe><dhProc>2026-09-21T10:15:30-03:00</dhProc><cStat>100</cStat><emit><CNPJ>${CNPJ}</CNPJ></emit><DPS><infDPS Id="${DPS_ID}"></infDPS></DPS></infNFSe></NFSe>`
 
-const tx = (over: any = {}) => ({
+const tx = (over: any = {}) => withRecord({
   institutionId: 1, invoiceId: INVOICE, attempt: 1, lifeEvent: 1, environment: 'H', serie: '1', dpsNumber: 42, dpsId: DPS_ID,
   accessKey: KEY, nfseNumber: '123', dhProc: '2026-10-10 21:43:04', createdAt: '2026-10-10 21:43:00', ageMinutes: 0, lastQueriedAt: null,
   lastEvent: 1, lastKind: 'A', lastCode: null, lastMessage: null, lastSource: 'P', lastDh: '2026-09-21 13:15:30', lastEventAt: '2026-09-21 13:15:30', lastEventAgeMinutes: 0, ...over,
@@ -255,7 +256,7 @@ describe('ACHADO R20-01 (LOW latente — S não tem produtor; questão Q-F108) �
   })
   it('contexto: a barreira do plano (nota de implantação da F2a (1)) vê a vigente S como VIVA → a F2a diria "transmissão em andamento" (mensagem coerente — mas sem prazo)', () => {
     const { life } = lifeScenario(sibling('S'))
-    expect(isLiveTransmission(currentOf(life as any))).toBe(true)
+    expect(isLiveTransmission(currentOf<any>(life as any))).toBe(true)
   })
   it('contexto: o rodízio revisita S a cada `minMinutes`, PARA SEMPRE (SQL real das candidatas: S/K só pelo throttle, sem teto de idade)', async () => {
     let sql = ''

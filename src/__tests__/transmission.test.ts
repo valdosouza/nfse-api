@@ -8,6 +8,7 @@
 //  - reconfirmação grava a PROVA (last_queried_at) quando o fisco não acha (D-F29);
 //  - rodízio sem Map em memória: ALUGUEL na linha do emissor (gates da F1 — a trava nomeada retinha conexão);
 //  - cancelamento com RESERVA em voo: K antes do fisco; recusa/preparo local que falha → N (o pedido não vigora).
+import { withRecord } from './fixture-record'   // NE-1a (D-NE56): a tentativa traz o FATO do registro
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -82,7 +83,7 @@ const opened = (env = 'H') => ({
   cert: Buffer.from('CERT'), key: Buffer.from('KEY'),
   info: { subject: `CN=SETES:${CNPJ}`, issuer: 'AC', notBefore: '2026-01-01', notAfter: '2027-01-01', daysToExpire: 100, expired: false, notYetValid: false, cnpj: CNPJ, fingerprint256: 'x' },
 })
-const tx = (over: any = {}) => ({
+const tx = (over: any = {}) => withRecord({
   institutionId: 1, invoiceId: INVOICE, attempt: 1, lifeEvent: 1, environment: 'H', serie: '1', dpsNumber: 42, dpsId: DPS_ID,
   accessKey: KEY, nfseNumber: '123', dhProc: '2026-09-21 13:15:30', createdAt: '2026-09-21 13:15:00', ageMinutes: 0, lastQueriedAt: null,
   lastEvent: 1, lastKind: 'A', lastCode: null, lastMessage: null, lastSource: 'P', lastDh: '2026-09-21 13:15:30', lastEventAt: '2026-09-21 13:15:30', lastEventAgeMinutes: 0, ...over,

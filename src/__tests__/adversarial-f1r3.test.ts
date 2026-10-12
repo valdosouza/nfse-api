@@ -6,6 +6,7 @@
 // foram CORRIGIDOS na mesma sessão (cerca só de separadores, YAML da consulta, 415 no envelope, contenção = RESOURCE_BUSY).
 // Aqui ficam as reproduções SEM banco; as que dependem do MVCC/SQL real estão em
 // `adversarial-f1r3.live.test.ts` (NFSE_ADV_LIVE=1).
+import { withRecord } from './fixture-record'   // NE-1a (D-NE56): a tentativa traz o FATO do registro
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -64,7 +65,7 @@ const appFor = (over: Partial<AppContext> = {}) => createApp({
   verifier: ProductTokenVerifier.of({ k1: pubPem }), corsOrigins: [], checkIdentity: false, ...over,
 } as AppContext)
 
-const tx = (over: any = {}) => ({
+const tx = (over: any = {}) => withRecord({
   institutionId: 1, invoiceId: INVOICE, attempt: 1, lifeEvent: 1, environment: 'P', serie: '1', dpsNumber: 42, dpsId: DPS_ID,
   accessKey: null, nfseNumber: null, dhProc: null, createdAt: '2026-09-21 13:15:00', ageMinutes: 30, lastQueriedAt: null,
   lastEvent: null, lastKind: null, lastCode: null, lastMessage: null, lastSource: null, lastDh: null, lastEventAt: null, lastEventAgeMinutes: null, ...over,

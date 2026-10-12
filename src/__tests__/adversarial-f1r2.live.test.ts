@@ -292,7 +292,7 @@ d('GATE ADVERSARIAL F1 — 2ª rodada — banco real + fisco falso', () => {
 
     it('tentativa no fiscal_api que a origem não tem (institution da cerca) → exit ≠ 0 "dual-write", nada gravado; sem ela → exit 0', async () => {
       const id = Z
-      const life = (await fiscal.erp.invoiceLife(ctx.pool, SCHEMA, INST, id))!.lifeEvent!
+      const life = (await fiscal.erp.invoiceLife(ctx.pool, SCHEMA, fiscal.invoiceRef(INST, id, fiscal.WEB_TERMINAL)))!.lifeEvent!
       const dpsId = `DPS4106902${'2'}${CNPJ}00001${'999999999'.padStart(15, '0')}`
       expect(dpsId).toHaveLength(45)
       const attempt = (maxAttemptBefore.get(id) ?? 0) + 1

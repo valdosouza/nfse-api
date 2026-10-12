@@ -5,7 +5,7 @@ import {
   isLiveTransmission, isAuthorized, fiscalStateOf, localCancelPending, isSubstitutionCancel, CANCEL_EVENT_CODES, reconfirmationCandidate, currentOf,
   acquireRefreshLease, releaseRefreshLease, renewRefreshLease, getIssuer, newCrashRef, contentionToHttpError, emissionStillInErp,
   ServiceFiscalState, TransmissionEventKind, TransmissionSource, AuthorityEnvironment, AuthorityContext, Queryable, runShortCommand,
-  tagAmbiguous, ambiguousCauseOf,
+  tagAmbiguous, ambiguousCauseOf, invoiceRef, WEB_TERMINAL, InvoiceRef,
 } from 'fiscal-api'
 import type { TaxAuthorityAdapter, NfseQuery, MunicipalTerms } from '../authority/types'
 import fs from 'fs'
@@ -81,6 +81,12 @@ export const dpsFileName = (dpsId: string) => `${dpsId}-dps.xml`
 export const nfseFileName = (accessKey: string) => `${String(accessKey).replace(/\D/g, '')}-nfse.xml`
 export const cancelEventFileName = (accessKey: string) => `${String(accessKey).replace(/\D/g, '')}-evt101101.xml`
 
+/**
+ * NE-1a (D-NE12, parte 1 — D-NE59): os leitores do ERP do núcleo recebem a referência INTEIRA da nota (terminal por parâmetro). Borda
+ * PROVISÓRIA: a nota da NFS-e da web é a do terminal da web; a parte 2 da NE-1a leva a referência até a rota (`WEB_TERMINAL` só lá).
+ */
+export const webInvoice = (institutionId: number, invoiceId: number): InvoiceRef => invoiceRef(institutionId, invoiceId, WEB_TERMINAL)
+
 // ---------------------------------------------------------------------------
 // Transação sob a TRAVA DA NOTA (D-F27/D-F31): a 1ª coisa que a transação faz no ERP
 // ---------------------------------------------------------------------------
@@ -91,7 +97,7 @@ async function withInvoiceTx<T>(
   opts: { requireAlive?: boolean } = {},
 ): Promise<T> {
   return withTransaction(deps.pool, label, { institutionId: actor.institutionId, invoiceId }, async conn => {
-    const locked = await erp.lockInvoice(conn, actor.schemaName, actor.institutionId, invoiceId)
+    const locked = await erp.lockInvoice(conn, actor.schemaName, webInvoice(actor.institutionId, invoiceId))
     if (!locked || (opts.requireAlive && !locked.alive)) {
       throw new HttpError(404, `Nota ${invoiceId} não encontrada`, undefined, ErrorCodes.INVOICE_NOT_FOUND)
     }
@@ -514,7 +520,7 @@ async function refreshServiceTransmissionInner(
   opts: { query?: NfseQuery; attempt?: number; fromRun?: boolean },
 ): Promise<RefreshResult> {
   const { schemaName: s, institutionId, userId } = actor
-  const life = await erp.invoiceLife(deps.pool, s, institutionId, invoiceId)
+  const life = await erp.invoiceLife(deps.pool, s, webInvoice(institutionId, invoiceId))
   if (!life) throw new HttpError(404, `Nota ${invoiceId} não encontrada`, undefined, ErrorCodes.INVOICE_NOT_FOUND)
   // R3-1: quem sabe qual tentativa quer olhar diz — senão a vigente da vida
   const tx0 = (opts.attempt != null ? await getTransmission(deps.pool, institutionId, invoiceId, opts.attempt) : null)
@@ -697,7 +703,7 @@ export interface ReconfirmResult {
  */
 export async function reconfirmBeforeLocalCancel(deps: NfseDeps, actor: Actor, invoiceId: number): Promise<ReconfirmResult> {
   const { schemaName: s, institutionId } = actor
-  const life = await erp.invoiceLife(deps.pool, s, institutionId, invoiceId)
+  const life = await erp.invoiceLife(deps.pool, s, webInvoice(institutionId, invoiceId))
   if (!life) throw new HttpError(404, `Nota ${invoiceId} não encontrada`, undefined, ErrorCodes.INVOICE_NOT_FOUND)
   const { transmissions } = await listLifeTransmissions(deps.pool, institutionId, invoiceId, life.lifeEvent)
   const cand = reconfirmationCandidate(transmissions)
@@ -1056,7 +1062,7 @@ export interface ServiceFiscalView {
 
 export async function getServiceFiscalView(deps: NfseDeps, actor: Actor, invoiceId: number): Promise<ServiceFiscalView> {
   const { schemaName: s, institutionId } = actor
-  const life = await erp.invoiceLife(deps.pool, s, institutionId, invoiceId)
+  const life = await erp.invoiceLife(deps.pool, s, webInvoice(institutionId, invoiceId))
   if (!life) throw new HttpError(404, `Nota ${invoiceId} não encontrada`, undefined, ErrorCodes.INVOICE_NOT_FOUND)
   const { transmissions, events } = await listLifeTransmissions(deps.pool, institutionId, invoiceId, life.lifeEvent)
   const current = currentOf(transmissions)          // D-N26 — a MESMA regra do núcleo (D-F33)
@@ -1104,7 +1110,7 @@ async function substituteKeyOf(deps: NfseDeps, institutionId: number, tx: Transm
 /** XML da NFS-e autorizada (ou cancelada — o documento existiu); 404 se não há. */
 export async function readNfseXml(deps: NfseDeps, actor: Actor, invoiceId: number): Promise<{ accessKey: string; xml: string; cancelled: boolean }> {
   const { schemaName: s, institutionId } = actor
-  const life = await erp.invoiceLife(deps.pool, s, institutionId, invoiceId)
+  const life = await erp.invoiceLife(deps.pool, s, webInvoice(institutionId, invoiceId))
   const { transmissions } = await listLifeTransmissions(deps.pool, institutionId, invoiceId, life?.lifeEvent ?? null)
   const withKey = [...transmissions].reverse().find(t => t.accessKey) ?? null
   if (!withKey?.accessKey) throw new HttpError(404, `Nota ${invoiceId} sem NFS-e autorizada no fisco`, undefined, ErrorCodes.FISCAL_NFSE_NOT_FOUND)

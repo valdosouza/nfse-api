@@ -1,5 +1,6 @@
 import { HttpError, ErrorCodes, InstitutionPayload, isAdmin, erp, emissionStillInErp } from 'fiscal-api'
 import type { AppContext } from '../context'
+import { webInvoice } from '../nfse/transmission'
 
 /**
  * Autorização de AÇÃO na porta fiscal (D-F13): a REGRA é do ERP (privilégio TRANSMITIR/CANCELAR na
@@ -10,7 +11,7 @@ import type { AppContext } from '../context'
  */
 
 export async function requireBranchPrivilege(ctx: AppContext, inst: InstitutionPayload, invoiceId: number, privilegeId: number): Promise<void> {
-  const key = await erp.orderInterface(ctx.pool, inst.schemaName, inst.institutionId, invoiceId)
+  const key = await erp.orderInterface(ctx.pool, inst.schemaName, webInvoice(inst.institutionId, invoiceId))
   // licença (D-F14/D-F37) nas AÇÕES, para todos: privilégio (ou admin) em ramo NÃO contratado não emite
   if (!(await erp.institutionHasInterface(ctx.pool, inst.schemaName, inst.institutionId, key))) {
     throw new HttpError(403, `Interface ${key} não contratada para este estabelecimento`, undefined, ErrorCodes.INTERFACE_NOT_ALLOWED)
@@ -65,7 +66,7 @@ export async function passScope(ctx: AppContext, inst: InstitutionPayload, keys:
 }
 
 export async function requireBranchInterface(ctx: AppContext, inst: InstitutionPayload, invoiceId: number): Promise<void> {
-  const key = await erp.orderInterface(ctx.pool, inst.schemaName, inst.institutionId, invoiceId)
+  const key = await erp.orderInterface(ctx.pool, inst.schemaName, webInvoice(inst.institutionId, invoiceId))
   if (!(await erp.institutionHasInterface(ctx.pool, inst.schemaName, inst.institutionId, key))) {
     throw new HttpError(403, `Interface ${key} não contratada para este estabelecimento`, undefined, ErrorCodes.INTERFACE_NOT_ALLOWED)
   }

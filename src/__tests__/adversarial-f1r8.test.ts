@@ -13,6 +13,7 @@
 //  - [LOW — r8-resync-55 — CORRIGIDO 2026-10-04: leitura não travante antes do `continue`] a re-sincronia (`migrate:setes` sem `--cutover`) só olha institution com SE no ERP: uma réplica
 //    de OUTRO modelo (versão anterior do script) numa institution SEM SE no ERP nunca dispara a "falha alta com a instrução
 //    de DELETE" da D-F42 — e trava a institution (cerca = "réplica em qualquer linha") sem saída pelo `--cutover`.
+import { withRecord } from './fixture-record'   // NE-1a (D-NE56): a tentativa traz o FATO do registro
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -74,7 +75,7 @@ describe('[MEDIUM — r8-cancel-idem] a decisão do cancelamento abre o A1 ANTES
   const adapter = { authority: 'ADN', transmit: jest.fn(), queryNfse: jest.fn(), queryDpsAccessKey: jest.fn(), registerEvent: jest.fn(), municipalTerms: jest.fn() }
   const deps: NfseDeps = { pool, keyring: MasterKeyRing.of({ 1: Buffer.alloc(32, 8) }), storage: new FsFiscalStorage(storageRoot), adapter: adapter as any, fiscalDb: 'fiscal_api' }
   const ACTOR = { schemaName: 'setes_setes', institutionId: 1, userId: 990008 }
-  const tx = (over: any = {}) => ({
+  const tx = (over: any = {}) => withRecord({
     institutionId: 1, invoiceId: INVOICE, attempt: 1, lifeEvent: 1, environment: 'P', serie: '1', dpsNumber: 44, dpsId: 'DPS' + '4'.repeat(42),
     accessKey: KEY, nfseNumber: '44', dhProc: '2026-09-30 13:00:00', createdAt: '2026-09-30 13:00:00', ageMinutes: 6000, lastQueriedAt: null,
     lastEvent: 3, lastKind: 'A', lastCode: null, lastMessage: null, lastSource: 'P', lastDh: null, lastEventAt: null, lastEventAgeMinutes: 6000, ...over,
@@ -225,9 +226,11 @@ describe('D-F46 — ataques à borda: ramo não contratado, admin, lista vazia, 
 
   it('nota sem linha na view: a rota por nota (erp.orderInterface) e o SQL das candidatas (COALESCE) dão o MESMO "orders"', async () => {
     const q = (rows: any[]) => ({ query: jest.fn(async () => [rows]) }) as any
-    expect(await actualFiscal.erp.orderInterface(q([]), 'setes_setes', 1, 10)).toBe('orders')
-    expect(await actualFiscal.erp.orderInterface(q([{ k: null }]), 'setes_setes', 1, 10)).toBe('orders')
-    expect(await actualFiscal.erp.orderInterface(q([{ k: 'service-orders' }]), 'setes_setes', 1, 10)).toBe('service-orders')
+    // NE-1a (D-NE12): o leitor recebe a referência INTEIRA da nota (terminal por parâmetro)
+    const ref = actualFiscal.invoiceRef(1, 10, actualFiscal.WEB_TERMINAL)
+    expect(await actualFiscal.erp.orderInterface(q([]), 'setes_setes', ref)).toBe('orders')
+    expect(await actualFiscal.erp.orderInterface(q([{ k: null }]), 'setes_setes', ref)).toBe('orders')
+    expect(await actualFiscal.erp.orderInterface(q([{ k: 'service-orders' }]), 'setes_setes', ref)).toBe('service-orders')
     const calls: any[] = []
     await (jest.requireActual('../nfse/repository') as typeof repo).listRefreshCandidates(
       { query: async (sql: string, p: any[]) => { calls.push([sql, p]); return [[]] } } as any, 'setes_setes', 1, 5, 10, 8, { interfaces: ['orders'] })
