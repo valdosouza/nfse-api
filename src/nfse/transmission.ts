@@ -19,7 +19,7 @@ import {
   TransmissionRow, TransmissionEventRow, getLifeDps, insertLifeDps, getTransmission, latestTransmission,
   findTransmissionByDpsId, findKeyHolder, listLifeTransmissions, insertTransmission, fillAuthorityData, insertTransmissionEvent,
   hasTransmissionEvent, findTransmissionEventByKind, touchQueriedAt, recordNfseNotGenerated, listRefreshCandidates,
-  DEFAULT_CANCEL_DAYS, REFRESH_AUTHORIZED_MARGIN_DAYS,
+  DEFAULT_CANCEL_DAYS, REFRESH_AUTHORIZED_MARGIN_DAYS, ServiceVoiceWriteKind,
 } from './repository'
 import { toTsString } from '../authority/dps-builder'
 
@@ -211,7 +211,9 @@ export function classifyAuthorityError(err: unknown): AuthorityOutcome {
   return 'ambiguous'
 }
 
-export const OUTCOME_KIND: Record<Exclude<AuthorityOutcome, 'ambiguous'>, TransmissionEventKind> = { rejected: 'R', auth_failed: 'F', local: 'F' }
+// D-F106: o mapa grava na voz — tipado pelo vocabulário de ESCRITA da família (o compilador recusa S/P/D aqui) e CONGELADO (gate R22,
+// R22-02: `Object.assign`/`Reflect.set` compilavam sem cast e trocavam a voz de toda falha local do processo)
+export const OUTCOME_KIND: Readonly<Record<Exclude<AuthorityOutcome, 'ambiguous'>, ServiceVoiceWriteKind>> = Object.freeze({ rejected: 'R', auth_failed: 'F', local: 'F' })
 
 export function firstAuthorityCode(err: AuthorityHttpError): string | null {
   for (const f of err.fields ?? []) {

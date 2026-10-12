@@ -31,6 +31,7 @@ import { tsProducesS, voiceFenceScope } from './voice-kind-fence'
 import * as fiscal from 'fiscal-api'
 import * as repo from '../nfse/repository'
 import type { TransmissionEventInput } from '../nfse/repository'
+import type { TransmissionEventKind as SharedKind } from 'fiscal-api'
 import { FsFiscalStorage, MasterKeyRing } from 'fiscal-api'
 import { refreshServiceTransmission, NfseDeps } from '../nfse/transmission'
 
@@ -296,14 +297,48 @@ describe('ATAQUE 1 — ESCAPE da cerca da D-F102: a promessa é "a cerca quebra 
     expect(astFlags(`const r = await conn.query(\`SELECT 1 FROM tb_invoice_service_transmission_event WHERE kind IN ('S','K')\`)`)).toBe(false)   // leitor não é produtor
   })
 
-  it.failing.each(SEMANTIC)('[LOW R21-02 — Q-F112] produtor de S SEMÂNTICO (%s) → a cerca o pega', (_label, src) => {
-    expect(fenceFlags(src)).toBe(true)
+  it.each(SEMANTIC)('[LIMITE da cerca TEXTUAL — D-F106 (= Q-F112 (b)): quem pega é o TIPO] produtor de S SEMÂNTICO (%s) escapa da cerca por AST', (_label, src) => {
+    expect(fenceFlags(src)).toBe(false)
   })
-  it('contexto (Q-F112): os produtores semânticos escapam da cerca E da alternativa por AST — o literal não está ao lado do `kind`; o que os pega é o TIPO do escritor, que hoje ACEITA S (`TransmissionEventInput.kind: TransmissionEventKind`)', () => {
-    expect(SEMANTIC.filter(([, src]) => fenceFlags(src) || astFlags(src)).map(([l]) => l)).toEqual([])
-    // testemunha de COMPILAÇÃO: se o escritor ganhar a cerca de tipo (Q-F112), esta linha deixa de compilar → `@ts-expect-error`
-    const accepted: TransmissionEventInput = { kind: 'S', source: 'P' }
-    expect(accepted.kind).toBe('S')
+  it('[DECIDIDO — D-F106 (= Q-F112 (b))] o TIPO do escritor da NFS-e (`ServiceVoiceWriteKind` — lista POSITIVA A/R/C/K/F/N) recusa S em TODA forma — testemunhas de COMPILAÇÃO (ts-jest/tsc: um `@ts-expect-error` sem erro QUEBRA a compilação)', () => {
+    expect(SEMANTIC.filter(([, src]) => fenceFlags(src) || astFlags(src)).map(([l]) => l)).toEqual([])   // a cerca textual não os vê…
+    // …o compilador vê: literal
+    // @ts-expect-error — D-F106: o escritor da NFS-e não aceita S
+    const literal: TransmissionEventInput = { kind: 'S', source: 'P' }
+    // constante nomeada com o tipo COMUM
+    const SENT: SharedKind = 'S'
+    // @ts-expect-error — D-F106
+    const named: TransmissionEventInput = { kind: SENT, source: 'P' }
+    // shorthand
+    const kind: SharedKind = 'S'
+    // @ts-expect-error — D-F106
+    const short: TransmissionEventInput = { kind, source: 'P' }
+    // mapa novo (molde do OUTCOME_KIND)
+    const PRESENTED = { posted: 'S' } as const
+    // @ts-expect-error — D-F106
+    const mapped: TransmissionEventInput = { kind: PRESENTED.posted, source: 'P' }
+    // parâmetro com o tipo comum
+    // @ts-expect-error — D-F106
+    const voice = (k: SharedKind): TransmissionEventInput => ({ kind: k, source: 'P' })
+    // os kinds da família seguem aceitos (o tipo não quebrou a escrita legítima)
+    const ok: TransmissionEventInput[] = (['A', 'R', 'C', 'K', 'F', 'N'] as const).map(k => ({ kind: k, source: 'P' as const }))
+    expect([literal, named, short, mapped].map(v => v.kind)).toEqual(['S', 'S', 'S', 'S'])        // nunca vão ao escritor — lá o FUNIL os recusaria (R22-03)
+    expect(typeof voice).toBe('function')
+    expect(ok).toHaveLength(6)
+    // S1 (gate socrático da Rodada 22): testemunhas presas à CHAMADA do escritor REAL — a função NÃO roda (só o compilador a lê); se o
+    // `repo.insertTransmissionEvent` voltar a aceitar S/P/D ou o vocabulário comum, o `@ts-expect-error` sem erro QUEBRA a compilação
+    const neverRun = async (conn: fiscal.PoolConnection) => {
+      // @ts-expect-error — D-F106: o escritor REAL recusa S
+      await repo.insertTransmissionEvent(conn, 1, 1, 1, null, { kind: 'S', source: 'P' })
+      // @ts-expect-error — D-F106: P (NF-e, em processamento) não é da família NFS-e
+      await repo.insertTransmissionEvent(conn, 1, 1, 1, null, { kind: 'P', source: 'Q' })
+      // @ts-expect-error — D-F106: D (NF-e, denegada) não é da família NFS-e
+      await repo.insertTransmissionEvent(conn, 1, 1, 1, null, { kind: 'D', source: 'Q' })
+      // @ts-expect-error — D-F106: o vocabulário COMUM não cabe no do escritor
+      await repo.insertTransmissionEvent(conn, 1, 1, 1, null, { kind: SENT, source: 'P' })
+      await repo.insertTransmissionEvent(conn, 1, 1, 1, null, { kind: 'F', source: 'P' })        // a família segue aceita
+    }
+    expect(typeof neverRun).toBe('function')
   })
 
   it('contexto (histórico — a regex antiga): `uncomment` trata o `/*` do XPath `//*[@Id=…]` (fiscal-api/src/transport/xmldsig.ts:54) como abertura de comentário e engole código de verdade; a cerca nova (AST) não usa mais `uncomment`', () => {
