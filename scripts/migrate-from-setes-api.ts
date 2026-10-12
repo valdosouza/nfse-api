@@ -54,11 +54,11 @@ import fs from 'fs'
 import path from 'path'
 import {
   createFiscalPool, dbConfigFromEnv, MasterKeyRing, FsFiscalStorage, certificateInfo, keyMatchesCertificate,
-  validatePrivateKeyPem, certificateAad, assertSchema, PoolConnection, ISSUER_MODELS, anyEmissionStillInErp, erp,
+  validatePrivateKeyPem, certificateAad, assertSchema, PoolConnection, ISSUER_MODELS, anyEmissionStillInErp, erp, CANCEL_EVENT_CODES,
 } from 'fiscal-api'
 import { SERVICE_MODEL } from '../src/facts/service-facts'
 import { SERVICE_VOICE_WRITE_KINDS } from '../src/nfse/voice-family'
-import { assertNoteSerieKept, retireErpServiceIssuer } from './cutover-erp'
+import { assertNoteSerieKept, retireErpServiceIssuer, f2aFreezeTriggersMissing } from './cutover-erp'
 import { argumentErrors, npmSwallowedFlags } from './migrate-args'
 
 const ARGS = process.argv.slice(2)
@@ -186,17 +186,22 @@ async function migrateInstitution(c: PoolConnection, keyring: MasterKeyRing, sto
   // REBAIXA a violação do CHECK da 005 (kind = lista da família, source = P/Q, binários) a AVISO e a linha SOME calada (provado no MariaDB
   // 10.4.20; no MySQL 8, pela documentação dele, também) — a conferência do passo 6 só vê a ÚLTIMA voz e não acusaria uma voz do meio. Voz fora do domínio na origem
   // = falha ALTO aqui, com o motivo certo (não "dual-write"). Tentativa e habilitação são copiadas SEM IGNORE (o CHECK já falha alto).
+  // F2A3-ADV-02 (gate adversarial da A3): o código da voz C também — '105102 ' (espaço no fim) passava no CHECK _ci PAD SPACE da origem e,
+  // com a 006 desta API, sumiria calado na cópia; fora da lista EXATA (6 caracteres, binária) = falha ALTO aqui
   const [outOfDomain] = await c.query<any[]>(
-    `SELECT ev.tb_invoice_id AS inv, ev.attempt, ev.event, HEX(ev.kind) AS kindHex, HEX(ev.source) AS sourceHex
+    `SELECT ev.tb_invoice_id AS inv, ev.attempt, ev.event, HEX(ev.kind) AS kindHex, HEX(ev.source) AS sourceHex, HEX(ev.authority_code) AS codeHex
        FROM \`${s}\`.tb_invoice_service_transmission_event ev
        JOIN \`${s}\`.tb_invoice_service_transmission t
          ON t.tb_institution_id = ev.tb_institution_id AND t.tb_invoice_id = ev.tb_invoice_id AND t.terminal = ev.terminal AND t.attempt = ev.attempt
       WHERE ev.tb_institution_id = ? AND t.dps_id IS NOT NULL
-        AND (ev.kind COLLATE utf8mb4_bin NOT IN (?) OR ev.source COLLATE utf8mb4_bin NOT IN ('P', 'Q'))
-      LIMIT 5`, [institutionId, [...SERVICE_VOICE_WRITE_KINDS]])
+        AND (ev.kind COLLATE utf8mb4_bin NOT IN (?) OR ev.source COLLATE utf8mb4_bin NOT IN ('P', 'Q')
+             OR (ev.kind COLLATE utf8mb4_bin = 'C' AND ev.authority_code IS NOT NULL
+                 AND (CHAR_LENGTH(ev.authority_code) <> 6 OR ev.authority_code COLLATE utf8mb4_bin NOT IN (?))))
+      LIMIT 5`, [institutionId, [...SERVICE_VOICE_WRITE_KINDS], [...CANCEL_EVENT_CODES]])
   if (outOfDomain.length) {
-    throw new Error(`${s}: voz FORA DO DOMÍNIO na origem (${outOfDomain.map(x => `${x.inv}/${x.attempt}#${x.event} kind=0x${x.kindHex} source=0x${x.sourceHex}`).join(', ')}) `
-      + `— a família NFS-e só grava ${SERVICE_VOICE_WRITE_KINDS.join('/')} e P/Q (D-F107/D-F120); corrija a origem antes; nada migrado`)
+    throw new Error(`${s}: voz FORA DO DOMÍNIO na origem (${outOfDomain.map(x => `${x.inv}/${x.attempt}#${x.event} kind=0x${x.kindHex} source=0x${x.sourceHex} code=0x${x.codeHex ?? ''}`).join(', ')}) `
+      + `— a família NFS-e só grava ${SERVICE_VOICE_WRITE_KINDS.join('/')}, P/Q e, na voz C, o código exato ${[...CANCEL_EVENT_CODES].join('/')} `
+      + '(D-F107/D-F120/D-F68); corrija a origem antes; nada migrado')
   }
   const [e] = await c.query<any>(
     `INSERT IGNORE INTO tb_invoice_service_transmission_event
@@ -418,6 +423,18 @@ async function cutover(pool: ReturnType<typeof createFiscalPool>, keyring: Maste
     throw new Error(`${s}: a F2a do setes-api não está aplicada neste schema (migration "${F2A_MIGRATION_NAME}" ausente em _migrations) — `
       + 'a tela antiga do Emissor fiscal reviveria a habilitação SE aposentada; aplique a F2a antes da virada (D-F50)')
   }
+  // D-F110 + F2A3-ADV-04: o nome da migration não basta — os 9 gatilhos de TRAVA conferidos pelo NOME (autocommit, ANTES da transação);
+  // faltando = BLOQUEIO no ensaio, recusa no ato (sem eles o ERP antigo voltaria a escrever a voz e a reviver a SE aposentada)
+  const triggersMissing = f2aMissing ? [] : await f2aFreezeTriggersMissing(pool, s)
+  if (triggersMissing.length && !DRY) {
+    throw new Error(`${s}: gatilhos de TRAVA da F2a faltando ou diferentes (${triggersMissing.join('; ')}) — "${F2A_MIGRATION_NAME}" consta em `
+      + '_migrations, mas o ERP não está congelado (DROP TRIGGER/dump sem gatilhos/restauração, ou o usuário do ato sem o privilégio TRIGGER); '
+      + 'reaplique a migration (é re-executável) antes da virada (D-F110)')
+  }
+  const bloqueios = [
+    ...(f2aMissing ? [`D-F50: a virada REAL seria recusada — migration "${F2A_MIGRATION_NAME}" (F2a do setes-api) ausente em ${s}._migrations`] : []),
+    ...(triggersMissing.length ? [`D-F110: a virada REAL seria recusada — gatilhos de TRAVA faltando/diferentes em ${s}: ${triggersMissing.join('; ')}`] : []),
+  ]
   const c = await pool.getConnection()
   try {
     await c.beginTransaction()
@@ -461,7 +478,7 @@ async function cutover(pool: ReturnType<typeof createFiscalPool>, keyring: Maste
     if (rep) await checkXmls(c, storage, rep)
     console.log(JSON.stringify({ dryRun: DRY, committed: !DRY,
       cutover: { institutionId, schema: s, linhasViradas: Number(u.affectedRows ?? 0), habilitacaoErpAposentada: retired }, report: rep,
-      ...(f2aMissing ? { bloqueios: [`D-F50: a virada REAL seria recusada — migration "${F2A_MIGRATION_NAME}" (F2a do setes-api) ausente em ${s}._migrations`] } : {}),
+      ...(bloqueios.length ? { bloqueios } : {}),
       nota: 'D-F44: a habilitação SE do ERP foi aposentada no ato (deleted=S) — o setes-api não emite mais por ela; a série da nota segue \'1\'.' }, null, 2))
   } catch (err) {
     // gate do delta (L6): rollback que falha (conexão morta) não pode esconder a CAUSA RAIZ do ato — molde do r9 da re-sincronia

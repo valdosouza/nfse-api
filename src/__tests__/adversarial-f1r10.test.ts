@@ -14,6 +14,7 @@
 //    D-F29 (`last_queried_at` > instante do F) nasce de uma consulta que não é posterior ao F. Variante nova da D-F51
 //    (rodízio × tela, ambos escritores de F); a do transmitir × consulta já existia.
 import { withRecord } from './fixture-record'   // NE-1a (D-NE56): a tentativa traz o FATO do registro
+import { FREEZE_TRIGGERS_SQL, freezeTriggerRows } from './fixture-freeze-triggers'   // F2A3-ADV-04: o ato confere os 9 gatilhos
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -343,6 +344,7 @@ describe('D-F50 — a virada confere `_migrations.name = f2a_fiscal_passivo` no 
     return (sql) => {
       if (/FROM setes_central\.tb_institution WHERE id = \?/.test(sql)) return [[{ schemaName: schema }]]
       if (/\._migrations WHERE name = \?/.test(sql)) return f2a()
+      if (FREEZE_TRIGGERS_SQL.test(sql)) return [freezeTriggerRows()]                                        // F2A3-ADV-04: os 9 gatilhos
       if (/dps_last_number AS n FROM `setes_x`\.tb_establishment_issuer .*FOR UPDATE/s.test(sql)) return [[{ model: 'SE', serie: '1', deleted: 'N', n: 10 }]]
       if (/SELECT model, cutover_at AS c FROM tb_establishment_issuer/.test(sql)) return [[{ model: 'SE', c: null }]]
       if (/information_schema\.tables/.test(sql)) return [[{ x: 1 }]]
@@ -389,6 +391,26 @@ describe('D-F50 — a virada confere `_migrations.name = f2a_fiscal_passivo` no 
     expect(dry.exitCode).toBeNull()
     expect(dry.logs.join(' ')).toMatch(/"bloqueios"[\s\S]*D-F50/)
     expect(dry.conn.commit).not.toHaveBeenCalled()
+  })
+
+  it('[CORRIGIDO — gates da A3, F2A3-ADV-04] F2a aplicada mas um gatilho de TRAVA faltando (DROP TRIGGER) ou sem nenhum visível (usuário sem TRIGGER) → o ato REAL recusa antes da transação; o --dry-run reporta o bloqueio D-F110', async () => {
+    const withTriggers = (rows: object[]): Handler => {
+      const base = cutoverDb(() => [[{ x: 1 }]])
+      return (sql, p) => (FREEZE_TRIGGERS_SQL.test(sql) ? [rows] : base(sql, p))
+    }
+    for (const rows of [freezeTriggerRows().filter((t: any) => t.name !== 'tg_f2a_freeze_issuer_se_bu'), []]) {
+      const real = await runScript([...CUT, '--vai'], withTriggers(rows))
+      expect(real.exitCode).toBe(1)
+      expect(real.errors.join(' ')).toMatch(/gatilhos de TRAVA da F2a faltando ou diferentes/)
+      expect(real.conn.beginTransaction).not.toHaveBeenCalled()
+      expect(real.sqls.some(s => isWrite(s.sql))).toBe(false)
+      const q = real.sqls.find(s => /information_schema\.TRIGGERS/.test(s.sql))!
+      expect([q.p[0], q.tx]).toEqual(['setes_x', false])                       // schema da institution, em AUTOCOMMIT antes da transação
+      const dry = await runScript([...CUT, '--dry-run'], withTriggers(rows))
+      expect(dry.exitCode).toBeNull()
+      expect(dry.logs.join(' ')).toMatch(/"bloqueios"[\s\S]*D-F110/)
+      expect(dry.conn.commit).not.toHaveBeenCalled()
+    }
   })
 
   it.each([

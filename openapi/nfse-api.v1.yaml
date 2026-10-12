@@ -591,6 +591,12 @@ components:
         transmissions: { type: array, items: { $ref: '#/components/schemas/Transmission' } }
         events: { type: array, items: { $ref: '#/components/schemas/Voice' } }
         localCancelPending: { type: boolean, description: 'voz C do fisco sem o C local aplicado pelo setes-api (DERIVADO — D-F28; o app envia o cancelamento ao setes-api)' }
+        substitution:
+          type: object
+          nullable: true
+          description: 'D-F67/D-F76: NFS-e SUBSTITUÍDA no fisco (e105102) — null fora da substituição. A decisão humana ("manter a nota" × cancelar) é do ERP: GET /api/billing/{orderId}/fiscal-effect no setes-api (D-F114/D-F115)'
+          properties:
+            substituteAccessKey: { type: string, nullable: true, description: 'chave da substituta lida do XML do evento (null = XML ausente)' }
         xmlAvailable: { type: boolean }
         danfseAvailable: { type: boolean }
     TransmitResult:

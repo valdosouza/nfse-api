@@ -40,3 +40,45 @@ export async function retireErpServiceIssuer(c: PoolConnection, schema: string, 
       WHERE tb_institution_id = ? AND model = ? AND deleted = 'N'`, [institutionId, model])
   return Number(r?.affectedRows ?? 0)
 }
+
+/**
+ * Os 9 gatilhos de TRAVA da `f2a_fiscal_passivo` (D-F110) — nome → [tabela, evento]. D-F110: "o ensaio da virada confere os triggers";
+ * F2A3-ADV-04 (gate adversarial da A3): `_migrations.name` prova que a migration RODOU, não que os gatilhos continuam lá (DROP TRIGGER,
+ * dump `--skip-triggers`, restauração). Cerca: a lista bate com a migration do setes-api quando a F2a está no `SETES_API_DIR`.
+ */
+export const F2A_FREEZE_TRIGGERS: Readonly<Record<string, readonly [table: string, event: 'INSERT' | 'UPDATE' | 'DELETE']>> = Object.freeze({
+  tg_f2a_freeze_tx_bi:       ['tb_invoice_service_transmission', 'INSERT'],
+  tg_f2a_freeze_tx_bu:       ['tb_invoice_service_transmission', 'UPDATE'],
+  tg_f2a_freeze_tx_bd:       ['tb_invoice_service_transmission', 'DELETE'],
+  tg_f2a_freeze_voice_bi:    ['tb_invoice_service_transmission_event', 'INSERT'],
+  tg_f2a_freeze_voice_bu:    ['tb_invoice_service_transmission_event', 'UPDATE'],
+  tg_f2a_freeze_voice_bd:    ['tb_invoice_service_transmission_event', 'DELETE'],
+  tg_f2a_freeze_issuer_se_bi: ['tb_establishment_issuer', 'INSERT'],
+  tg_f2a_freeze_issuer_se_bu: ['tb_establishment_issuer', 'UPDATE'],
+  tg_f2a_freeze_issuer_se_bd: ['tb_establishment_issuer', 'DELETE'],
+})
+
+/**
+ * Os gatilhos de TRAVA que FALTAM (ou estão diferentes) no schema do cliente — pelo NOME no `information_schema.TRIGGERS`: tabela, BEFORE, o
+ * evento e um corpo que RECUSA (`SIGNAL SQLSTATE '45000'`). O `information_schema` só mostra gatilhos de tabela em que o usuário tem o
+ * privilégio TRIGGER: o ato roda com a credencial do DONO do ERP (`cutover-erp.ts`); sem o privilégio a lista volta vazia e o ato RECUSA
+ * (falha fechada — nunca "conferido" por não enxergar).
+ */
+export async function f2aFreezeTriggersMissing(q: { query: (sql: string, p?: unknown[]) => Promise<any> }, s: string): Promise<string[]> {
+  const names = Object.keys(F2A_FREEZE_TRIGGERS)
+  const [rows] = await q.query(
+    `SELECT TRIGGER_NAME AS name, EVENT_OBJECT_TABLE AS tbl, EVENT_MANIPULATION AS ev, ACTION_TIMING AS timing, ACTION_STATEMENT AS body
+       FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = ? AND TRIGGER_NAME IN (?)`, [s, names])
+  const found = new Map<string, any>((rows as any[]).map(r => [String(r.name), r]))
+  const missing: string[] = []
+  for (const name of names) {
+    const [table, event] = F2A_FREEZE_TRIGGERS[name]
+    const r = found.get(name)
+    if (!r) { missing.push(`${name} ausente`); continue }
+    if (String(r.tbl) !== table || String(r.ev).toUpperCase() !== event || String(r.timing).toUpperCase() !== 'BEFORE'
+      || !/SIGNAL\s+SQLSTATE\s+'45000'/i.test(String(r.body))) {
+      missing.push(`${name} diferente (${r.timing} ${r.ev} em ${r.tbl})`)
+    }
+  }
+  return missing
+}

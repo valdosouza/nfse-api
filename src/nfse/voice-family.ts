@@ -29,6 +29,8 @@ export const SERVICE_VOICE_FAMILY = defineVoiceFamily({
  * minúscula de um kind válido) e D-F120 (`source`: 'X' e 'q'; `environment` da tentativa: 'X' e 'p'). Numa transação SEMPRE desfeita, sem a
  * FK (a sonda mira o CHECK), cada linha com PK PRÓPRIA (gates da A1, F2A1-07: com a mesma PK, um motor sem CHECK fazia a 2ª sonda colidir
  * na 1ª e o boot falhava com "Duplicate entry", não com o diagnóstico); cada valor tem de ser recusado pelo CHECK de NOME certo.
+ * F2A3-ADV-02 (migration 006): o código da voz C é EXATO — '105102 ' (PAD SPACE da colação; o `_bin` do MariaDB 10.4 também é PAD SPACE)
+ * e '1051020' recusados pelo CHECK do código.
  */
 export async function assertServiceVoiceDomainsEnforced(pool: Parameters<typeof assertCheckRefuses>[0]): Promise<void> {
   const ev = (event: number, kind: string, source: string, value: string, constraint: string) => ({ value, constraint, params: [event, kind, source],
@@ -41,4 +43,9 @@ export async function assertServiceVoiceDomainsEnforced(pool: Parameters<typeof 
     sql: 'INSERT INTO tb_invoice_service_transmission (tb_institution_id, tb_invoice_id, terminal, attempt, life_event, environment, deleted)'
       + ` VALUES (0, 0, 0, ?, 1, ?, 'N')` })
   await assertCheckRefuses(pool, 'o ambiente da tentativa da NFS-e', [tx(1, 'X'), tx(2, 'p')], { withoutForeignKeys: true })
+  // F2A3-ADV-02 (006): o código da voz C é EXATO — '105102 ' (PAD SPACE da colação) e '1051020' (fora da lista) recusados pelo CHECK do código
+  const code = (event: number, value: string) => ({ value, constraint: 'ck_invoice_service_transmission_event_cancel_code', params: [event, value],
+    sql: `INSERT INTO ${SERVICE_VOICE_FAMILY.eventTable} (tb_institution_id, tb_invoice_id, terminal, attempt, event, kind, authority_code, source, deleted)`
+      + ` VALUES (0, 0, 0, 0, ?, 'C', ?, 'Q', 'N')` })
+  await assertCheckRefuses(pool, 'o código do cancelamento na voz C da NFS-e', [code(5, '105102 '), code(6, '1051020')], { withoutForeignKeys: true })
 }

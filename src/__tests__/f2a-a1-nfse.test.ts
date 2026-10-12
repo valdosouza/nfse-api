@@ -14,10 +14,18 @@ const SRC = path.resolve(__dirname, '..')
 const read = (rel: string) => fs.readFileSync(path.join(SRC, rel), 'utf8')
 const checkErr = (name: string) => Object.assign(new Error(`CONSTRAINT \`${name}\` failed for \`fiscal_api\`.\`t\``), { errno: 4025 })
 /** A constraint que recusa cada sonda (pelo valor e pela tabela do INSERT) — o motor simulado com os CHECKs da 005. */
-function engine(opts: { kindCi?: boolean; noChecks?: boolean } = {}) {
+function engine(opts: { kindCi?: boolean; noChecks?: boolean; codePadSpace?: boolean } = {}) {
   return async (sql: string, p?: unknown[]): Promise<any> => {
     if (!/^INSERT/.test(sql)) return [{}]
     if (opts.noChecks) return [{ affectedRows: 1 }]
+    if (sql.includes(SERVICE_VOICE_FAMILY.eventTable) && sql.includes('authority_code')) {
+      // F2A3-ADV-02: o CHECK do código da voz C (006 — exato) × o da 002 (colação _ci, PAD SPACE: '105102 ' passava)
+      const code = String((p as unknown[])[1])
+      const compared = opts.codePadSpace ? code.replace(/ +$/, '') : code
+      const ok = ['101101', '105102', '105104', '305101'].includes(compared)
+      if (!ok) throw checkErr('ck_invoice_service_transmission_event_cancel_code')
+      return [{ affectedRows: 1 }]
+    }
     if (sql.includes(SERVICE_VOICE_FAMILY.eventTable)) {
       const [, kind, source] = p as string[]
       const kindOk = opts.kindCi ? ['A', 'R', 'C', 'K', 'F', 'N'].includes(kind.toUpperCase()) : (SERVICE_VOICE_WRITE_KINDS as readonly string[]).includes(kind)
@@ -60,15 +68,18 @@ describe('a sonda do boot (D-F107/D-F120)', () => {
     const { conn, pool } = poolWith(engine())
     await expect(assertServiceVoiceDomainsEnforced(pool)).resolves.toBeUndefined()
     const inserts = conn.query.mock.calls.filter(c => /^INSERT/.test(c[0] as string))
-    expect(inserts.map(c => c[1])).toEqual([[1, 'S', 'P'], [2, 'f', 'P'], [3, 'A', 'X'], [4, 'A', 'q'], [1, 'X'], [2, 'p']])
+    expect(inserts.map(c => c[1])).toEqual([[1, 'S', 'P'], [2, 'f', 'P'], [3, 'A', 'X'], [4, 'A', 'q'], [1, 'X'], [2, 'p'], [5, '105102 '], [6, '1051020']])
     const sqls = conn.query.mock.calls.map(c => c[0] as string)
-    expect(sqls.filter(s => s === 'SET SESSION foreign_key_checks = 0')).toHaveLength(3)
-    expect(sqls.filter(s => /^SET SESSION foreign_key_checks = 1$/.test(s))).toHaveLength(3)
-    expect([conn.rollback.mock.calls.length, conn.release.mock.calls.length, conn.destroy.mock.calls.length]).toEqual([3, 3, 0])
+    expect(sqls.filter(s => s === 'SET SESSION foreign_key_checks = 0')).toHaveLength(4)
+    expect(sqls.filter(s => /^SET SESSION foreign_key_checks = 1$/.test(s))).toHaveLength(4)
+    expect([conn.rollback.mock.calls.length, conn.release.mock.calls.length, conn.destroy.mock.calls.length]).toEqual([4, 4, 0])
   })
   it('CHECK de `kind` _ci (recusa \'S\', aceita \'f\') → o boot FALHA alto; motor SEM CHECK (aceita tudo) → falha alto com o diagnóstico (nunca "Duplicate entry")', async () => {
     await expect(assertServiceVoiceDomainsEnforced(poolWith(engine({ kindCi: true })).pool)).rejects.toThrow(/NÃO é o domínio publicado/)
     await expect(assertServiceVoiceDomainsEnforced(poolWith(engine({ noChecks: true })).pool)).rejects.toThrow(/não aplica CHECK ou falta a migration/)
+  })
+  it('F2A3-ADV-02: CHECK do código da voz C ainda o da 002 (PAD SPACE aceita "105102 ") → o boot FALHA alto (a 006 não foi aplicada)', async () => {
+    await expect(assertServiceVoiceDomainsEnforced(poolWith(engine({ codePadSpace: true })).pool)).rejects.toThrow(/NÃO é o domínio publicado|não aplica CHECK ou falta a migration/)
   })
   it('o boot da nfse-api roda as sondas (modelo — D-NE84 —, ambiente da habilitação, kind/source/ambiente da tentativa) e confere as views (D-F113) depois das migrations', () => {
     const server = read('server.ts')

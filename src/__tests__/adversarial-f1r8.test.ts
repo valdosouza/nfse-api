@@ -14,6 +14,7 @@
 //    de OUTRO modelo (versão anterior do script) numa institution SEM SE no ERP nunca dispara a "falha alta com a instrução
 //    de DELETE" da D-F42 — e trava a institution (cerca = "réplica em qualquer linha") sem saída pelo `--cutover`.
 import { withRecord } from './fixture-record'   // NE-1a (D-NE56): a tentativa traz o FATO do registro
+import { FREEZE_TRIGGERS_SQL, freezeTriggerRows } from './fixture-freeze-triggers'   // F2A3-ADV-04: o ato confere os 9 gatilhos
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -292,6 +293,7 @@ describe('scripts: migrate:setes --cutover / re-sincronia (D-F42/D-F44)', () => 
     return (sql) => {
       if (/FROM setes_central\.tb_institution WHERE id = \?/.test(sql)) return [[{ schemaName: 'setes_x' }]]
       if (/FROM `setes_x`\._migrations WHERE name = \?/.test(sql)) return o.f2a === false ? [[]] : [[{ x: 1 }]]   // D-F50
+      if (FREEZE_TRIGGERS_SQL.test(sql)) return [freezeTriggerRows()]                                        // F2A3-ADV-04: os 9 gatilhos
       if (/dps_last_number AS n FROM `setes_x`\.tb_establishment_issuer .*FOR UPDATE/s.test(sql)) return [[{ model: 'SE', serie: o.erpSerie ?? '1', deleted: 'N', n: 10 }]]
       if (/SELECT model, cutover_at AS c FROM tb_establishment_issuer/.test(sql)) return [o.apiRows ?? [{ model: 'SE', c: null }]]
       if (/information_schema\.tables/.test(sql)) return [[{ x: 1 }]]
@@ -380,6 +382,7 @@ describe('scripts: migrate:setes --cutover / re-sincronia (D-F42/D-F44)', () => 
     if (/SELECT id, schema_name AS schemaName FROM setes_central\.tb_institution WHERE deleted = 'N'/.test(sql)) return [[{ id: 2, schemaName: 'setes_y' }]]
     if (/FROM setes_central\.tb_institution WHERE id = \?/.test(sql)) return [[{ schemaName: 'setes_y' }]]
     if (/FROM `setes_y`\._migrations WHERE name = \?/.test(sql)) return [[{ x: 1 }]]                       // D-F50: F2a aplicada
+    if (FREEZE_TRIGGERS_SQL.test(sql)) return [freezeTriggerRows()]                                          // F2A3-ADV-04: os 9 gatilhos
     if (/SELECT 1 AS x FROM `setes_y`\.tb_establishment_issuer WHERE tb_institution_id = \? AND model = 'SE'/.test(sql)) return [[]]
     if (/FROM `setes_y`\.tb_establishment_issuer .*FOR UPDATE/s.test(sql)) return [[]]
     if (/SELECT model, cutover_at AS c FROM tb_establishment_issuer/.test(sql)) return [[{ model: '55', c: null }]]
