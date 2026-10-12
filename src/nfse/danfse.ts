@@ -1,5 +1,6 @@
 import PDFDocument from 'pdfkit'
-import { parseNfseXml, unescapeXml } from '../authority/dps-builder'
+import { parseXml, firstElement, firstText, XmlNode, XmlUnreadableError, HttpError, ErrorCodes } from 'fiscal-api'
+import { parseNfseXml, NFSE_XML } from '../authority/dps-builder'
 
 /**
  * PEÇA @shared/danfse — Documento Auxiliar da NFS-e renderizado POR NÓS a partir
@@ -7,9 +8,8 @@ import { parseNfseXml, unescapeXml } from '../authority/dps-builder'
  * Motor de PDF escolhido UMA vez (pdfkit): o futuro `@shared/danfe` usa o mesmo
  * (D-E13/D-E25). Não conhece nota nem banco: recebe o XML e devolve um Buffer.
  *
- * Leitura dos campos: `parseNfseXml` (cabeçalho) + regex nos grupos do DPS
- * embutido (emit/prest, toma, serv, valores) — leiaute fixo do XSD v1.01, sem
- * parser XML novo.
+ * Leitura dos campos: `parseNfseXml` (cabeçalho) + os grupos do DPS embutido (emit/prest, toma, serv, valores), pelo LEITOR do
+ * núcleo (parser — N17, D-NE72; a mesma busca do recorte antigo: o 1º elemento do grupo, depois o 1º campo dentro dele).
  *
  * [INCERTO: QR Code exige lib] — o projeto não tem gerador de QR e a regra é
  * "sem lib nova": a URL de consulta pública vai em TEXTO legível; quando uma
@@ -25,14 +25,10 @@ export interface DanfseOptions {
 
 export const NFSE_PUBLIC_QUERY_URL = 'https://www.nfse.gov.br/ConsultaPublica/?tpc=1&chave='
 
-function group(xml: string, name: string): string {
-  const m = xml.match(new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)</${name}>`))
-  return m ? m[1] : ''
-}
-function text(xml: string, name: string): string | null {
-  const m = xml.match(new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)</${name}>`))
-  return m ? unescapeXml(m[1].trim()) : null
-}
+/** O 1º elemento [name] dentro de [scope] (sem o grupo, nada a ler). */
+const group = (scope: XmlNode | null, name: string): XmlNode | null => (scope ? firstElement(scope, name, NFSE_XML) : null)
+/** O texto do 1º campo [name] dentro do grupo (recusa se não é texto simples — D-NE72). */
+const text = (scope: XmlNode | null, name: string): string | null => (scope ? firstText(scope, name, NFSE_XML) : null)
 const fmtDoc = (v: string | null): string => {
   if (!v) return '—'
   const d = v.replace(/\D/g, '')
@@ -61,12 +57,27 @@ export interface DanfseFields {
   cancelled:   boolean
 }
 
-/** Campos do DANFSe lidos do XML da NFS-e (público — a peça é pura para os testes). */
+/**
+ * Campos do DANFSe lidos do XML da NFS-e (público — a peça é pura para os testes). D-NE89 (gates do delta do N17 — Valdo 2026-10-12): o
+ * DANFSe lê campos que o transmitir e a consulta não leem (nomes, endereço, descrição); se o leitor recusar um deles, a recusa sai com
+ * CÓDIGO PRÓPRIO do catálogo (`FISCAL_DANFSE_XML_UNREADABLE`) — nunca 500; o XML da NFS-e segue disponível pela rota dele.
+ */
 export function extractDanfseFields(nfseXml: string): DanfseFields {
+  try {
+    return readDanfseFields(nfseXml)
+  } catch (err) {
+    if (err instanceof XmlUnreadableError) {
+      throw new HttpError(422, 'O XML da NFS-e não pôde ser lido para o DANFSe — o XML segue disponível para download', undefined, ErrorCodes.FISCAL_DANFSE_XML_UNREADABLE)
+    }
+    throw err
+  }
+}
+function readDanfseFields(nfseXml: string): DanfseFields {
   const parsed = parseNfseXml(nfseXml)
-  const inf = group(nfseXml, 'infNFSe')
+  const doc = parseXml(nfseXml)
+  const inf = group(doc, 'infNFSe')
   const emit = group(inf, 'emit')                          // emitente na NFS-e (dados cadastrais do fisco)
-  const dps = group(nfseXml, 'infDPS')
+  const dps = group(doc, 'infDPS')
   const prest = group(dps, 'prest')
   const toma = group(dps, 'toma')
   const serv = group(dps, 'serv')

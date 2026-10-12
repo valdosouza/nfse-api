@@ -1,9 +1,9 @@
 import { gzipSync, gunzipSync } from 'zlib'
-import { ErrorCodes, logger, authorityJson, AuthorityHttpError, tagAmbiguous, AmbiguousCause } from 'fiscal-api'
+import { ErrorCodes, logger, authorityJson, AuthorityHttpError, tagAmbiguous, AmbiguousCause, parseXml, firstElement, attrOf, XmlNode, MAX_XML_BYTES } from 'fiscal-api'
 import {
   AuthorityContext, EventRegisterResult, MunicipalTerms, NfseQuery, TaxAuthorityAdapter, TransmitResult,
 } from './types'
-import { parseEventXml, parseNfseXml, firstText, EVENT_CANCEL, CANCEL_EVENT_CODES } from './dps-builder'
+import { parseEventXml, parseEventDoc, parseNfseXml, firstText, EVENT_CANCEL, CANCEL_EVENT_CODES, NFSE_XML } from './dps-builder'
 
 /**
  * Adaptador da SEFIN NACIONAL (ADN / Sistema Nacional NFS-e) — API do Emissor
@@ -39,8 +39,9 @@ export function gzipB64(xml: string): string {
   return gzipSync(Buffer.from(xml, 'utf8')).toString('base64')
 }
 
+/** D-NE88: o texto descomprimido tem o MESMO teto do leitor (1 MB) — passar dele lança aqui e o campo fica ilegível (ambíguo no chamador). */
 export function gunzipB64(b64: string): string {
-  return gunzipSync(Buffer.from(b64, 'base64')).toString('utf8')
+  return gunzipSync(Buffer.from(b64, 'base64'), { maxOutputLength: MAX_XML_BYTES }).toString('utf8')
 }
 
 /** Encontra, em qualquer profundidade, valores string de chaves "xml…gzip"/"gzip…b64". */
@@ -116,7 +117,8 @@ async function call<T = any>(ctx: AuthorityContext, method: 'GET' | 'POST', path
 const str = (v: unknown): string | null => (v === null || v === undefined || v === '' ? null : String(v))
 /** Id do infDPS do XML que ENVIAMOS (a NFS-e devolvida embute o DPS — tem que ser o mesmo). */
 function sentDpsIdOf(signedDpsXml: string): string | null {
-  return signedDpsXml.match(/<infDPS\b[^>]*\sId="([^"]*)"/)?.[1] ?? null
+  const el = firstElement(parseXml(signedDpsXml), 'infDPS', NFSE_XML, e => attrOf(e, 'Id') !== null)   // pelo leitor (N17 — D-NE72)
+  return el ? attrOf(el, 'Id') : null
 }
 /**
  * Evento GERADO pelo fisco para a chave pedida: tem Id `EVT…` (infEvento) ou `dhProc`, e o
@@ -134,9 +136,9 @@ function isGeneratedEventFor(ev: { eventId: string | null; dhProc: string | null
  * D-F96 (= Q-F102 (a), Valdo 2026-10-11): lidos pelo MESMO leitor do parse (`firstText` — atributos e escapes iguais aos do resto do
  * adaptador); o leitor próprio deixava atributo/CDATA divergentes passarem como repetição (R17-01).
  */
-const eventSignature = (e: ReturnType<typeof parseEventXml>, xml: string): string =>
+const eventSignature = (e: ReturnType<typeof parseEventXml>, doc: XmlNode): string =>
   JSON.stringify([e.eventCode, e.eventId, e.dhProc, e.dhEvento, e.nSeqEvento, e.cMotivo, e.xMotivo, e.substituteKey ?? null,
-    firstText(xml, 'nDFSe'), firstText(xml, 'CNPJAutor') ?? firstText(xml, 'CPFAutor'), firstText(xml, 'ambGer'), firstText(xml, 'tpAmb')])
+    firstText(doc, 'nDFSe'), firstText(doc, 'CNPJAutor') ?? firstText(doc, 'CPFAutor'), firstText(doc, 'ambGer'), firstText(doc, 'tpAmb')])
 /** Chave de acesso da NFS-e = EXATAMENTE 50 dígitos (TSChaveAcesso); qualquer outra coisa não é chave. */
 const asAccessKey = (v: unknown): string | null => {
   const s = str(v)?.replace(/\D/g, '') ?? ''
@@ -211,6 +213,8 @@ export const adnAdapter: TaxAuthorityAdapter = {
   authority: ADN_AUTHORITY,
 
   async transmit(ctx, signedDpsXml): Promise<TransmitResult> {
+    // o Id do NOSSO DPS é lido ANTES do POST (gate socrático do delta N17): se o leitor o recusar, nada foi enviado
+    const sentDpsId = sentDpsIdOf(signedDpsXml)
     const { status, data, text } = await call<any>(ctx, 'POST', '/nfse', { dpsXmlGZipB64: gzipB64(signedDpsXml) }, 'transmitir')
     const xmlField = collectGzipXmlFields(data)[0]
     const nfseXml = xmlField ? decodeXmlField(xmlField) : null
@@ -227,7 +231,6 @@ export const adnAdapter: TaxAuthorityAdapter = {
     if (jsonKey && xmlKey && jsonKey !== xmlKey) throw unknownResponse('nfse-chave-divergente', 'transmitir: chave do JSON ≠ chave da NFS-e', status, text, { foreign: true })
     const accessKey = xmlKey ?? jsonKey
     if (!accessKey) throw unknownResponse('nfse-sem-chave', 'transmitir: NFS-e sem chave de acesso (50 dígitos)', status, text)
-    const sentDpsId = sentDpsIdOf(signedDpsXml)
     if (!parsed.dpsId || parsed.dpsId !== sentDpsId) {
       // D-F98 (c) (= Q-F104, Valdo 2026-10-11): o Id que VEIO é de TERCEIRO (embute o CPF/CNPJ dele) — nunca na mensagem nem no log
       // CONHECIMENTO NEGATIVO (D-F100 = Q-F106 (a), Valdo 2026-10-11): NADA da resposta alheia é guardado — nem hash do Id (CPF se
@@ -281,8 +284,10 @@ export const adnAdapter: TaxAuthorityAdapter = {
       // assinatura da D-F93) é resposta ILEGÍVEL → ambíguo (502), nunca exceção crua (500 na tela; no rodízio, nem alarme nem carimbo)
       let read: { generated: { xml: string; ev: ReturnType<typeof parseEventXml> }[]; signatures: Set<string> }
       try {
-        const g = xmls.map(x => ({ xml: x, ev: parseEventXml(x) })).filter(({ ev: e }) => !!e.eventCode && isGeneratedEventFor(e, accessKey))
-        read = { generated: g, signatures: new Set(g.filter(({ ev: e }) => CANCEL_EVENT_CODES.has(e.eventCode!)).map(({ ev: e, xml }) => eventSignature(e, xml))) }
+        // UM parse por evento (gate do delta N17-08): o evento e a assinatura dele (D-F93) leem o MESMO documento
+        const g = xmls.map(x => { const doc = parseXml(x); return { xml: x, doc, ev: parseEventDoc(doc) } })
+          .filter(({ ev: e }) => !!e.eventCode && isGeneratedEventFor(e, accessKey))
+        read = { generated: g, signatures: new Set(g.filter(({ ev: e }) => CANCEL_EVENT_CODES.has(e.eventCode!)).map(({ ev: e, doc }) => eventSignature(e, doc))) }
       } catch {
         logger.error('Contrato da Sefin divergente: evento ilegível no GET tipado', { code, environment: ctx.environment, items: xmls.length })
         return { ...base, status: 'unknown', unknownCause: 'evento-ilegivel' }

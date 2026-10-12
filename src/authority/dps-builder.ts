@@ -1,4 +1,4 @@
-import { toUtcDb, nowIsoIn, DEFAULT_TIME_ZONE } from 'fiscal-api'
+import { toUtcDb, nowIsoIn, DEFAULT_TIME_ZONE, parseXml, firstElement, firstText as readFirstText, textOf, attrOf as readAttr, attributeCount, childElementCount, XmlUnreadableError, elementsOf, nameIs, contains, XmlNode, XmlReadOptions } from 'fiscal-api'
 import {
   AuthorityEnvironment, CancelEventInput, DpsInput, DpsTpInsc, ParsedEvent, ParsedNfse,
 } from './types'
@@ -248,59 +248,102 @@ export function buildCancelEventXml(input: CancelEventInput): string {
 }
 
 // ---------------------------------------------------------------------------
-// Leitura dos XML do fisco (sem prefixo de namespace — vedado pelo manual)
+// Leitura dos XML do fisco (sem prefixo de namespace — vedado pelo manual) — por PARSER (N17, D-NE72; parte 2 da NE-1a, passo 7)
 // ---------------------------------------------------------------------------
 
-/** Texto do 1º elemento `<name>` (com ou sem atributos), aparado e des-escapado — o leitor ÚNICO do XML do fisco (D-F96). */
-export function firstText(xml: string, name: string): string | null {
-  const m = xml.match(new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)</${name}>`))
-  return m ? unescapeXml(m[1].trim()) : null
+/**
+ * Como a NFS-e LÊ (D-NE72): o nome casa QUALIFICADO (o manual veda prefixo) e o valor é só TEXTO SIMPLES — CDATA (nenhum campo da NFS-e o
+ * pede — D-NE87), comentário ou filho no campo lido = RECUSA (`XmlUnreadableError` do núcleo), que o adaptador transforma no ambíguo pela
+ * causa que já existe (`nfse-ilegivel`/`evento-ilegivel`). A BUSCA é a mesma do leitor por recorte que este substitui (oráculo congelado em
+ * `__tests__/legacy-xml-oracle.ts`; paridade provada no corpus real e nas fixtures — `n17-paridade.test.ts`): o 1º elemento com o nome, em
+ * ordem de documento. D-NE85: o VALOR vazio é ausente (pula para o próximo); o GRUPO que decide voz (`<e101101>`, `<eNNNNNN>`) vazio é RECUSA.
+ */
+export const NFSE_XML: XmlReadOptions = Object.freeze({ match: 'qualified' })
+
+/** Texto do 1º elemento `<name>` NÃO vazio do documento, aparado — o leitor ÚNICO do XML do fisco (D-F96). Recusa = exceção. */
+export function firstText(xml: string | XmlNode, name: string): string | null {
+  return readFirstText(typeof xml === 'string' ? parseXml(xml) : xml, name, NFSE_XML)
 }
-function attrOf(xml: string, element: string, attr: string): string | null {
-  const m = xml.match(new RegExp(`<${element}\\b[^>]*\\s${attr}="([^"]*)"`))
-  return m ? m[1] : null
+/** O atributo [attr] do 1º `<element>` que o TEM (a forma da leitura antiga). */
+function attrOfFirst(doc: XmlNode, element: string, attr: string): string | null {
+  const el = firstElement(doc, element, NFSE_XML, e => readAttr(e, attr) !== null)
+  return el ? readAttr(el, attr) : null
+}
+/** O texto do 1º elemento [name] NÃO vazio numa LISTA de elementos (já em ordem de documento) — o vazio é ausente (D-NE85). */
+function firstTextIn(list: readonly XmlNode[], name: string): string | null {
+  for (const e of list) {
+    if (!nameIs(e, name, NFSE_XML)) continue
+    const v = textOf(e)
+    if (v !== '') return v
+  }
+  return null
+}
+/** D-NE85: o GRUPO que decide voz sem nenhum filho (`<e101101/>`, `<e101101></e101101>` — sem o que o XSD exige) é RECUSA, nunca "cancelado". */
+function assertGroupFilled(group: XmlNode): XmlNode {
+  if (childElementCount(group) === 0) throw new XmlUnreadableError('grupo-vazio')
+  return group
 }
 
-/** Bloco de cancelamento (e101101) se existir no texto. */
-function cancelBlock(xml: string): { dhEvento: string | null; cMotivo: string | null; xMotivo: string | null } | null {
-  const m = xml.match(/<e101101>[\s\S]*?<\/e101101>/)
-  if (!m) return null
-  return { dhEvento: firstText(xml, 'dhEvento'), cMotivo: firstText(m[0], 'cMotivo'), xMotivo: firstText(m[0], 'xMotivo') }
+/** Bloco de cancelamento (`<e101101>` sem atributo) se existir. */
+function cancelBlock(doc: XmlNode): { dhEvento: string | null; cMotivo: string | null; xMotivo: string | null } | null {
+  const found = firstElement(doc, 'e101101', NFSE_XML, e => attributeCount(e) === 0)
+  if (!found) return null
+  const block = assertGroupFilled(found)
+  return { dhEvento: readFirstText(doc, 'dhEvento', NFSE_XML), cMotivo: readFirstText(block, 'cMotivo', NFSE_XML), xMotivo: readFirstText(block, 'xMotivo', NFSE_XML) }
+}
+
+/**
+ * O CABEÇALHO da NFS-e: os elementos depois de `<infNFSe>` e antes do 1º `<emit>` (sem atributo) que vem depois dele — evita pegar dados do
+ * DPS embutido. Sem `<infNFSe>` ou sem esse `<emit>`, o documento inteiro (a forma da leitura antiga).
+ */
+function headerElements(doc: XmlNode): XmlNode[] {
+  const all = elementsOf(doc)
+  const inf = all.findIndex(e => nameIs(e, 'infNFSe', NFSE_XML))
+  if (inf < 0) return all
+  const stop = all.findIndex((e, i) => i > inf && nameIs(e, 'emit', NFSE_XML) && attributeCount(e) === 0)
+  if (stop < 0) return all
+  return all.slice(inf + 1, stop).filter(e => !contains(e, all[stop]))
 }
 
 /** NFS-e autorizada: chave (infNFSe/@Id sem "NFS"), número, dhProc, cStat, id do DPS embutido. */
 export function parseNfseXml(xml: string): ParsedNfse {
-  const rawId = attrOf(xml, 'infNFSe', 'Id')
+  const doc = parseXml(xml)
+  const rawId = attrOfFirst(doc, 'infNFSe', 'Id')
   const accessKey = rawId ? rawId.replace(/^NFS/, '') : null
-  const infNfse = xml.match(/<infNFSe\b[\s\S]*?<emit>/)?.[0] ?? xml     // cabeçalho antes do emit (evita pegar dados do DPS embutido)
+  const header = headerElements(doc)
   return {
     accessKey,
-    nNFSe:  firstText(infNfse, 'nNFSe'),
-    dhProc: firstText(infNfse, 'dhProc'),
-    cStat:  firstText(infNfse, 'cStat'),
-    nDFSe:  firstText(infNfse, 'nDFSe'),
-    ambGer: firstText(infNfse, 'ambGer'),
-    dpsId:  attrOf(xml, 'infDPS', 'Id'),
-    cancelled: cancelBlock(xml),
+    nNFSe:  firstTextIn(header, 'nNFSe'),
+    dhProc: firstTextIn(header, 'dhProc'),
+    cStat:  firstTextIn(header, 'cStat'),
+    nDFSe:  firstTextIn(header, 'nDFSe'),
+    ambGer: firstTextIn(header, 'ambGer'),
+    dpsId:  attrOfFirst(doc, 'infDPS', 'Id'),
+    cancelled: cancelBlock(doc),
   }
 }
 
 /** Evento (gerado pelo fisco) ou pedido de registro: ids, código, chave, datas e motivo. */
 export function parseEventXml(xml: string): ParsedEvent {
-  const codeMatch = xml.match(/<e(\d{6})>/)
-  const cancel = cancelBlock(xml)
-  const specific = codeMatch ? xml.match(new RegExp(`<e${codeMatch[1]}>[\\s\\S]*?</e${codeMatch[1]}>`))?.[0] ?? '' : ''
+  return parseEventDoc(parseXml(xml))
+}
+/** O mesmo, sobre o documento JÁ lido (gate do delta N17-08: a assinatura do evento lê o MESMO documento — um parse só por evento). */
+export function parseEventDoc(doc: XmlNode): ParsedEvent {
+  // o grupo do TIPO do evento: o 1º `<eNNNNNN>` (6 dígitos, sem atributo) — vazio = recusa (D-NE85)
+  const found = elementsOf(doc).find(e => /^e\d{6}$/.test(e.nodeName) && attributeCount(e) === 0) ?? null
+  const specific = found ? assertGroupFilled(found) : null
+  const cancel = cancelBlock(doc)
   return {
-    eventId:    attrOf(xml, 'infEvento', 'Id'),
-    pedRegId:   attrOf(xml, 'infPedReg', 'Id'),
-    eventCode:  codeMatch ? codeMatch[1] : null,
-    accessKey:  firstText(xml, 'chNFSe'),
-    dhEvento:   firstText(xml, 'dhEvento'),
-    dhProc:     firstText(xml, 'dhProc'),
-    nSeqEvento: firstText(xml, 'nSeqEvento'),
-    cMotivo:    cancel?.cMotivo ?? (specific ? firstText(specific, 'cMotivo') : null),
-    xMotivo:    cancel?.xMotivo ?? (specific ? firstText(specific, 'xMotivo') : null),
+    eventId:    attrOfFirst(doc, 'infEvento', 'Id'),
+    pedRegId:   attrOfFirst(doc, 'infPedReg', 'Id'),
+    eventCode:  specific ? specific.nodeName.slice(1) : null,
+    accessKey:  readFirstText(doc, 'chNFSe', NFSE_XML),
+    dhEvento:   readFirstText(doc, 'dhEvento', NFSE_XML),
+    dhProc:     readFirstText(doc, 'dhProc', NFSE_XML),
+    nSeqEvento: readFirstText(doc, 'nSeqEvento', NFSE_XML),
+    cMotivo:    cancel?.cMotivo ?? (specific ? readFirstText(specific, 'cMotivo', NFSE_XML) : null),
+    xMotivo:    cancel?.xMotivo ?? (specific ? readFirstText(specific, 'xMotivo', NFSE_XML) : null),
     // D-F76 (= Q-F83): chave da NFS-e SUBSTITUTA (e105102 — TE105102.chSubstituta); só exibição, nunca regra
-    substituteKey: specific ? firstText(specific, 'chSubstituta') : null,
+    substituteKey: specific ? readFirstText(specific, 'chSubstituta', NFSE_XML) : null,
   }
 }
