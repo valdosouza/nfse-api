@@ -19,6 +19,7 @@ import {
   transmitServiceInvoice, refreshServiceTransmission, cancelServiceInvoiceAtAuthority, reconfirmBeforeLocalCancel,
   refreshOpenServiceTransmissions, getServiceFiscalView, resetMunicipalTermsCache, NfseDeps, CEILING_LOOKUP_TIMEOUT_MS,
 } from '../nfse/transmission'
+import { webRef, refOf, WEB, webScope, itxLike } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
 
 jest.mock('fiscal-api', () => {
   const actual = jest.requireActual('fiscal-api')
@@ -91,6 +92,7 @@ const tx = (over: any = {}) => withRecord({
 const rejected = () => new AuthorityHttpError(422, 'Fisco rejeitou (400): E0718: alíquota inválida', 'FISCAL_DPS_REJECTED', 400,
   '{"erros":[{"codigo":"E0718","descricao":"alíquota inválida"}]}', [{ field: 'dps', message: 'E0718: alíquota inválida' }])
 const unavailable = () => new AuthorityHttpError(503, 'Fisco indisponível', 'FISCAL_AUTHORITY_UNAVAILABLE', 0, '')
+const chainUntrusted = () => new AuthorityHttpError(409, 'Certificado do servidor do fisco não reconhecido (UNABLE_TO_VERIFY_LEAF_SIGNATURE)', 'FISCAL_AUTHORITY_CHAIN_UNTRUSTED', 0, 'UNABLE_TO_VERIFY_LEAF_SIGNATURE')
 
 let headerRow: any
 let locked: any
@@ -140,15 +142,15 @@ beforeEach(() => {
 describe('transmitir — trava da nota → DPS da vida → fisco FORA da transação → A', () => {
   it('caminho feliz: nota travada antes do emissor; DPS da VIDA nasce (série + nDPS + Id); A + XML; fisco entre commits', async () => {
     adapter.transmit.mockResolvedValue({ accessKey: KEY, nfseNumber: '123', dhProc: '2026-09-21T10:15:30-03:00', nfseXml: NFSE_XML, raw: {} })
-    const r = await transmitServiceInvoice(deps, A, INVOICE)
+    const r = await transmitServiceInvoice(deps, A, webRef(A, INVOICE))
     expect(r).toEqual({ invoiceId: INVOICE, attempt: 1, dpsId: DPS_ID, accessKey: KEY, nfseNumber: '123', kind: 'A' })
     // a trava da nota (ERP) é o 1º lock; o emissor FOR UPDATE vem depois (ordem nota → emissor → DPS → tentativa)
     const lockAt = erpM.lockInvoice.mock.invocationCallOrder[0]
     const issuerForUpdate = (fiscal.openIssuer as jest.Mock).mock.calls.findIndex(c => c[3]?.forUpdate)
     expect(lockAt).toBeLessThan((fiscal.openIssuer as jest.Mock).mock.invocationCallOrder[issuerForUpdate])
     expect(fiscal.nextDpsNumber).toHaveBeenCalledTimes(1)
-    expect(repo.insertLifeDps).toHaveBeenCalledWith(conn, 1, INVOICE, { lifeEvent: 1, serie: '1', dpsNumber: 42, dpsId: DPS_ID }, A.userId)
-    expect(repo.insertTransmission).toHaveBeenCalledWith(conn, 1, INVOICE, 1, 'H', A.userId)
+    expect(repo.insertLifeDps).toHaveBeenCalledWith(itxLike(conn, 1, INVOICE), { lifeEvent: 1, serie: '1', dpsNumber: 42, dpsId: DPS_ID }, A.userId)
+    expect(repo.insertTransmission).toHaveBeenCalledWith(itxLike(conn, 1, INVOICE), 1, 'H', A.userId)
     const fiscoAt = adapter.transmit.mock.invocationCallOrder[0]
     expect(conn.commit.mock.invocationCallOrder[0]).toBeLessThan(fiscoAt)
     expect(conn.beginTransaction.mock.invocationCallOrder[1]).toBeGreaterThan(fiscoAt)
@@ -157,8 +159,8 @@ describe('transmitir — trava da nota → DPS da vida → fisco FORA da transa�
     expect(sent).toContain('<prest><CNPJ>12345678000199</CNPJ><IM>777</IM><regTrib><opSimpNac>3</opSimpNac><regApTribSN>1</regApTribSN><regEspTrib>0</regEspTrib></regTrib></prest>')
     expect(sent).toContain('<toma><CNPJ>98765432000188</CNPJ><xNome>Cliente Ltda</xNome>')
     expect(sent).not.toContain('<pAliq>')                       // ME/EPP pelo Simples sem retenção (E0625)
-    expect(repo.fillAuthorityData).toHaveBeenCalledWith(conn, 1, INVOICE, 1, { accessKey: KEY, nfseNumber: '123', dhProc: '2026-09-21 13:15:30' })
-    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(conn, 1, INVOICE, 1, A.userId, expect.objectContaining({ kind: 'A', source: 'P', dh: '2026-09-21 13:15:30' }))
+    expect(repo.fillAuthorityData).toHaveBeenCalledWith(itxLike(conn, 1, INVOICE), 1, { accessKey: KEY, nfseNumber: '123', dhProc: '2026-09-21 13:15:30' })
+    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(itxLike(conn, 1, INVOICE), 1, A.userId, expect.objectContaining({ kind: 'A', source: 'P', dh: '2026-09-21 13:15:30' }))
     const files = fs.readdirSync(path.join(storageRoot, CNPJ, 'H'), { recursive: true } as any).map(String)
     expect(files.some(f => f.endsWith(`${DPS_ID}-dps.xml`))).toBe(true)
     expect(files.some(f => f.endsWith(`${KEY}-nfse.xml`))).toBe(true)
@@ -171,7 +173,7 @@ describe('transmitir — trava da nota → DPS da vida → fisco FORA da transa�
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'R', accessKey: null }))
     ;(repo.insertTransmission as jest.Mock).mockResolvedValue(2)
     adapter.transmit.mockResolvedValue({ accessKey: KEY, nfseNumber: '124', dhProc: '2026-09-21T11:00:00-03:00', nfseXml: NFSE_XML, raw: {} })
-    const r = await transmitServiceInvoice(deps, A, INVOICE)
+    const r = await transmitServiceInvoice(deps, A, webRef(A, INVOICE))
     expect(r.attempt).toBe(2)
     expect(fiscal.nextDpsNumber).not.toHaveBeenCalled()
     expect(repo.insertLifeDps).not.toHaveBeenCalled()
@@ -182,7 +184,7 @@ describe('transmitir — trava da nota → DPS da vida → fisco FORA da transa�
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'F', accessKey: null }))
     ;(fiscal.openIssuer as jest.Mock).mockResolvedValue({ ...opened(), issuer: { ...opened().issuer, serie: '7' } })
     adapter.transmit.mockResolvedValue({ accessKey: KEY, nfseNumber: '124', dhProc: null, nfseXml: NFSE_XML, raw: {} })
-    const r = await transmitServiceInvoice(deps, A, INVOICE)
+    const r = await transmitServiceInvoice(deps, A, webRef(A, INVOICE))
     expect(r.dpsId).toBe(DPS_ID)
     expect(adapter.transmit.mock.calls[0][1]).toContain('<serie>1</serie>')
   })
@@ -190,21 +192,28 @@ describe('transmitir — trava da nota → DPS da vida → fisco FORA da transa�
   it('D-F30: o Id da vida mudaria (município do emitente mudou) → 409 FISCAL_DPS_ID_CHANGED, nada reservado nem enviado', async () => {
     ;(repo.getLifeDps as jest.Mock).mockResolvedValue({ lifeEvent: 1, serie: '1', dpsNumber: 42, dpsId: DPS_ID })
     erpM.cityIbge.mockResolvedValue('3550308')
-    await expect(transmitServiceInvoice(deps, A, INVOICE)).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_DPS_ID_CHANGED' })
+    await expect(transmitServiceInvoice(deps, A, webRef(A, INVOICE))).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_DPS_ID_CHANGED' })
     expect(repo.insertTransmission).not.toHaveBeenCalled()
     expect(adapter.transmit).not.toHaveBeenCalled()
   })
 
   it('REJEIÇÃO (422 E0xxx) → voz R (source P, authority_code E0718) e o 422 sobe', async () => {
     adapter.transmit.mockRejectedValue(rejected())
-    await expect(transmitServiceInvoice(deps, A, INVOICE)).rejects.toMatchObject({ statusCode: 422, code: 'FISCAL_DPS_REJECTED' })
-    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(conn, 1, INVOICE, 1, A.userId, expect.objectContaining({ kind: 'R', source: 'P', authorityCode: 'E0718' }))
+    await expect(transmitServiceInvoice(deps, A, webRef(A, INVOICE))).rejects.toMatchObject({ statusCode: 422, code: 'FISCAL_DPS_REJECTED' })
+    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(itxLike(conn, 1, INVOICE), 1, A.userId, expect.objectContaining({ kind: 'R', source: 'P', authorityCode: 'E0718' }))
+    expect(repo.fillAuthorityData).not.toHaveBeenCalled()
+  })
+
+  it('[D-NE57] cadeia do SERVIDOR não confiável (antes do aperto de mão — nada enviado) → voz F INALTERADA (source P) e o 409 FISCAL_AUTHORITY_CHAIN_UNTRUSTED sobe', async () => {
+    adapter.transmit.mockRejectedValue(chainUntrusted())
+    await expect(transmitServiceInvoice(deps, A, webRef(A, INVOICE))).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_AUTHORITY_CHAIN_UNTRUSTED' })
+    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(itxLike(conn, 1, INVOICE), 1, A.userId, expect.objectContaining({ kind: 'F', source: 'P' }))
     expect(repo.fillAuthorityData).not.toHaveBeenCalled()
   })
 
   it('AMBÍGUO (503) → NADA gravado além da reserva (em voo; a consulta por dps_id reconcilia)', async () => {
     adapter.transmit.mockRejectedValue(unavailable())
-    await expect(transmitServiceInvoice(deps, A, INVOICE)).rejects.toMatchObject({ statusCode: 503 })
+    await expect(transmitServiceInvoice(deps, A, webRef(A, INVOICE))).rejects.toMatchObject({ statusCode: 503 })
     expect(repo.insertTransmission).toHaveBeenCalledTimes(1)
     expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()
     expect(conn.commit).toHaveBeenCalledTimes(1)
@@ -212,11 +221,11 @@ describe('transmitir — trava da nota → DPS da vida → fisco FORA da transa�
 
   it('já AUTORIZADA → 409 FISCAL_ALREADY_AUTHORIZED; em voo → IN_PROGRESS; K → CANCEL_IN_FLIGHT — nunca o fisco', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
-    await expect(transmitServiceInvoice(deps, A, INVOICE)).rejects.toMatchObject({ code: 'FISCAL_ALREADY_AUTHORIZED' })
+    await expect(transmitServiceInvoice(deps, A, webRef(A, INVOICE))).rejects.toMatchObject({ code: 'FISCAL_ALREADY_AUTHORIZED' })
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: null, accessKey: null, ageMinutes: 1 }))
-    await expect(transmitServiceInvoice(deps, A, INVOICE)).rejects.toMatchObject({ code: 'FISCAL_TRANSMISSION_IN_PROGRESS' })
+    await expect(transmitServiceInvoice(deps, A, webRef(A, INVOICE))).rejects.toMatchObject({ code: 'FISCAL_TRANSMISSION_IN_PROGRESS' })
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'K' }))
-    await expect(transmitServiceInvoice(deps, A, INVOICE)).rejects.toMatchObject({ code: 'FISCAL_CANCEL_IN_FLIGHT' })
+    await expect(transmitServiceInvoice(deps, A, webRef(A, INVOICE))).rejects.toMatchObject({ code: 'FISCAL_CANCEL_IN_FLIGHT' })
     expect(adapter.transmit).not.toHaveBeenCalled()
     expect(repo.insertTransmission).not.toHaveBeenCalled()
   })
@@ -226,33 +235,33 @@ describe('transmitir — trava da nota → DPS da vida → fisco FORA da transa�
     ;(repo.insertTransmission as jest.Mock).mockResolvedValue(2)
     ;(repo.findKeyHolder as jest.Mock).mockResolvedValue(tx({ attempt: 1 }))
     ;(repo.getTransmission as jest.Mock).mockResolvedValue(tx({ attempt: 2, lastKind: null, accessKey: null }))
-    const r = await transmitServiceInvoice(deps, A, INVOICE)
+    const r = await transmitServiceInvoice(deps, A, webRef(A, INVOICE))
     expect(r.attempt).toBe(1)
     expect(repo.fillAuthorityData).not.toHaveBeenCalled()
-    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(conn, 1, INVOICE, 2, A.userId, expect.objectContaining({ kind: 'F', message: expect.stringMatching(/envio reconciliado/) }))
+    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(itxLike(conn, 1, INVOICE), 2, A.userId, expect.objectContaining({ kind: 'F', message: expect.stringMatching(/envio reconciliado/) }))
   })
 
   it('D-F28: voz C do fisco com a nota ainda NÃO cancelada no ERP → 409 FISCAL_EFFECT_PENDING (resolve-se no ERP antes)', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'C' }))
-    await expect(transmitServiceInvoice(deps, A, INVOICE)).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_EFFECT_PENDING' })
+    await expect(transmitServiceInvoice(deps, A, webRef(A, INVOICE))).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_EFFECT_PENDING' })
   })
 
   it('nota mudou entre a leitura e a trava (evento novo) → 409 RESOURCE_BUSY, nada reservado', async () => {
     locked = { alive: true, lifeEvent: 3, lastEvent: 3, lastKind: 'E' }
-    await expect(transmitServiceInvoice(deps, A, INVOICE)).rejects.toMatchObject({ statusCode: 409, code: 'RESOURCE_BUSY' })
+    await expect(transmitServiceInvoice(deps, A, webRef(A, INVOICE))).rejects.toMatchObject({ statusCode: 409, code: 'RESOURCE_BUSY' })
     expect(repo.insertTransmission).not.toHaveBeenCalled()
   })
 
   it('sem ramo → 422; sem código nacional → 422; sincronizada → 409; tomador sem documento → 422 — tudo ANTES de reservar', async () => {
     headerRow = header({ branchId: null })
-    await expect(transmitServiceInvoice(deps, A, INVOICE)).rejects.toMatchObject({ statusCode: 422, code: 'INVOICE_SERVICE_BRANCH_MISSING' })
+    await expect(transmitServiceInvoice(deps, A, webRef(A, INVOICE))).rejects.toMatchObject({ statusCode: 422, code: 'INVOICE_SERVICE_BRANCH_MISSING' })
     headerRow = header({ nationalCode: null })
-    await expect(transmitServiceInvoice(deps, A, INVOICE)).rejects.toMatchObject({ statusCode: 422, code: 'SERVICE_RULE_NATIONAL_CODE_REQUIRED' })
+    await expect(transmitServiceInvoice(deps, A, webRef(A, INVOICE))).rejects.toMatchObject({ statusCode: 422, code: 'SERVICE_RULE_NATIONAL_CODE_REQUIRED' })
     headerRow = header({ lastKind: null, lifeEvent: null })
-    await expect(transmitServiceInvoice(deps, A, INVOICE)).rejects.toMatchObject({ statusCode: 409, code: 'INVOICE_NOT_TRANSMITTABLE' })
+    await expect(transmitServiceInvoice(deps, A, webRef(A, INVOICE))).rejects.toMatchObject({ statusCode: 409, code: 'INVOICE_NOT_TRANSMITTABLE' })
     headerRow = header()
     erpM.entityFiscal.mockImplementation(async (_q: any, id: number) => id === 900 ? { ...entity(900), cnpj: null } : entity(id))
-    await expect(transmitServiceInvoice(deps, A, INVOICE)).rejects.toMatchObject({ statusCode: 422, code: 'FISCAL_RECIPIENT_INCOMPLETE' })
+    await expect(transmitServiceInvoice(deps, A, webRef(A, INVOICE))).rejects.toMatchObject({ statusCode: 422, code: 'FISCAL_RECIPIENT_INCOMPLETE' })
     expect(repo.insertTransmission).not.toHaveBeenCalled()
   })
 })
@@ -262,7 +271,7 @@ describe('D-F59 (= Q-F67 (a), Valdo 2026-10-10) — IM do PRESTADOR no DPS só e
   it('habilitação em PRODUÇÃO: o mesmo emitente sai SEM <IM> no <prest> (o caminho feliz em H acima leva <IM>777</IM>)', async () => {
     adapter.transmit.mockResolvedValue({ accessKey: KEY, nfseNumber: '123', dhProc: '2026-09-21T10:15:30-03:00', nfseXml: NFSE_XML, raw: {} })
     ;(fiscal.openIssuer as jest.Mock).mockResolvedValue(opened('P'))
-    await transmitServiceInvoice(deps, A, INVOICE)
+    await transmitServiceInvoice(deps, A, webRef(A, INVOICE))
     const sentP = adapter.transmit.mock.calls[0][1] as string
     expect(sentP).toContain('<prest><CNPJ>12345678000199</CNPJ><regTrib>')
     expect(sentP).not.toMatch(/<prest>(?:(?!<\/prest>)[\s\S])*<IM>/)
@@ -273,18 +282,18 @@ describe('consultar — a voz do fisco, idempotente, SEM efeito no ERP', () => {
   it('A já gravado e fisco "authorized" → nada novo; last_queried_at marcado', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'authorized', nfseXml: NFSE_XML, dhProc: '2026-09-21T10:15:30-03:00' })
-    const r = await refreshServiceTransmission(deps, A, INVOICE, 'Q')
+    const r = await refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q')
     expect(r).toMatchObject({ changed: false, kind: 'A', localCancelPending: false })
-    expect(repo.touchQueriedAt).toHaveBeenCalledWith(conn, 1, INVOICE, 1)
+    expect(repo.touchQueriedAt).toHaveBeenCalledWith(conn, refOf(1, INVOICE), 1)
     expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()
   })
 
   it('em voo RECENTE (< 10 min) sem chave: GET /dps não gerou → só "nós olhamos" (o POST pode estar no fisco agora — D-I21/D-F51)', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: null, accessKey: null }))
     adapter.queryDpsAccessKey.mockResolvedValue(null)
-    const r = await refreshServiceTransmission(deps, A, INVOICE, 'Q')
+    const r = await refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q')
     expect(r.changed).toBe(false)
-    expect(repo.touchQueriedAt).toHaveBeenCalledWith(pool, 1, INVOICE, 1)
+    expect(repo.touchQueriedAt).toHaveBeenCalledWith(pool, refOf(1, INVOICE), 1)
     expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()
   })
 
@@ -292,9 +301,9 @@ describe('consultar — a voz do fisco, idempotente, SEM efeito no ERP', () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: null, accessKey: null, ageMinutes: 15 }))
     ;(repo.getTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: null, accessKey: null, ageMinutes: 15 }))
     adapter.queryDpsAccessKey.mockResolvedValue(null)
-    const r = await refreshServiceTransmission(deps, A, INVOICE, 'Q')
+    const r = await refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q')
     expect(r).toMatchObject({ changed: true, kind: 'F', accessKey: null })
-    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(conn, 1, INVOICE, 1, A.userId, expect.objectContaining({ kind: 'F', source: 'Q' }))
+    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(itxLike(conn, 1, INVOICE), 1, A.userId, expect.objectContaining({ kind: 'F', source: 'Q' }))
     expect(conn.commit).toHaveBeenCalled()
   })
 
@@ -302,7 +311,7 @@ describe('consultar — a voz do fisco, idempotente, SEM efeito no ERP', () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: null, accessKey: null, ageMinutes: 15 }))
     ;(repo.getTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     adapter.queryDpsAccessKey.mockResolvedValue(null)
-    const r = await refreshServiceTransmission(deps, A, INVOICE, 'Q')
+    const r = await refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q')
     expect(r).toMatchObject({ changed: false, kind: 'A' })
     expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()
     expect(repo.touchQueriedAt).not.toHaveBeenCalled()
@@ -312,18 +321,18 @@ describe('consultar — a voz do fisco, idempotente, SEM efeito no ERP', () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: null, accessKey: null }))
     adapter.queryDpsAccessKey.mockResolvedValue(KEY)
     adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'authorized', nfseXml: NFSE_XML, dhProc: '2026-09-21T10:15:30-03:00' })
-    const r = await refreshServiceTransmission(deps, A, INVOICE, 'Q')
+    const r = await refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q')
     expect(r).toMatchObject({ changed: true, kind: 'A', accessKey: KEY })
-    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(conn, 1, INVOICE, 1, A.userId, expect.objectContaining({ kind: 'A', source: 'Q' }))
+    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(itxLike(conn, 1, INVOICE), 1, A.userId, expect.objectContaining({ kind: 'A', source: 'Q' }))
   })
 
   it('C do fisco → SÓ a voz C; nota ainda E no ERP → localCancelPending (o app envia ao setes-api); nenhum C local daqui', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     ;(repo.insertTransmissionEvent as jest.Mock).mockResolvedValue(2)
     adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'cancelled', nfseXml: NFSE_XML, dhProc: null, cancelled: { dhEvento: '2026-09-22T09:00:00-03:00', motive: 'erro na emissão do documento' } })
-    const r = await refreshServiceTransmission(deps, A, INVOICE, 'Q')
+    const r = await refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q')
     expect(r).toMatchObject({ changed: true, kind: 'C', localCancelPending: true })
-    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(conn, 1, INVOICE, 1, A.userId, expect.objectContaining({ kind: 'C', source: 'Q', dh: '2026-09-22 12:00:00' }))
+    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(itxLike(conn, 1, INVOICE), 1, A.userId, expect.objectContaining({ kind: 'C', source: 'Q', dh: '2026-09-22 12:00:00' }))
     expect(conn.query.mock.calls.filter(([sql]) => /setes_setes/.test(sql))).toEqual([])
   })
 
@@ -331,14 +340,14 @@ describe('consultar — a voz do fisco, idempotente, SEM efeito no ERP', () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     ;(repo.findTransmissionEventByKind as jest.Mock).mockResolvedValue({ attempt: 1, event: 2, kind: 'C' })
     adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'cancelled', nfseXml: NFSE_XML, dhProc: null, cancelled: { dhEvento: '2026-09-22T09:00:00-03:00', motive: 'x' } })
-    await refreshServiceTransmission(deps, A, INVOICE, 'Q')
+    await refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q')
     expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()
     adapter.queryNfse.mockClear()
     const cTx = tx({ lastKind: 'C', lastCode: '101101' })
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(cTx)
     deps.storage.save(CNPJ, `${KEY}-evt101101.xml`, '<evento/>', new Date(`${cTx.dhProc!.replace(' ', 'T')}Z`), 'H', 'America/Sao_Paulo')
     try {
-      await refreshServiceTransmission(deps, A, INVOICE, 'Q')
+      await refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q')
       expect(adapter.queryNfse).not.toHaveBeenCalled()
     } finally { fs.rmSync(path.join(storageRoot, CNPJ), { recursive: true, force: true }) }
   })
@@ -348,26 +357,26 @@ describe('consultar — a voz do fisco, idempotente, SEM efeito no ERP', () => {
     adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'cancelled', nfseXml: NFSE_XML, dhProc: null,
       cancelled: { dhEvento: '2026-09-22T09:00:00-03:00', motive: 'x', eventCode: '101101', eventXml: '<evento>outro</evento>' } })
     try {
-      await refreshServiceTransmission(deps, A, INVOICE, 'Q')
+      await refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q')
       expect(adapter.queryNfse).toHaveBeenCalledTimes(1)
       const hasFile = () => !!deps.storage.find(CNPJ, `${KEY}-evt101101.xml`, [cTx.dhProc, cTx.createdAt], 'H', 'America/Sao_Paulo')
       expect(hasFile()).toBe(false)                                                     // o fisco falou de OUTRO código: nada arquivado
       adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'cancelled', nfseXml: NFSE_XML, dhProc: null,
         cancelled: { dhEvento: '2026-09-22T09:00:00-03:00', motive: 'x', eventCode: '105102', eventXml: '<evento>subst</evento>' } })
-      await refreshServiceTransmission(deps, A, INVOICE, 'Q')
+      await refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q')
       expect(hasFile()).toBe(true)
       expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()
       adapter.queryNfse.mockClear()
-      await refreshServiceTransmission(deps, A, INVOICE, 'Q')                           // arquivado: não volta mais ao fisco
+      await refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q')                           // arquivado: não volta mais ao fisco
       expect(adapter.queryNfse).not.toHaveBeenCalled()
     } finally { fs.rmSync(path.join(storageRoot, CNPJ), { recursive: true, force: true }) }
   })
 
   it('nunca transmitida → 409 FISCAL_NOT_TRANSMITTED; situação "unknown" → 502 sem gravar voz', async () => {
-    await expect(refreshServiceTransmission(deps, A, INVOICE, 'Q')).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_NOT_TRANSMITTED' })
+    await expect(refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q')).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_NOT_TRANSMITTED' })
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'unknown', nfseXml: NFSE_XML, dhProc: null })
-    await expect(refreshServiceTransmission(deps, A, INVOICE, 'Q')).rejects.toMatchObject({ statusCode: 502, code: 'FISCAL_AUTHORITY_UNKNOWN_RESPONSE' })
+    await expect(refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q')).rejects.toMatchObject({ statusCode: 502, code: 'FISCAL_AUTHORITY_UNKNOWN_RESPONSE' })
     expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()
   })
 })
@@ -376,7 +385,7 @@ describe('cancelar no fisco — operação EM LINHA (D-F28)', () => {
   it('nunca transmitida / R / F → 409 FISCAL_NOT_AUTHORIZED (o app cancela direto no ERP); fisco não é chamado', async () => {
     for (const t of [null, tx({ lastKind: 'R', accessKey: null }), tx({ lastKind: 'F', accessKey: null })]) {
       ;(repo.latestTransmission as jest.Mock).mockResolvedValue(t)
-      await expect(cancelServiceInvoiceAtAuthority(deps, A, INVOICE, 'cliente desistiu do serviço')).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_NOT_AUTHORIZED' })
+      await expect(cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'cliente desistiu do serviço')).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_NOT_AUTHORIZED' })
     }
     expect(adapter.registerEvent).not.toHaveBeenCalled()
   })
@@ -386,13 +395,13 @@ describe('cancelar no fisco — operação EM LINHA (D-F28)', () => {
     ;(repo.insertTransmissionEvent as jest.Mock).mockResolvedValue(2)
     const EVT = '<evento><infEvento Id="EVT1"><dhProc>2026-09-22T09:00:00-03:00</dhProc></infEvento></evento>'
     adapter.registerEvent.mockResolvedValue({ dhEvento: '2026-09-22T09:00:00-03:00', protocol: 'EVT1', eventXml: EVT, raw: {} })
-    const r = await cancelServiceInvoiceAtAuthority(deps, A, INVOICE, 'cliente desistiu do serviço')
+    const r = await cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'cliente desistiu do serviço')
     expect(r).toEqual({ invoiceId: INVOICE, attempt: 1, atAuthority: true, transmissionEvent: 2, warnings: [], nextStep: 'apply-local-cancel' })
     const eventXml = adapter.registerEvent.mock.calls[0][2] as string
     expect(eventXml).toContain(`<chNFSe>${KEY}</chNFSe>`)
     expect(eventXml).toContain('<xMotivo>cliente desistiu do serviço</xMotivo>')
     expect(eventXml).toContain(`<CNPJAutor>${CNPJ}</CNPJAutor>`)
-    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(conn, 1, INVOICE, 1, A.userId, expect.objectContaining({ kind: 'C', source: 'P', dh: '2026-09-22 12:00:00' }))
+    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(itxLike(conn, 1, INVOICE), 1, A.userId, expect.objectContaining({ kind: 'C', source: 'P', dh: '2026-09-22 12:00:00' }))
     expect(fs.readFileSync(path.join(storageRoot, CNPJ, 'H', '2026', '08', `${KEY}-evt101101.xml`), 'utf8')).toBe(EVT)
     expect(conn.query.mock.calls.filter(([sql]) => /setes_setes/.test(sql))).toEqual([])
   })
@@ -401,7 +410,7 @@ describe('cancelar no fisco — operação EM LINHA (D-F28)', () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A', dhProc: '2026-01-01 10:00:00' }))
     adapter.municipalTerms.mockResolvedValue({ cancelDays: 30, raw: {} })
     adapter.registerEvent.mockResolvedValue({ dhEvento: null, raw: {} })
-    const r = await cancelServiceInvoiceAtAuthority(deps, A, INVOICE, 'erro')
+    const r = await cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'erro')
     expect(r.warnings).toEqual([expect.stringMatching(/Prazo de cancelamento .*30 dias/)])
     expect(adapter.registerEvent.mock.calls[0][2]).toContain('<xMotivo>erro - Cancelamento solicitado pelo emissor</xMotivo>')
   })
@@ -409,40 +418,49 @@ describe('cancelar no fisco — operação EM LINHA (D-F28)', () => {
   /** Estado da tentativa 1 que ACOMPANHA as vozes gravadas (K da reserva, N da liberação). */
   const followVoices = (start: string) => {
     let kind: string | null = start
-    ;(repo.insertTransmissionEvent as jest.Mock).mockImplementation(async (_c: any, _i: number, _n: number, _a: number, _u: any, ev: any) => { kind = ev.kind; return 2 })
+    ;(repo.insertTransmissionEvent as jest.Mock).mockImplementation(async (__itx: any, _a: number, _u: any, ev: any) => { kind = ev.kind; return 2 })
     ;(repo.latestTransmission as jest.Mock).mockImplementation(async () => tx({ lastKind: kind }))
     return () => kind
   }
-  const kindsWritten = () => (repo.insertTransmissionEvent as jest.Mock).mock.calls.map(c => c[5].kind)
+  const kindsWritten = () => (repo.insertTransmissionEvent as jest.Mock).mock.calls.map(c => c[3].kind)
 
   it('RESERVA: o K nasce ANTES do fisco (quem chega depois vê K → CANCEL_IN_FLIGHT)', async () => {
     followVoices('A')
     let kindAtAuthority: string | null = null
     adapter.registerEvent.mockImplementation(async () => { kindAtAuthority = kindsWritten().join(','); return { dhEvento: null, raw: {} } })
-    await cancelServiceInvoiceAtAuthority(deps, A, INVOICE, 'cliente desistiu do serviço')
+    await cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'cliente desistiu do serviço')
     expect(kindAtAuthority).toBe('K')
     expect(kindsWritten()).toEqual(['K', 'C'])
     // K é fato NOSSO: sem dh — a chave única (kind, dh) é da voz do fisco (K → N → K no mesmo segundo colidia → 500)
-    expect((repo.insertTransmissionEvent as jest.Mock).mock.calls[0][5].dh).toBeNull()
+    expect((repo.insertTransmissionEvent as jest.Mock).mock.calls[0][3].dh).toBeNull()
   })
 
   it('fisco RECUSA (E0822) → 409 FISCAL_CANCEL_REFUSED e N libera a reserva (NFS-e segue autorizada); AMBÍGUO → o K FICA e o 503 sobe', async () => {
     const kindNow = followVoices('A')
     adapter.registerEvent.mockRejectedValueOnce(new AuthorityHttpError(422, 'Fisco rejeitou', 'FISCAL_DPS_REJECTED', 400, '', [{ field: 'event', message: 'E0822: prazo de cancelamento expirado' }]))
-    await expect(cancelServiceInvoiceAtAuthority(deps, A, INVOICE, 'cliente desistiu do serviço')).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_CANCEL_REFUSED' })
+    await expect(cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'cliente desistiu do serviço')).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_CANCEL_REFUSED' })
     expect(kindsWritten()).toEqual(['K', 'N'])
     expect(kindNow()).toBe('N')                                         // N = cancelável de novo (D-N17)
     ;(repo.insertTransmissionEvent as jest.Mock).mockClear()
     adapter.registerEvent.mockRejectedValueOnce(unavailable())
-    await expect(cancelServiceInvoiceAtAuthority(deps, A, INVOICE, 'cliente desistiu do serviço')).rejects.toMatchObject({ statusCode: 503 })
+    await expect(cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'cliente desistiu do serviço')).rejects.toMatchObject({ statusCode: 503 })
     expect(kindsWritten()).toEqual(['K'])                               // ambíguo: o fisco PODE ter cancelado
-    await expect(cancelServiceInvoiceAtAuthority(deps, A, INVOICE, 'outra tentativa de cancelar')).rejects.toMatchObject({ code: 'FISCAL_CANCEL_IN_FLIGHT' })
+    await expect(cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'outra tentativa de cancelar')).rejects.toMatchObject({ code: 'FISCAL_CANCEL_IN_FLIGHT' })
+  })
+
+  it('[D-NE57] cadeia do SERVIDOR não confiável no pedido de cancelamento → o fisco não recebeu nada: N LIBERA a reserva (o roteiro trata o desfecho — switch exaustivo) e o 409 sobe', async () => {
+    const kindNow = followVoices('A')
+    adapter.registerEvent.mockRejectedValueOnce(chainUntrusted())
+    await expect(cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'cliente desistiu do serviço')).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_AUTHORITY_CHAIN_UNTRUSTED' })
+    expect(kindsWritten()).toEqual(['K', 'N'])
+    expect(kindNow()).toBe('N')
+    expect((repo.insertTransmissionEvent as jest.Mock).mock.calls[1][3].message).toMatch(/servidor do fisco não confiável/)
   })
 
   it('gates do delta de 2026-10-04: A1 que não abre SOB a trava da habilitação → 409 ANTES do K (nenhuma voz, fisco não chamado)', async () => {
     followVoices('A')
     ;(fiscal.openIssuer as jest.Mock).mockRejectedValueOnce(new HttpError(409, 'A1 vencido', undefined, 'FISCAL_CERT_EXPIRED'))
-    await expect(cancelServiceInvoiceAtAuthority(deps, A, INVOICE, 'cliente desistiu do serviço')).rejects.toMatchObject({ code: 'FISCAL_CERT_EXPIRED' })
+    await expect(cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'cliente desistiu do serviço')).rejects.toMatchObject({ code: 'FISCAL_CERT_EXPIRED' })
     expect(adapter.registerEvent).not.toHaveBeenCalled()
     expect(kindsWritten()).toEqual([])
     expect((fiscal.openIssuer as jest.Mock).mock.calls[0][3]).toMatchObject({ forUpdate: true, schemaName: 'setes_setes' })   // na decisão, travando
@@ -451,19 +469,19 @@ describe('cancelar no fisco — operação EM LINHA (D-F28)', () => {
   it('preparo LOCAL falha DEPOIS do K (o A1 abriu na decisão e não abre no preparo) → o fisco NÃO é chamado e N libera a reserva', async () => {
     followVoices('A')
     ;(fiscal.openIssuer as jest.Mock).mockResolvedValueOnce(opened()).mockRejectedValueOnce(new HttpError(409, 'A1 vencido', undefined, 'FISCAL_CERT_EXPIRED'))
-    await expect(cancelServiceInvoiceAtAuthority(deps, A, INVOICE, 'cliente desistiu do serviço')).rejects.toMatchObject({ code: 'FISCAL_CERT_EXPIRED' })
+    await expect(cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'cliente desistiu do serviço')).rejects.toMatchObject({ code: 'FISCAL_CERT_EXPIRED' })
     expect(adapter.registerEvent).not.toHaveBeenCalled()
     expect(kindsWritten()).toEqual(['K', 'N'])
   })
 
   it('em voo → IN_PROGRESS; K → CANCEL_IN_FLIGHT; já C → ok idempotente (atAuthority false) sem chamar o fisco', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: null, accessKey: null }))
-    await expect(cancelServiceInvoiceAtAuthority(deps, A, INVOICE, 'erro')).rejects.toMatchObject({ code: 'FISCAL_TRANSMISSION_IN_PROGRESS' })
+    await expect(cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'erro')).rejects.toMatchObject({ code: 'FISCAL_TRANSMISSION_IN_PROGRESS' })
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'K' }))
-    await expect(cancelServiceInvoiceAtAuthority(deps, A, INVOICE, 'erro')).rejects.toMatchObject({ code: 'FISCAL_CANCEL_IN_FLIGHT' })
+    await expect(cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'erro')).rejects.toMatchObject({ code: 'FISCAL_CANCEL_IN_FLIGHT' })
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'C', lastEvent: 3 }))
     ;(repo.findTransmissionEventByKind as jest.Mock).mockResolvedValue({ attempt: 1, event: 3, kind: 'C' })
-    const r = await cancelServiceInvoiceAtAuthority(deps, A, INVOICE, 'erro')
+    const r = await cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'erro')
     expect(r).toMatchObject({ atAuthority: false, transmissionEvent: 3, nextStep: 'apply-local-cancel' })
     expect(adapter.registerEvent).not.toHaveBeenCalled()
   })
@@ -471,11 +489,11 @@ describe('cancelar no fisco — operação EM LINHA (D-F28)', () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'C', lastEvent: 3 }))
     ;(repo.findTransmissionEventByKind as jest.Mock).mockResolvedValue({ attempt: 1, event: 3, kind: 'C' })
     ;(fiscal.openIssuer as jest.Mock).mockRejectedValue(new HttpError(409, 'A1 vencido', undefined, 'FISCAL_CERT_EXPIRED'))
-    const r = await cancelServiceInvoiceAtAuthority(deps, A, INVOICE, 'erro')
+    const r = await cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'erro')
     expect(r).toMatchObject({ atAuthority: false, transmissionEvent: 3, nextStep: 'apply-local-cancel' })
     for (const t of [null, tx({ lastKind: 'R', accessKey: null }), tx({ lastKind: 'K' })]) {
       ;(repo.latestTransmission as jest.Mock).mockResolvedValue(t)
-      await expect(cancelServiceInvoiceAtAuthority(deps, A, INVOICE, 'erro')).rejects.toMatchObject({ statusCode: 409 })
+      await expect(cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'erro')).rejects.toMatchObject({ statusCode: 409 })
     }
     expect(fiscal.openIssuer).not.toHaveBeenCalled()
     expect(adapter.registerEvent).not.toHaveBeenCalled()
@@ -490,9 +508,9 @@ describe('reconfirmar (Q-ADV1b → D-F29) — a PROVA lida no banco', () => {
     adapter.queryDpsAccessKey.mockResolvedValue(null)
     const base = pool.query.getMockImplementation()
     pool.query.mockImplementation(async (sql: string, p: any[]) => (/nfse_not_generated_at = NOW\(\)/.test(sql) ? [{ affectedRows: 1 }] : base!(sql, p)))
-    const r = await reconfirmBeforeLocalCancel(deps, A, INVOICE)
+    const r = await reconfirmBeforeLocalCancel(deps, A, webRef(A, INVOICE))
     expect(r).toEqual({ invoiceId: INVOICE, needed: true, found: false, attempt: 1, accessKey: null })
-    expect(repo.touchQueriedAt).toHaveBeenCalledWith(pool, 1, INVOICE, 1)
+    expect(repo.touchQueriedAt).toHaveBeenCalledWith(pool, refOf(1, INVOICE), 1)
     expect(pool.query.mock.calls.filter((c: any[]) => /nfse_not_generated_at = NOW\(\)/.test(String(c[0])))).toHaveLength(1)
     expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()
   })
@@ -501,7 +519,7 @@ describe('reconfirmar (Q-ADV1b → D-F29) — a PROVA lida no banco', () => {
     adapter.queryDpsAccessKey.mockResolvedValue(null)
     const base = pool.query.getMockImplementation()
     pool.query.mockImplementation(async (sql: string, p: any[]) => (/nfse_not_generated_at = NOW\(\)/.test(sql) ? [{ affectedRows: 0 }] : base!(sql, p)))
-    await expect(reconfirmBeforeLocalCancel(deps, A, INVOICE)).rejects.toMatchObject({ statusCode: 409, code: 'RESOURCE_BUSY' })
+    await expect(reconfirmBeforeLocalCancel(deps, A, webRef(A, INVOICE))).rejects.toMatchObject({ statusCode: 409, code: 'RESOURCE_BUSY' })
   })
 
   it('o fisco AGORA acha a NFS-e → reconcilia (A) — e se nada pousou, 409 (não cancela no escuro)', async () => {
@@ -509,7 +527,7 @@ describe('reconfirmar (Q-ADV1b → D-F29) — a PROVA lida no banco', () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(fq())
     adapter.queryDpsAccessKey.mockResolvedValue(KEY)
     adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'authorized', nfseXml: NFSE_XML, dhProc: '2026-09-21T10:15:30-03:00' })
-    await expect(reconfirmBeforeLocalCancel(deps, A, INVOICE)).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_TRANSMISSION_IN_PROGRESS' })
+    await expect(reconfirmBeforeLocalCancel(deps, A, webRef(A, INVOICE))).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_TRANSMISSION_IN_PROGRESS' })
     expect(adapter.queryDpsAccessKey).toHaveBeenCalledTimes(1)
     expect(adapter.queryNfse).toHaveBeenCalledTimes(1)
   })
@@ -517,7 +535,7 @@ describe('reconfirmar (Q-ADV1b → D-F29) — a PROVA lida no banco', () => {
   it('homologação, F direto (P), R, sem tentativa ou com chave → needed false, fisco não é chamado', async () => {
     for (const list of [[fq({ environment: 'H' })], [fq({ lastSource: 'P' })], [tx({ lastKind: 'R', accessKey: null })], [], [fq(), tx({ attempt: 2, lastKind: 'A' })]]) {
       ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: list, events: [] })
-      expect(await reconfirmBeforeLocalCancel(deps, A, INVOICE)).toMatchObject({ needed: false })
+      expect(await reconfirmBeforeLocalCancel(deps, A, webRef(A, INVOICE))).toMatchObject({ needed: false })
     }
     expect(adapter.queryDpsAccessKey).not.toHaveBeenCalled()
   })
@@ -525,7 +543,7 @@ describe('reconfirmar (Q-ADV1b → D-F29) — a PROVA lida no banco', () => {
   it('fisco FORA → o erro sobe (fail-closed) e a prova NÃO é gravada', async () => {
     ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [fq()], events: [] })
     adapter.queryDpsAccessKey.mockRejectedValue(new HttpError(503, 'fora', undefined, 'FISCAL_AUTHORITY_UNAVAILABLE'))
-    await expect(reconfirmBeforeLocalCancel(deps, A, INVOICE)).rejects.toMatchObject({ statusCode: 503 })
+    await expect(reconfirmBeforeLocalCancel(deps, A, webRef(A, INVOICE))).rejects.toMatchObject({ statusCode: 503 })
     expect(repo.touchQueriedAt).not.toHaveBeenCalled()
   })
 })
@@ -533,7 +551,7 @@ describe('reconfirmar (Q-ADV1b → D-F29) — a PROVA lida no banco', () => {
 describe('consulta ativa — ALUGUEL na linha do emissor, candidatas filtradas no SQL', () => {
   it('outra passada do mesmo estabelecimento em curso (aluguel não obtido) → skipped, nada consultado, nenhuma conexão retida', async () => {
     ;(fiscal.acquireRefreshLease as jest.Mock).mockResolvedValueOnce(null)
-    const r = await refreshOpenServiceTransmissions(deps, A)
+    const r = await refreshOpenServiceTransmissions(deps, A, { terminal: WEB })
     expect(r).toMatchObject({ skipped: true, checked: 0 })
     expect(repo.listRefreshCandidates).not.toHaveBeenCalled()
     // D-F41: o comando do aluguel EMPRESTA uma conexão (espera curta na sessão) e a devolve — nenhuma fica retida
@@ -545,14 +563,14 @@ describe('consulta ativa — ALUGUEL na linha do emissor, candidatas filtradas n
   it('sem habilitação SE não há aluguel a tomar → 409 FISCAL_ISSUER_MISSING (nunca "outra passada em curso" — gate R2)', async () => {
     ;(fiscal.acquireRefreshLease as jest.Mock).mockResolvedValueOnce(null)
     ;(fiscal.getIssuer as jest.Mock).mockResolvedValueOnce(null)
-    await expect(refreshOpenServiceTransmissions(deps, A)).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_ISSUER_MISSING' })
+    await expect(refreshOpenServiceTransmissions(deps, A, { terminal: WEB })).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_ISSUER_MISSING' })
     expect(repo.listRefreshCandidates).not.toHaveBeenCalled()
   })
 
   it('D-F46: os ramos de quem pede descem até o SQL das candidatas (o filtro é antes do LIMIT, nunca em JS)', async () => {
     ;(repo.listRefreshCandidates as jest.Mock).mockResolvedValue([])
-    await refreshOpenServiceTransmissions(deps, A, { minMinutes: 7, limit: 3, interfaces: ['service-orders'], liveOnlyInterfaces: ['orders'] })
-    expect(repo.listRefreshCandidates).toHaveBeenCalledWith(pool, 'setes_setes', 1, 7, 10, 3, { authorizedMaxDays: 90, interfaces: ['service-orders'], liveOnlyInterfaces: ['orders'] })
+    await refreshOpenServiceTransmissions(deps, A, { terminal: WEB, minMinutes: 7, limit: 3, interfaces: ['service-orders'], liveOnlyInterfaces: ['orders'] })
+    expect(repo.listRefreshCandidates).toHaveBeenCalledWith(pool, 'setes_setes', webScope(1), 7, 10, 3, { authorizedMaxDays: 90, interfaces: ['service-orders'], liveOnlyInterfaces: ['orders'] })
   })
 
   it('consulta CADA candidata que o SQL devolveu (o filtro da vida vigente é do SQL) e devolve o aluguel no fim', async () => {
@@ -562,9 +580,9 @@ describe('consulta ativa — ALUGUEL na linha do emissor, candidatas filtradas n
     ])
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'authorized', nfseXml: NFSE_XML, dhProc: null })
-    const r = await refreshOpenServiceTransmissions(deps, A, { minMinutes: 7, limit: 3 })
+    const r = await refreshOpenServiceTransmissions(deps, A, { terminal: WEB, minMinutes: 7, limit: 3 })
     expect(r).toMatchObject({ checked: 2, skipped: false })
-    expect(repo.listRefreshCandidates).toHaveBeenCalledWith(pool, 'setes_setes', 1, 7, 10, 3, { authorizedMaxDays: 90 })   // D-F38: sem PAM = 60 + 30
+    expect(repo.listRefreshCandidates).toHaveBeenCalledWith(pool, 'setes_setes', webScope(1), 7, 10, 3, { authorizedMaxDays: 90 })   // D-F38: sem PAM = 60 + 30
     expect(fiscal.acquireRefreshLease).toHaveBeenCalledWith(conn, 1, 'SE', 210)        // pela conexão curta (D-F41)
     expect(fiscal.renewRefreshLease).toHaveBeenCalledTimes(2)                // renovado antes de CADA candidata (gates R4)
     expect(fiscal.releaseRefreshLease).toHaveBeenCalledWith(conn, 1, 'SE', '2026-10-04 12:01:00')   // devolve SÓ o próprio
@@ -576,7 +594,7 @@ describe('consulta ativa — ALUGUEL na linha do emissor, candidatas filtradas n
       resetMunicipalTermsCache()
       ;(repo.listRefreshCandidates as jest.Mock).mockClear()
       adapter.municipalTerms.mockImplementationOnce(pam)
-      const r = await refreshOpenServiceTransmissions(deps, A)
+      const r = await refreshOpenServiceTransmissions(deps, A, { terminal: WEB })
       return { teto: (repo.listRefreshCandidates as jest.Mock).mock.calls[0][6].authorizedMaxDays, r }
     }
     expect((await run(async () => ({ cancelDays: 120, raw: {} }))).teto).toBe(150)
@@ -596,7 +614,7 @@ describe('consulta ativa — ALUGUEL na linha do emissor, candidatas filtradas n
       ;(repo.listRefreshCandidates as jest.Mock).mockResolvedValue([tx({ invoiceId: 12, lastKind: 'A' })])
       ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
       adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'authorized', nfseXml: NFSE_XML, dhProc: null })
-      const p = refreshOpenServiceTransmissions(deps, A, { budgetMs: 60_000 })
+      const p = refreshOpenServiceTransmissions(deps, A, { terminal: WEB, budgetMs: 60_000 })
       await jest.advanceTimersByTimeAsync(CEILING_LOOKUP_TIMEOUT_MS + 10)
       const r = await p
       expect(r).toMatchObject({ checked: 1, ceilingSource: 'padrao', authorizedMaxDays: 90 })
@@ -610,7 +628,7 @@ describe('consulta ativa — ALUGUEL na linha do emissor, candidatas filtradas n
   it('[sessão 2026-10-04] aluguel com DEADLOCK (1213) ao tomar: reexecuta 1× (o InnoDB desfez o UPDATE) e a passada segue', async () => {
     ;(fiscal.acquireRefreshLease as jest.Mock).mockRejectedValueOnce(dbErr('ER_LOCK_DEADLOCK', 1213))
     ;(repo.listRefreshCandidates as jest.Mock).mockResolvedValue([])
-    const r = await refreshOpenServiceTransmissions(deps, A)
+    const r = await refreshOpenServiceTransmissions(deps, A, { terminal: WEB })
     expect(r).toMatchObject({ skipped: false, checked: 0 })
     expect(fiscal.acquireRefreshLease).toHaveBeenCalledTimes(2)
     expect(fiscal.releaseRefreshLease).toHaveBeenCalledWith(conn, 1, 'SE', '2026-10-04 12:01:00')
@@ -619,9 +637,9 @@ describe('consulta ativa — ALUGUEL na linha do emissor, candidatas filtradas n
   it('[sessão 2026-10-04] aluguel com contenção que SOBRA (deadlock de novo / lock wait) → 409 RESOURCE_BUSY, nunca o erro cru do banco; nada consultado', async () => {
     ;(fiscal.acquireRefreshLease as jest.Mock)
       .mockRejectedValueOnce(dbErr('ER_LOCK_DEADLOCK', 1213)).mockRejectedValueOnce(dbErr('ER_LOCK_DEADLOCK', 1213))
-    await expect(refreshOpenServiceTransmissions(deps, A)).rejects.toMatchObject({ statusCode: 409, code: 'RESOURCE_BUSY' })
+    await expect(refreshOpenServiceTransmissions(deps, A, { terminal: WEB })).rejects.toMatchObject({ statusCode: 409, code: 'RESOURCE_BUSY' })
     ;(fiscal.acquireRefreshLease as jest.Mock).mockRejectedValueOnce(dbErr('ER_LOCK_WAIT_TIMEOUT', 1205))
-    await expect(refreshOpenServiceTransmissions(deps, A)).rejects.toMatchObject({ statusCode: 409, code: 'RESOURCE_BUSY' })
+    await expect(refreshOpenServiceTransmissions(deps, A, { terminal: WEB })).rejects.toMatchObject({ statusCode: 409, code: 'RESOURCE_BUSY' })
     expect(fiscal.acquireRefreshLease).toHaveBeenCalledTimes(3)                       // lock wait NÃO reexecuta
     expect(repo.listRefreshCandidates).not.toHaveBeenCalled()
     expect(fiscal.releaseRefreshLease).not.toHaveBeenCalled()                         // nada tomado, nada devolvido
@@ -636,7 +654,7 @@ describe('consulta ativa — ALUGUEL na linha do emissor, candidatas filtradas n
     adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'authorized', nfseXml: NFSE_XML, dhProc: null })
     ;(fiscal.renewRefreshLease as jest.Mock)
       .mockResolvedValueOnce('2026-10-04 12:01:00').mockRejectedValueOnce(dbErr('ER_LOCK_WAIT_TIMEOUT', 1205))
-    const r = await refreshOpenServiceTransmissions(deps, A)
+    const r = await refreshOpenServiceTransmissions(deps, A, { terminal: WEB })
     expect(r).toMatchObject({ checked: 1, stoppedEarly: true, skipped: false, errors: [] })
     expect(fiscal.releaseRefreshLease).toHaveBeenCalledWith(conn, 1, 'SE', '2026-10-04 12:01:00')
   })
@@ -645,14 +663,14 @@ describe('consulta ativa — ALUGUEL na linha do emissor, candidatas filtradas n
     ;(fiscal.acquireRefreshLease as jest.Mock).mockResolvedValueOnce(null)
     ;(fiscal.emissionStillInErp as jest.Mock).mockResolvedValueOnce(true)
     ;(fiscal.getIssuer as jest.Mock).mockResolvedValueOnce(null)                          // ex.: réplica EXCLUÍDA
-    await expect(refreshOpenServiceTransmissions(deps, A)).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_CUTOVER_PENDING' })
-    expect(fiscal.emissionStillInErp).toHaveBeenCalledWith(pool, 'setes_setes', 1)
+    await expect(refreshOpenServiceTransmissions(deps, A, { terminal: WEB })).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_CUTOVER_PENDING' })
+    expect(fiscal.emissionStillInErp).toHaveBeenCalledWith(pool, 'setes_setes', 1, 'SE')
   })
 
   it('D-F39 (gates R4): cancelar no fisco numa RÉPLICA recusa ANTES de qualquer voz (sem K/N na tentativa copiada)', async () => {
     ;(fiscal.emissionStillInErp as jest.Mock).mockResolvedValueOnce(true)               // réplica viva/excluída ou lacuna (b)
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
-    await expect(cancelServiceInvoiceAtAuthority(deps, A, INVOICE, 'cliente desistiu do serviço')).rejects.toMatchObject({ code: 'FISCAL_CUTOVER_PENDING' })
+    await expect(cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'cliente desistiu do serviço')).rejects.toMatchObject({ code: 'FISCAL_CUTOVER_PENDING' })
     expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()
     expect(erpM.lockInvoice).not.toHaveBeenCalled()
   })
@@ -661,14 +679,14 @@ describe('consulta ativa — ALUGUEL na linha do emissor, candidatas filtradas n
     ;(repo.listRefreshCandidates as jest.Mock).mockResolvedValue([
       tx({ invoiceId: 20, attempt: 4, lastKind: 'A' }), tx({ invoiceId: 21, lastKind: 'A' }), tx({ invoiceId: 22, lastKind: 'A' }),
     ])
-    ;(repo.getTransmission as jest.Mock).mockImplementation(async (_q: any, _i: number, inv: number, attempt: number) => tx({ invoiceId: inv, attempt, lastKind: 'A' }))
+    ;(repo.getTransmission as jest.Mock).mockImplementation(async (_q: any, __r: any, attempt: number) => tx({ invoiceId: __r.invoiceId, attempt, lastKind: 'A' }))
     adapter.queryNfse
       .mockRejectedValueOnce(new HttpError(502, 'resposta ilegível', undefined, 'FISCAL_AUTHORITY_UNKNOWN_RESPONSE'))
       .mockRejectedValueOnce(new HttpError(409, 'A1 vencido', undefined, 'FISCAL_CERT_EXPIRED'))
-    const r = await refreshOpenServiceTransmissions(deps, A)
+    const r = await refreshOpenServiceTransmissions(deps, A, { terminal: WEB })
     expect(r).toMatchObject({ checked: 2, stoppedEarly: true })
     expect(r.errors.map(e => e.code)).toEqual(['FISCAL_AUTHORITY_UNKNOWN_RESPONSE', 'FISCAL_CERT_EXPIRED'])
-    expect(repo.touchQueriedAt).toHaveBeenCalledWith(pool, 1, 20, 4)
+    expect(repo.touchQueriedAt).toHaveBeenCalledWith(pool, refOf(1, 20), 4)
     expect(repo.touchQueriedAt).toHaveBeenCalledTimes(1)
     expect(fiscal.releaseRefreshLease).toHaveBeenCalled()
   })
@@ -680,7 +698,7 @@ describe('tela "No fisco" — estado derivado + pendência derivada', () => {
       transmissions: [tx({ attempt: 1, lastKind: 'R', accessKey: null }), tx({ attempt: 2, lastKind: 'C' })],
       events: [{ attempt: 2, event: 1, kind: 'A', dh: '2026-09-21 13:15:30', createdAt: '2026-09-21 13:15:30' }],
     })
-    const v = await getServiceFiscalView(deps, A, INVOICE)
+    const v = await getServiceFiscalView(deps, A, webRef(A, INVOICE))
     expect(v).toMatchObject({ state: 'cancelled', localCancelPending: true })
     expect(v.events[0].dh).toBe('2026-09-21 10:15:30')
   })
@@ -697,8 +715,8 @@ describe('Rodada 13 (D-F67/D-F68/D-F71/D-F76, Valdo 2026-10-10) — código do e
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A', dhProc: '2026-08-15 13:00:00' }))
     ;(repo.insertTransmissionEvent as jest.Mock).mockResolvedValue(2)
     adapter.registerEvent.mockResolvedValue({ dhEvento: '2026-09-22T09:00:00-03:00', protocol: 'EVT1', eventXml: '<evento/>', raw: {} })
-    await cancelServiceInvoiceAtAuthority(deps, A, INVOICE, 'cliente desistiu do serviço')
-    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(conn, 1, INVOICE, 1, A.userId, expect.objectContaining({ kind: 'C', source: 'P', authorityCode: '101101' }))
+    await cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'cliente desistiu do serviço')
+    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(itxLike(conn, 1, INVOICE), 1, A.userId, expect.objectContaining({ kind: 'C', source: 'P', authorityCode: '101101' }))
   })
 
   it('consulta lê o cancelamento: e105102 → authorityCode 105102 e localCancelPending FALSE (decisão humana — D-F64/D-F67); e101101 → true', async () => {
@@ -706,34 +724,34 @@ describe('Rodada 13 (D-F67/D-F68/D-F71/D-F76, Valdo 2026-10-10) — código do e
     ;(repo.insertTransmissionEvent as jest.Mock).mockResolvedValue(2)
     adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'cancelled', nfseXml: NFSE_XML, dhProc: null,
       cancelled: { dhEvento: '2026-09-22T09:00:00-03:00', motive: 'erro no valor', eventCode: '105102' } })
-    expect(await refreshServiceTransmission(deps, A, INVOICE, 'Q')).toMatchObject({ kind: 'C', localCancelPending: false })
-    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(conn, 1, INVOICE, 1, A.userId,
+    expect(await refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q')).toMatchObject({ kind: 'C', localCancelPending: false })
+    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(itxLike(conn, 1, INVOICE), 1, A.userId,
       expect.objectContaining({ kind: 'C', source: 'Q', authorityCode: '105102', message: expect.stringContaining('SUBSTITUIÇÃO (e105102)') }))
     ;(repo.insertTransmissionEvent as jest.Mock).mockClear()
     adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'cancelled', nfseXml: NFSE_XML, dhProc: null,
       cancelled: { dhEvento: '2026-09-22T09:00:00-03:00', motive: 'x', eventCode: '101101' } })
-    expect(await refreshServiceTransmission(deps, A, INVOICE, 'Q')).toMatchObject({ kind: 'C', localCancelPending: true })
-    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(conn, 1, INVOICE, 1, A.userId, expect.objectContaining({ kind: 'C', authorityCode: '101101' }))
+    expect(await refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q')).toMatchObject({ kind: 'C', localCancelPending: true })
+    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(itxLike(conn, 1, INVOICE), 1, A.userId, expect.objectContaining({ kind: 'C', authorityCode: '101101' }))
   })
 
   it('transmitir com a vigente C de SUBSTITUIÇÃO → 409 FISCAL_NFSE_SUBSTITUTED mesmo com a nota MANTIDA (não-C no ERP) — nunca reenvia o mesmo DPS; C comum com a nota viva → FISCAL_EFFECT_PENDING', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'C', lastCode: '105102' }))
-    await expect(transmitServiceInvoice(deps, A, INVOICE)).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_NFSE_SUBSTITUTED' })
+    await expect(transmitServiceInvoice(deps, A, webRef(A, INVOICE))).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_NFSE_SUBSTITUTED' })
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'C', lastCode: '101101' }))
-    await expect(transmitServiceInvoice(deps, A, INVOICE)).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_EFFECT_PENDING' })
+    await expect(transmitServiceInvoice(deps, A, webRef(A, INVOICE))).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_EFFECT_PENDING' })
     expect(adapter.transmit).not.toHaveBeenCalled()
   })
 
   it('tela "No fisco": a vigente C de SUBSTITUIÇÃO traz `substitution` com a chave da SUBSTITUTA lida do XML do evento arquivado (D-F76); sem XML = null; sem pendência derivada', async () => {
     const current = tx({ attempt: 1, lastKind: 'C', lastCode: '105102', dhProc: '2026-10-10 21:43:04' })
     ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [current], events: [] })
-    let v = await getServiceFiscalView(deps, A, INVOICE)
+    let v = await getServiceFiscalView(deps, A, webRef(A, INVOICE))
     expect(v).toMatchObject({ state: 'cancelled', localCancelPending: false, substitution: { substituteAccessKey: null } })   // XML ausente
     deps.storage.save(CNPJ, `${KEY}-evt101101.xml`, substEventXml(SUBST_KEY), new Date('2026-10-10T21:43:04Z'), 'H', 'America/Sao_Paulo')
-    v = await getServiceFiscalView(deps, A, INVOICE)
+    v = await getServiceFiscalView(deps, A, webRef(A, INVOICE))
     expect(v.substitution).toEqual({ substituteAccessKey: SUBST_KEY })
     // C comum: nenhuma substituição na tela
     ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [tx({ attempt: 1, lastKind: 'C', lastCode: '101101' })], events: [] })
-    expect((await getServiceFiscalView(deps, A, INVOICE)).substitution).toBeNull()
+    expect((await getServiceFiscalView(deps, A, webRef(A, INVOICE))).substitution).toBeNull()
   })
 })

@@ -106,8 +106,8 @@ beforeEach(() => {
   locked = { alive: true, lifeEvent: 1, lastEvent: 1, lastKind: 'E' }
   pool.query.mockImplementation(async (sql: string, params: any[] = []) => {
     if (/nfse_not_generated_at = NOW\(\)/.test(sql)) {
-      const ok = Number(params[3]) === maxEvent
-      if (ok) stamps.push({ attempt: Number(params[2]), seen: Number(params[3]) }); else refusedStamps += 1
+      const ok = Number(params[4]) === maxEvent
+      if (ok) stamps.push({ attempt: Number(params[3]), seen: Number(params[4]) }); else refusedStamps += 1
       return [{ affectedRows: ok ? 1 : 0 }]
     }
     return /GET_LOCK/.test(sql) ? [[{ ok: 1 }]] : [[]]
@@ -147,6 +147,7 @@ beforeEach(() => {
 import { transport, HttpsCall, reconfirmationCandidate, reconfirmationProven, ErrorCodes } from 'fiscal-api'
 import { adnAdapter } from '../authority/adn'
 import { refreshOpenServiceTransmissions, reconfirmBeforeLocalCancel } from '../nfse/transmission'
+import { webRef, WEB, refOf } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
 
 /** Gate da Rodada 18 (R18-03/R18-04): a prova exige a IDENTIDADE da candidata e a VIDA — os testes antigos de 1 argumento passam por aqui. */
 const proven = (c: any, life?: any[]) => {
@@ -224,7 +225,7 @@ describe('R16-02 (LOW — CORRIGIDO DURANTE O GATE pelo LOW-4 do socrático da R
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(f)
     ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [f], events: [] })
     fisco({ onDps: () => { maxEvent = 3 } })                // o rodízio gravou o A (evento 3) enquanto a reconferência perguntava
-    const r = await settle(reconfirmBeforeLocalCancel(realDeps(), A, INVOICE))
+    const r = await settle(reconfirmBeforeLocalCancel(realDeps(), A, webRef(A, INVOICE)))
     expect(stamps).toHaveLength(0); expect(refusedStamps).toBe(1)   // a guarda funcionou (fail-closed no banco)…
     expect(r).toMatchObject({ statusCode: 409, code: ErrorCodes.RESOURCE_BUSY })   // …e a resposta não afirma o que não foi gravado
   })
@@ -234,7 +235,7 @@ describe('R16-02 (LOW — CORRIGIDO DURANTE O GATE pelo LOW-4 do socrático da R
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(f)
     ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [f], events: [] })
     fisco({})
-    expect(await reconfirmBeforeLocalCancel(realDeps(), A, INVOICE)).toMatchObject({ needed: true, found: false, attempt: 1 })
+    expect(await reconfirmBeforeLocalCancel(realDeps(), A, webRef(A, INVOICE))).toMatchObject({ needed: true, found: false, attempt: 1 })
     expect(stamps).toEqual([{ attempt: 1, seen: 2 }])
   })
 })
@@ -251,7 +252,7 @@ describe('ACHADO R16-03 (LOW, pré-existente — a D-F90 o promove a PROVA) — 
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(f)
     ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [f], events: [] })
     fisco({ dps: () => E2404(2) })
-    await settle(reconfirmBeforeLocalCancel(realDeps(), A, INVOICE))
+    await settle(reconfirmBeforeLocalCancel(realDeps(), A, webRef(A, INVOICE)))
     expect(stamps).toHaveLength(0)                           // hoje: 1 (prova gravada a partir da voz de OUTRO ambiente)
   })
   it('resistiu [R16-03]: o MESMO envelope com tipoAmbiente 1 (P) e a forma sem envelope (só `erro`) seguem valendo como E2404', async () => {
@@ -271,7 +272,7 @@ describe('RESISTIU — D-F90: a guarda pela última voz VISTA', () => {
     const t = inFlight()
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(t)
     fisco({})
-    const r = await refreshServiceTransmission(realDeps(), A, INVOICE, 'Q')
+    const r = await refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q')
     expect(r).toMatchObject({ changed: false, kind: null })
     expect(stamps).toEqual([{ attempt: 1, seen: 0 }])
     // o F nasce depois (relógio do mesmo servidor: created_at = NOW() do INSERT); a prova exige E2404 ESTRITAMENTE posterior
@@ -283,9 +284,9 @@ describe('RESISTIU — D-F90: a guarda pela última voz VISTA', () => {
     const t = inFlight()
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(t)
     fisco({ onDps: () => { maxEvent = 1 } })                 // recordInterruptedFailure de outra passada gravou o F (evento 1)
-    await refreshServiceTransmission(realDeps(), A, INVOICE, 'Q')
+    await refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q')
     expect(stamps).toHaveLength(0); expect(refusedStamps).toBe(1)
-    expect(notGeneratedWrites()[0][1]).toEqual([A.institutionId, INVOICE, 1, 0])   // voz vista = a da leitura (nenhuma), não relida depois
+    expect(notGeneratedWrites()[0][1]).toEqual([A.institutionId, INVOICE, WEB, 1, 0])   // voz vista = a da leitura (nenhuma), não relida depois
   })
   it('resistiu: revisita do F com E2404 e outra voz concorrente durante o GET → nada pousa; sem concorrência pousa com a voz do F', async () => {
     const f = F()
@@ -293,10 +294,10 @@ describe('RESISTIU — D-F90: a guarda pela última voz VISTA', () => {
     ;(repo.listRefreshCandidates as jest.Mock).mockResolvedValue([f])
     maxEvent = 2
     fisco({ onDps: () => { maxEvent = 3 } })
-    await refreshOpenServiceTransmissions(realDeps(), A)
+    await refreshOpenServiceTransmissions(realDeps(), A, { terminal: WEB })
     expect(stamps).toHaveLength(0)
     maxEvent = 2; mockHttp.mockReset(); fisco({})
-    await refreshOpenServiceTransmissions(realDeps(), A)
+    await refreshOpenServiceTransmissions(realDeps(), A, { terminal: WEB })
     expect(stamps).toEqual([{ attempt: 1, seen: 2 }])
   })
   it('resistiu: dois "não gerada" seguidos na mesma tentativa — os dois pousam (o 2º só regrava o instante) e a prova continua sendo "posterior ao F"', async () => {
@@ -305,8 +306,8 @@ describe('RESISTIU — D-F90: a guarda pela última voz VISTA', () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(f)
     ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [f], events: [] })
     fisco({})
-    await reconfirmBeforeLocalCancel(realDeps(), A, INVOICE)
-    await reconfirmBeforeLocalCancel(realDeps(), A, INVOICE)
+    await reconfirmBeforeLocalCancel(realDeps(), A, webRef(A, INVOICE))
+    await reconfirmBeforeLocalCancel(realDeps(), A, webRef(A, INVOICE))
     expect(stamps).toEqual([{ attempt: 1, seen: 2 }, { attempt: 1, seen: 2 }])
     expect(proven({ nfseNotGeneratedAt: '2026-10-11 10:00:02', lastEventAt: f.lastEventAt })).toBe(true)
   })
@@ -315,7 +316,7 @@ describe('RESISTIU — D-F90: a guarda pela última voz VISTA', () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(f)
     ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [f], events: [] })
     fisco({})
-    expect(await reconfirmBeforeLocalCancel(realDeps(), A, INVOICE)).toMatchObject({ needed: false })
+    expect(await reconfirmBeforeLocalCancel(realDeps(), A, webRef(A, INVOICE))).toMatchObject({ needed: false })
     expect(mockHttp).not.toHaveBeenCalled(); expect(notGeneratedWrites()).toHaveLength(0)
     expect(reconfirmationCandidate([f as any])).toBeNull()
   })
@@ -326,7 +327,7 @@ describe('RESISTIU — D-F90: a guarda pela última voz VISTA', () => {
     ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [f], events: [] })
     for (const dps of [() => notFound(), () => ({ status: 404, headers: {}, text: '<html>Not Found</html>' }), () => ok({ erro: { codigo: 'E0001' } }, 404), () => ok({ ...SEFIN }, 404)]) {
       mockHttp.mockReset(); fisco({ dps })
-      expect(await settle(reconfirmBeforeLocalCancel(realDeps(), A, INVOICE))).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
+      expect(await settle(reconfirmBeforeLocalCancel(realDeps(), A, webRef(A, INVOICE)))).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
     }
     expect(notGeneratedWrites()).toHaveLength(0)
   })
@@ -337,18 +338,18 @@ describe('RESISTIU — D-F90: o SQL da guarda, da leitura e da view usam a MESMA
   it('resistiu: escritor — subselect escopado por institution/nota/terminal/tentativa e só voz viva; voz vista nula = 0 (= COALESCE)', async () => {
     const actual = jest.requireActual('../nfse/repository')
     const q = { query: jest.fn(async () => [{ affectedRows: 1 }]) }
-    await actual.recordNfseNotGenerated(q, 1, INVOICE, 3, null)
+    await actual.recordNfseNotGenerated(q, refOf(1, INVOICE), 3, null)
     const [sql, params] = (q.query.mock.calls[0] as any[])
-    expect(norm(sql)).toMatch(/WHERE t\.tb_institution_id = \? AND t\.tb_invoice_id = \? AND t\.terminal = 0 AND t\.attempt = \?/)
+    expect(norm(sql)).toMatch(/WHERE t\.tb_institution_id = \? AND t\.tb_invoice_id = \? AND t\.terminal = \? AND t\.attempt = \?/)   // NE-1a parte 2: terminal por parâmetro
     for (const frag of ['e.tb_institution_id = t.tb_institution_id', 'e.tb_invoice_id = t.tb_invoice_id', 'e.terminal = t.terminal', 'e.attempt = t.attempt', "e.deleted = 'N'", 'COALESCE(MAX(e.event), 0)']) {
       expect(norm(sql)).toContain(frag)
     }
-    expect(params).toEqual([1, INVOICE, 3, 0])
+    expect(params).toEqual([1, INVOICE, WEB, 3, 0])
   })
   it('resistiu: leitor da nfse-api (TX_SELECT → `lastEvent`) também é a MAIOR voz viva — a voz soft-deletada não vira "voz vista"', async () => {
     const actual = jest.requireActual('../nfse/repository')
     const q = { query: jest.fn(async () => [[]]) }
-    await actual.getTransmission(q, 1, INVOICE, 1)
+    await actual.getTransmission(q, refOf(1, INVOICE), 1)
     const sql = norm(String((q.query.mock.calls[0] as any[])[0]))
     expect(sql).toContain("le.deleted = 'N'")
     expect(sql).toMatch(/SELECT MAX\(x\.event\) FROM tb_invoice_service_transmission_event x WHERE .*x\.attempt = t\.attempt AND x\.deleted = 'N'/)
@@ -418,13 +419,13 @@ describe('RESISTIU — D-F87: o alarme do ambíguo persistente na passada', () =
   const txB = () => tx({ invoiceId: INVOICE_B, accessKey: KEY_B, lastKind: 'A', attempt: 2 })
   function twoNotes() {
     ;(repo.listRefreshCandidates as jest.Mock).mockResolvedValue([txA(), txB()])
-    ;(repo.getTransmission as jest.Mock).mockImplementation(async (_q: any, _i: any, inv: number) => (inv === INVOICE_B ? txB() : txA()))
-    ;(repo.latestTransmission as jest.Mock).mockImplementation(async (_q: any, _i: any, inv: number) => (inv === INVOICE_B ? txB() : txA()))
+    ;(repo.getTransmission as jest.Mock).mockImplementation(async (_q: any, __r: any) => (__r.invoiceId === INVOICE_B ? txB() : txA()))
+    ;(repo.latestTransmission as jest.Mock).mockImplementation(async (_q: any, __r: any) => (__r.invoiceId === INVOICE_B ? txB() : txA()))
   }
   it('resistiu: passada com 2 notas, só a 2ª ambígua (D-F84) → UM alarme, com a nota/tentativa CERTAS (não a 1ª) e sem a chave de acesso no payload', async () => {
     twoNotes()
     fisco({ typed: (code, key) => (key === KEY_B && code === '101101' ? typedOk(item('101101', { key: KEY_B }), item('105102', { key: KEY_B })) : undefined) })
-    const r = await refreshOpenServiceTransmissions(realDeps(), A)
+    const r = await refreshOpenServiceTransmissions(realDeps(), A, { terminal: WEB })
     expect(r).toMatchObject({ checked: 2, stoppedEarly: false })
     expect(r.errors.map(e => e.invoiceId)).toEqual([INVOICE_B])
     expect(ambiguousLogs()).toHaveLength(1)
@@ -437,7 +438,7 @@ describe('RESISTIU — D-F87: o alarme do ambíguo persistente na passada', () =
       ;(repo.listRefreshCandidates as jest.Mock).mockResolvedValue([txA()])
       ;(repo.latestTransmission as jest.Mock).mockResolvedValue(txA())
       mockHttp.mockReset(); fisco({ typed: code => (code === '101101' ? typed() : undefined) })
-      const r = await refreshOpenServiceTransmissions(realDeps(), A)
+      const r = await refreshOpenServiceTransmissions(realDeps(), A, { terminal: WEB })
       expect(r.errors.map(e => e.code)).toEqual([ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE])
       expect(ambiguousLogs()).toHaveLength(1)
     }
@@ -447,7 +448,7 @@ describe('RESISTIU — D-F87: o alarme do ambíguo persistente na passada', () =
       ;(repo.listRefreshCandidates as jest.Mock).mockResolvedValue([txA()])
       ;(repo.latestTransmission as jest.Mock).mockResolvedValue(txA())
       mockHttp.mockReset(); fisco({ nfse })
-      await refreshOpenServiceTransmissions(realDeps(), A)
+      await refreshOpenServiceTransmissions(realDeps(), A, { terminal: WEB })
     }
     expect(ambiguousLogs()).toHaveLength(0)
   })

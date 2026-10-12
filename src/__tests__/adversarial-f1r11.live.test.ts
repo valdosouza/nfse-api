@@ -41,8 +41,10 @@ import { disposableFiscalDb, DisposableFiscalDb, FISCAL_COPY_TABLES } from './li
 import { createApp } from '../app'
 import type { TaxAuthorityAdapter, AuthorityContext } from '../authority/types'
 import { transmitServiceInvoice, refreshOpenServiceTransmissions, resetMunicipalTermsCache } from '../nfse/transmission'
-import { countLiveTransmissions } from '../nfse/repository'
+// parte 2 da NE-1a (D-NE9): as vivas são contadas pelo EMITTER do núcleo (leituras PUBLICADAS de todas as famílias)
+const countLiveTransmissions = (q: any, inst: number, environment?: 'H' | 'P') => fiscal.countLiveTransmissions(q, inst, { branches: 'all', environment })
 import { argumentErrors } from '../../scripts/migrate-args'
+import { refOf, webRef, WEB } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
 
 // mesma normalização EM MEMÓRIA das rodadas 1–7: o ramo congelado das notas do dev tem cTribMun "0102" (anterior à D-N26b)
 jest.mock('../facts/service-facts', () => {
@@ -290,7 +292,7 @@ d('GATE ADVERSARIAL r11 (o "r8" de 2026-10-10) — delta da sessão 2026-10-10 (
       if (!(await fiscal.erp.institutionHasInterface(ctx.pool, SCHEMA, INST, key))) continue
       if (!X) {
         try {
-          const h = await svc.readServiceInvoice(ctx.pool, SCHEMA, INST, id)
+          const h = await svc.readServiceInvoice(ctx.pool, SCHEMA, refOf(INST, id))
           await svc.buildDpsBase(ctx.pool, SCHEMA, INST, h, 'H')
           X = id; continue
         } catch { /* cadastro incompleto — serve só de alvo sintético */ }
@@ -608,6 +610,13 @@ d('GATE ADVERSARIAL r11 (o "r8" de 2026-10-10) — delta da sessão 2026-10-10 (
     }
     const expectedStill = (rows: RowSpec[], erpHasSe: boolean) =>
       rows.some(r => !r.turned) ? true : rows.some(r => r.model === 'SE') ? false : erpHasSe
+    // D-NE10 (a): por MODELO — réplica do modelo → ERP; a SE (transmitida pelo ERP) sem linha → o ERP decide; 55/65 nunca
+    const expectedStillOf = (rows: RowSpec[], erpHasSe: boolean, model: string) => {
+      const mine = rows.filter(r => r.model === model)
+      if (mine.some(r => !r.turned)) return true
+      if (model !== 'SE') return false
+      return mine.length > 0 ? false : erpHasSe
+    }
 
     it('sem achado: em TODOS os estados (institution 1 COM SE no ERP × sintética SEM) trava = contagem e a guarda de escrita = o predicado da cerca', async () => {
       const seen: any[] = []
@@ -620,13 +629,29 @@ d('GATE ADVERSARIAL r11 (o "r8" de 2026-10-10) — delta da sessão 2026-10-10 (
           try {
             await conn.beginTransaction()
             locked = await fiscal.lockIssuerRows(conn, inst)
-            writable = await fiscal.assertEmitterWritable(conn, SCHEMA, inst).then(() => true, (e: any) => (e?.code === 'FISCAL_CUTOVER_PENDING' ? false : [e?.errno, e?.code]))
+            writable = await fiscal.assertCertificateWritable(conn, SCHEMA, inst).then(() => true, (e: any) => (e?.code === 'FISCAL_CUTOVER_PENDING' ? false : [e?.errno, e?.code]))
           } finally { await conn.rollback(); conn.release() }
-          const still = await fiscal.emissionStillInErp(ctx.pool, SCHEMA, inst)
+          const still = await fiscal.anyEmissionStillInErp(ctx.pool, SCHEMA, inst)
           seen.push({ inst, name, state, locked, still, writable })
           expect([inst, name, state]).toEqual([inst, name, locked])
           expect([inst, name, still]).toEqual([inst, name, expectedStill(rows, erpHasSe)])
           expect([inst, name, writable]).toEqual([inst, name, !still])
+          // NE-1a parte 2 (D-NE10 (a)) — no MOTOR real: o predicado e a guarda da habilitação POR MODELO são o mesmo, e o grão do
+          // estabelecimento é a disjunção deles sobre o catálogo
+          const perModel: boolean[] = []
+          for (const model of fiscal.ISSUER_MODELS) {
+            const stillM = await fiscal.emissionStillInErp(ctx.pool, SCHEMA, inst, model)
+            const c2 = await ctx.pool.getConnection()
+            let writableM: any
+            try {
+              await c2.beginTransaction()
+              writableM = await fiscal.assertIssuerWritable(c2, SCHEMA, inst, model).then(() => true, (e: any) => (e?.code === 'FISCAL_CUTOVER_PENDING' ? false : [e?.errno, e?.code]))
+            } finally { await c2.rollback(); c2.release() }
+            expect([inst, name, model, stillM]).toEqual([inst, name, model, expectedStillOf(rows, erpHasSe, model)])
+            expect([inst, name, model, writableM]).toEqual([inst, name, model, !stillM])
+            perModel.push(stillM)
+          }
+          expect([inst, name, perModel.some(Boolean)]).toEqual([inst, name, still])
         }
       }
       // eslint-disable-next-line no-console
@@ -649,8 +674,8 @@ d('GATE ADVERSARIAL r11 (o "r8" de 2026-10-10) — delta da sessão 2026-10-10 (
         openIssuer: await outcome(fiscal.openIssuer({ pool: ctx.pool, keyring: ctx.keyring }, INST, 'SE', { schemaName: SCHEMA })),
         upsertDirect: await outcome(withTransaction(ctx.pool, 'adv r11 upsert direto', {}, conn => fiscal.upsertIssuer(conn, SCHEMA, INST, 'SE', { environment: 'H', serie: '1', userId: ADV_USER }))),
         clearDirect: await outcome(fiscal.clearCertificate({ pool: ctx.pool, keyring: ctx.keyring }, INST, ADV_USER, { schemaName: SCHEMA })),
-        transmitDirect: await outcome(transmitServiceInvoice(ctx, ACTOR, X)),
-        passDirect: await outcome(refreshOpenServiceTransmissions(ctx, ACTOR, { budgetMs: 2000 })),
+        transmitDirect: await outcome(transmitServiceInvoice(ctx, ACTOR, webRef(ACTOR, X))),
+        passDirect: await outcome(refreshOpenServiceTransmissions(ctx, ACTOR, { terminal: WEB, budgetMs: 2000 })),
       }
       const after = { rows: await issuerRowsOf(INST), cert: await certOfCopy() }
       // eslint-disable-next-line no-console
@@ -686,7 +711,7 @@ d('GATE ADVERSARIAL r11 (o "r8" de 2026-10-10) — delta da sessão 2026-10-10 (
       expect(act.resync.rows).toEqual(['55:virada:N', 'SE:replica:N'])
       expect(act.resync.c55after).toEqual(c55)
       expect(act.resync.fpSame).toBe(true)
-      expect(await fiscal.emissionStillInErp(ctx.pool, SCHEMA, INST)).toBe(true)                // réplica: o ERP segue emitindo
+      expect(await fiscal.anyEmissionStillInErp(ctx.pool, SCHEMA, INST)).toBe(true)             // réplica: o ERP segue emitindo
     })
 
     it('sem achado (M3 + D-F57): `--cutover` SEM `--vai` é ENSAIO — vira só a SE réplica (a 55 já virada fica), aposenta a SE do ERP e DESFAZ tudo; cópia e ERP idênticos depois', async () => {
@@ -711,7 +736,7 @@ d('GATE ADVERSARIAL r11 (o "r8" de 2026-10-10) — delta da sessão 2026-10-10 (
 
     it('sem achado: "SE virada EXCLUÍDA + 55 virada" = API (não ERP) — re-sincronia vê CONGELADA; `--cutover` recusa write-once', async () => {
       await putRows(INST, [{ model: '55', turned: true }, { model: 'SE', turned: true, deleted: true }])
-      const still = await fiscal.emissionStillInErp(ctx.pool, SCHEMA, INST)
+      const still = await fiscal.anyEmissionStillInErp(ctx.pool, SCHEMA, INST)
       const rs = runScript('migrate:setes', ['--dry-run'])
       const ct = runScript('migrate:setes', ['--cutover', String(INST), '--confirmo-setes-api-parado', '--dry-run'])
       const out = { still, resync: [rs.status, /origem congelada/.test(rs.out)], cutover: [ct.status, /já VIRADA/.test(ct.out)], rows: await issuerRowsOf(INST) }

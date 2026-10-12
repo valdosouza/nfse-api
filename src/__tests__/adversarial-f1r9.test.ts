@@ -32,6 +32,7 @@ import type { NfseDeps } from '../nfse/transmission'
 import { passScope } from '../modules/guards'
 import { createApp } from '../app'
 import type { AppContext } from '../context'
+import { webScope, webRef, WEB } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
 
 jest.mock('dotenv/config', () => ({}))
 jest.mock('fiscal-api', () => {
@@ -110,9 +111,14 @@ function mainWhere(sql: string): { where: string; before: string } {
 const ATOMS: { re: RegExp; js: (take: () => unknown, m: RegExpExecArray) => string }[] = [
   { re: /t\.tb_institution_id = \?/y, js: t => `(r.inst === ${JSON.stringify(t())})` },
   { re: /t\.terminal = 0/y, js: () => '(r.terminal === 0)' },
+  // NE-1a parte 2 (D-NE12): o terminal por PARÂMETRO
+  { re: /t\.terminal = \?/y, js: t => `(r.terminal === ${JSON.stringify(t())})` },
   { re: /t\.deleted = 'N'/y, js: () => `(r.deleted === 'N')` },
   { re: /\(\? IS NULL OR t\.environment = \?\)/y, js: t => { const a = t(), b = t(); return `(${JSON.stringify(a)} === null || r.env === ${JSON.stringify(b)})` } },
   { re: /le\.kind IS NULL/y, js: () => '(r.kind === null)' },
+  // parte 2 da NE-1a (D-NE9): a contagem do EMITTER lê a view publicada (última voz = `t.last_kind`; a view já tira a tentativa excluída)
+  { re: /t\.last_kind IS NULL/y, js: () => '(r.kind === null)' },
+  { re: /t\.last_kind NOT IN \(([^)]*)\)/y, js: (_t, m) => `(r.kind !== null && ![${m[1]}].includes(r.kind))` },
   { re: /le\.kind NOT IN \(([^)]*)\)/y, js: (_t, m) => `(r.kind !== null && ![${m[1]}].includes(r.kind))` },
   { re: /le\.kind IN \(([^)?]*)\)/y, js: (_t, m) => `(r.kind !== null && [${m[1]}].includes(r.kind))` },
   { re: /t\.created_at < DATE_SUB\(NOW\(\), INTERVAL \? MINUTE\)/y, js: t => `(r.createdAgeMin > ${JSON.stringify(t())})` },
@@ -167,7 +173,7 @@ const fakeQ = () => {
 
 async function candidatesOracle(opts: { interfaces?: string[]; liveOnlyInterfaces?: string[] }, minMinutes = 5, inFlight = 10) {
   const { q, calls } = fakeQ()
-  await actualRepo.listRefreshCandidates(q, 'setes_setes', 1, minMinutes, inFlight, 8, { authorizedMaxDays: 90, ...opts })
+  await actualRepo.listRefreshCandidates(q, 'setes_setes', webScope(1), minMinutes, inFlight, 8, { authorizedMaxDays: 90, ...opts })
   expect(calls).toHaveLength(1)
   const { sql, params } = calls[0]
   const o = whereOracle(sql, params)
@@ -266,7 +272,7 @@ describe('D-F47 — semântica de "viva": a passada × a guarda do emitente', ()
   it('resistiu: por KIND, o grupo dos cortados = countLiveTransmissions = isLiveTransmission (complemento de FINAL)', async () => {
     const cand = await candidatesOracle({ interfaces: [], liveOnlyInterfaces: ['orders'] })
     const { q, calls } = fakeQ()
-    await actualRepo.countLiveTransmissions(q, 1)
+    await actualFiscal.countLiveTransmissions(q, 1, { branches: 'all' })            // o EMITTER do núcleo (D-NE9)
     const count = whereOracle(calls[0].sql, calls[0].params)
     expect(count.used).toBe(calls[0].params.length)
     const table = KINDS.map(k => {
@@ -304,9 +310,9 @@ describe('D-F47 — semântica de "viva": a passada × a guarda do emitente', ()
   // [corrigido 2026-10-04 — D-F51 (= Q-F60 (a))] a consulta grava o F "sem resposta" com o mesmo critério do transmitir
   it('[r9-inflight-never-closes][corrigido] a passada FECHA a tentativa em voo de ramo cortado que o fisco não conhece (voz final gravada — D-F47/D-F51)', async () => {
     arrange()
-    const r = await txMod.refreshServiceTransmission(deps, ACTOR, INVOICE, 'Q', { attempt: 1 })
+    const r = await txMod.refreshServiceTransmission(deps, ACTOR, webRef(ACTOR, INVOICE), 'Q', { attempt: 1 })
     expect(r).toMatchObject({ changed: true, kind: 'F' })
-    const kinds = repoM.insertTransmissionEvent.mock.calls.map(c => c[5]?.kind)
+    const kinds = repoM.insertTransmissionEvent.mock.calls.map(c => c[3]?.kind)
     expect(kinds.some(k => actualFiscal.FINAL_TRANSMISSION_KINDS.has(k))).toBe(true)
   })
 })
@@ -378,7 +384,7 @@ describe('D-F47 — passScope: partição dos ramos, admin sem nada contratado, 
       const r = await request(createApp(ctx())).post('/v1/nfse/refresh').set('Authorization', `Bearer ${token()}`).set('Content-Type', 'application/json').send(raw)
       expect(r.status).toBe(200)
       expect(spy).toHaveBeenCalledWith(expect.anything(), expect.anything(),
-        { minMinutes: undefined, limit: undefined, interfaces: ['service-orders'], liveOnlyInterfaces: ['orders', 'order-returns'] })
+        { terminal: WEB, minMinutes: undefined, limit: undefined, interfaces: ['service-orders'], liveOnlyInterfaces: ['orders', 'order-returns'] })   // o terminal vem da BORDA (NE-1a parte 2)
     })
   })
 })

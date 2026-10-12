@@ -22,7 +22,10 @@ import { disposableFiscalDb, DisposableFiscalDb } from './live-harness'
 import { createApp } from '../app'
 import type { TaxAuthorityAdapter, AuthorityContext } from '../authority/types'
 import { refreshOpenServiceTransmissions, resetMunicipalTermsCache, IN_FLIGHT_MINUTES, REFRESH_MIN_MINUTES } from '../nfse/transmission'
-import { listRefreshCandidates, countLiveTransmissions } from '../nfse/repository'
+import { listRefreshCandidates } from '../nfse/repository'
+import { refOf, WEB, webScope } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
+// parte 2 da NE-1a (D-NE9): as vivas são contadas pelo EMITTER do núcleo (leituras PUBLICADAS de todas as famílias)
+const countLiveTransmissions = (q: any, inst: number, environment?: 'H' | 'P') => fiscal.countLiveTransmissions(q, inst, { branches: 'all', environment })
 
 // mesma normalização EM MEMÓRIA da 1ª rodada: o ramo congelado das notas do dev tem cTribMun "0102" (anterior
 // à D-N26b) → 422 antes de reservar. Nada é escrito no ERP.
@@ -208,7 +211,7 @@ d('GATE ADVERSARIAL F1 — 2ª rodada — banco real + fisco falso', () => {
       const id = Number(r.id)
       if (maxAttemptBefore.has(id) || dpsBefore.has(id)) continue
       try {
-        const h = await svc.readServiceInvoice(ctx.pool, SCHEMA, INST, id)
+        const h = await svc.readServiceInvoice(ctx.pool, SCHEMA, refOf(INST, id))
         await svc.buildDpsBase(ctx.pool, SCHEMA, INST, h, 'H')
         fresh.push(id)
       } catch { /* cadastro incompleto — não serve de alvo */ }
@@ -396,9 +399,9 @@ d('GATE ADVERSARIAL F1 — 2ª rodada — banco real + fisco falso', () => {
 
     it('regressão: 2ª passada enquanto a 1ª está DENTRO do aluguel → skipped (uma passada por estabelecimento)', async () => {
       const deps = { ...ctx, pool: slowList(1500) as any }
-      const p1 = refreshOpenServiceTransmissions(deps, actor, { budgetMs: 5000 })
+      const p1 = refreshOpenServiceTransmissions(deps, actor, { terminal: WEB, budgetMs: 5000 })
       await sleep(200)
-      const r2 = await refreshOpenServiceTransmissions(deps, actor, { budgetMs: 5000 })
+      const r2 = await refreshOpenServiceTransmissions(deps, actor, { terminal: WEB, budgetMs: 5000 })
       const r1 = await p1
       expect([r1.skipped, r2.skipped]).toEqual([false, true])
       expect(await lease()).toBeNull()
@@ -406,15 +409,15 @@ d('GATE ADVERSARIAL F1 — 2ª rodada — banco real + fisco falso', () => {
 
     it('cenário: a passada A ESTOURA os 60 s do aluguel (o orçamento de 20 s só é conferido ENTRE notas; cada chamada ao fisco tem 30 s de inatividade × 2 + espera da trava da nota) → B toma o aluguel vencido; A termina e devolve…', async () => {
       const deps = { ...ctx, pool: slowList(3000) as any }
-      const pA = refreshOpenServiceTransmissions(deps, actor, { budgetMs: 10_000 })
+      const pA = refreshOpenServiceTransmissions(deps, actor, { terminal: WEB, budgetMs: 10_000 })
       await sleep(800)
       await q(`UPDATE tb_establishment_issuer SET refresh_lease_until = DATE_SUB(NOW(), INTERVAL 1 SECOND) WHERE tb_institution_id = ? AND model = 'SE'`, [LEASE_INST])  // = 60 s se passaram
       await sleep(200)
-      const pB = refreshOpenServiceTransmissions(deps, actor, { budgetMs: 10_000 }).then(r => { run.bEnd = Date.now(); return r })
+      const pB = refreshOpenServiceTransmissions(deps, actor, { terminal: WEB, budgetMs: 10_000 }).then(r => { run.bEnd = Date.now(); return r })
       const rA = await pA
       run.leaseAfterA = await lease()
       run.cStart = Date.now()
-      const pC = refreshOpenServiceTransmissions(deps, actor, { budgetMs: 10_000 })
+      const pC = refreshOpenServiceTransmissions(deps, actor, { terminal: WEB, budgetMs: 10_000 })
       const [rB, rC] = await Promise.all([pB, pC])
       Object.assign(run, { aSkipped: rA.skipped, bSkipped: rB.skipped, cSkipped: rC.skipped })
       // eslint-disable-next-line no-console
@@ -434,7 +437,7 @@ d('GATE ADVERSARIAL F1 — 2ª rodada — banco real + fisco falso', () => {
     })
 
     it('[corrigido — LOW] a passada de institution SEM habilitação responde 409 FISCAL_ISSUER_MISSING (nunca "outra passada em curso")', async () => {
-      const outcome = await refreshOpenServiceTransmissions(ctx, { schemaName: SCHEMA, institutionId: NO_ISSUER_INST, userId: ADV_USER })
+      const outcome = await refreshOpenServiceTransmissions(ctx, { schemaName: SCHEMA, institutionId: NO_ISSUER_INST, userId: ADV_USER }, { terminal: WEB })
         .then(r => (r.skipped ? 'skipped' : 'ran'), (e: any) => (e instanceof HttpError ? String(e.code) : 'erro'))
       expect(outcome).toBe('FISCAL_ISSUER_MISSING')
     })
@@ -453,14 +456,14 @@ d('GATE ADVERSARIAL F1 — 2ª rodada — banco real + fisco falso', () => {
       const blockedT = await request(app).post(`/v1/nfse/invoices/${id}/transmit`).set(a)
       const blockedC = await request(app).post(`/v1/nfse/invoices/${id}/cancel`).set(a).send({ reason: 'segunda tentativa com K preso' })
       expect([blockedT.body.code, blockedC.body.code]).toEqual(['FISCAL_CANCEL_IN_FLIGHT', 'FISCAL_CANCEL_IN_FLIGHT'])
-      const cands = await listRefreshCandidates(ctx.pool, SCHEMA, INST, REFRESH_MIN_MINUTES, IN_FLIGHT_MINUTES, 50)
+      const cands = await listRefreshCandidates(ctx.pool, SCHEMA, webScope(INST), REFRESH_MIN_MINUTES, IN_FLIGHT_MINUTES, 50)
       expect(cands.some(t => t.invoiceId === id && t.lastKind === 'K')).toBe(true)                   // o rodízio PEGA o K
-      const pass1 = await refreshOpenServiceTransmissions(ctx, actor)
+      const pass1 = await refreshOpenServiceTransmissions(ctx, actor, { terminal: WEB })
       expect((await lastOf(id)).lastKind).toBe('K')                                                  // antes da carência: nada
       // envelhece o K (fato do ataque) e o "nós olhamos" (a passada seguinte só volta depois de minMinutes)
       await q(`UPDATE tb_invoice_service_transmission_event SET created_at = DATE_SUB(NOW(), INTERVAL ? MINUTE) WHERE tb_institution_id = ? AND tb_invoice_id = ? AND kind = 'K'`, [IN_FLIGHT_MINUTES + 1, INST, id])
       await q(`UPDATE tb_invoice_service_transmission SET last_queried_at = DATE_SUB(NOW(), INTERVAL ? MINUTE) WHERE tb_institution_id = ? AND tb_invoice_id = ? AND access_key IS NOT NULL`, [REFRESH_MIN_MINUTES + 1, INST, id])
-      const pass2 = await refreshOpenServiceTransmissions(ctx, actor)
+      const pass2 = await refreshOpenServiceTransmissions(ctx, actor, { terminal: WEB })
       expect((await lastOf(id)).lastKind).toBe('N')
       fisco.eventMode = 'accept'
       const c2 = await request(app).post(`/v1/nfse/invoices/${id}/cancel`).set(a).send({ reason: 'agora o pedido sai de verdade' })

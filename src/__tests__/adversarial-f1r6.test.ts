@@ -27,6 +27,7 @@ import { FsFiscalStorage, MasterKeyRing, AuthorityHttpError } from 'fiscal-api'
 import {
   refreshOpenServiceTransmissions, cancelServiceInvoiceAtAuthority, resetMunicipalTermsCache, CEILING_LOOKUP_TIMEOUT_MS, NfseDeps,
 } from '../nfse/transmission'
+import { webRef, WEB } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
 
 const actualFiscal = jest.requireActual('fiscal-api')
 
@@ -113,7 +114,7 @@ beforeEach(() => {
   repoM.findTransmissionByDpsId.mockResolvedValue(null)
   repoM.hasTransmissionEvent.mockResolvedValue(true)
   repoM.findTransmissionEventByKind.mockResolvedValue(null)
-  repoM.insertTransmissionEvent.mockImplementation(async (_c: any, _i: number, _inv: number, _a: number, _u: any, e: any) => { lastKindNow = e.kind; return 1 })
+  repoM.insertTransmissionEvent.mockImplementation(async (__itx: any, _a: number, _u: any, e: any) => { lastKindNow = e.kind; return 1 })
   adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'authorized', nfseXml: NFSE_XML, dhProc: null })
   adapter.municipalTerms.mockResolvedValue({ cancelDays: 60, raw: {} })
 })
@@ -134,12 +135,12 @@ describe('[MEDIUM — A1 × reserva K do cancelamento] a decisão do cancelament
       seq.push(`openIssuer:${o?.conn ? 'conn' : 'pool'}${o?.forUpdate ? '+forUpdate' : ''}`)
       return openedVirada()
     })
-    repoM.insertTransmissionEvent.mockImplementation(async (_c: any, _i: number, _inv: number, _a: number, _u: any, e: any) => {
+    repoM.insertTransmissionEvent.mockImplementation(async (__itx: any, _a: number, _u: any, e: any) => {
       seq.push(`voice:${e.kind}`); lastKindNow = e.kind; return 1
     })
     adapter.registerEvent.mockRejectedValue(new AuthorityHttpError(503, 'Fisco sem resposta (falso — ambíguo)', 'FISCAL_AUTHORITY_UNAVAILABLE', 0, ''))
   }
-  const run = () => cancelServiceInvoiceAtAuthority(deps, ACTOR, INVOICE, 'cancelamento adversarial r6 — reserva K').then(() => 'ok', (e: any) => [e.statusCode, e.code])
+  const run = () => cancelServiceInvoiceAtAuthority(deps, ACTOR, webRef(ACTOR, INVOICE), 'cancelamento adversarial r6 — reserva K').then(() => 'ok', (e: any) => [e.statusCode, e.code])
 
   it('cenário: a decisão grava a reserva K (fato nosso, VIVA para a guarda do DELETE) e só DEPOIS abre o A1 — o pedido sai e volta ambíguo (K fica)', async () => {
     trace()
@@ -222,7 +223,7 @@ describe('[LOW — D-F38] "uma consulta por vez" sem IDADE MÁXIMA: a consulta p
     const t0 = Date.now()
     const now = jest.spyOn(Date, 'now')
     try {
-      const pass = (actor: typeof ACTOR) => refreshOpenServiceTransmissions(deps, actor, { budgetMs: 500 })
+      const pass = (actor: typeof ACTOR) => refreshOpenServiceTransmissions(deps, actor, { terminal: WEB, budgetMs: 500 })
       now.mockImplementation(() => t0)
       frozen.first = await pass(ACTOR)
       now.mockImplementation(() => t0 + 25 * 3_600_000)                                        // 25 h: o TTL de 1 h venceu 25×

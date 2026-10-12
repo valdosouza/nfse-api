@@ -20,6 +20,7 @@ import { refreshOpenServiceTransmissions, resetMunicipalTermsCache, NfseDeps } f
 import { adnAdapter } from '../authority/adn'
 import { createApp, loadOpenApi } from '../app'
 import type { AppContext } from '../context'
+import { WEB } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
 
 jest.mock('fiscal-api', () => {
   const actual = jest.requireActual('fiscal-api')
@@ -196,7 +197,7 @@ describe('[LOW] rodízio: CONTENÇÃO numa nota vira "Erro interno (ref X)" + lo
     repoM.getTransmission.mockResolvedValue(tx({ accessKey: KEY, lastKind: 'A', attempt: 1 }))
     fakeAdapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'authorized', nfseXml: NFSE_XML, dhProc: '2026-10-04T10:00:00-03:00' })
     erpM.lockInvoice.mockRejectedValue(lockWait())
-    report = await refreshOpenServiceTransmissions(deps, ACTOR, { budgetMs: 1000 })
+    report = await refreshOpenServiceTransmissions(deps, ACTOR, { terminal: WEB, budgetMs: 1000 })
     errorLogs = (fiscal.logger.error as jest.Mock).mock.calls.length
     // eslint-disable-next-line no-console
     console.log('[adv-r3] passada com contenção', JSON.stringify(report.errors), '| logger.error', (fiscal.logger.error as jest.Mock).mock.calls.length)

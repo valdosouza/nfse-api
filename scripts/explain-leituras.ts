@@ -19,13 +19,15 @@
  * não ganha por causa de diagnóstico: rode com um usuário de diagnóstico em EXPLAIN_DB_USER / EXPLAIN_DB_PASSWORD.
  */
 import 'dotenv/config'
-import { createFiscalPool, dbConfigFromEnv } from 'fiscal-api'
+import { createFiscalPool, dbConfigFromEnv, countLiveTransmissions, WEB_TERMINAL } from 'fiscal-api'
 import { listPendingServiceInvoices } from '../src/facts/service-facts'
 import { listRefreshCandidates, DEFAULT_CANCEL_DAYS, REFRESH_AUTHORIZED_MARGIN_DAYS } from '../src/nfse/repository'
 
 const INST = Number(process.argv[2] ?? 1)
 const SCHEMA = String(process.argv[3] ?? 'setes_setes')
 const RUNS = 7
+/** O escopo das leituras em lote (o estabelecimento + o terminal da web) — a borda do diagnóstico (NE-1a parte 2). */
+const SCOPE = { institutionId: INST, terminal: WEB_TERMINAL }
 
 type Plan = { id: number; select_type: string; table: string; type: string; key: string | null; rows: number; Extra: string | null }
 
@@ -46,8 +48,10 @@ async function main(): Promise<void> {
       },
     }) as any
 
-    await listPendingServiceInvoices(capture('pendentes'), SCHEMA, INST, cfg.database, { page: 1, pageSize: 25 }, ['service-orders', 'orders'])
-    await listRefreshCandidates(capture('rodízio'), SCHEMA, INST, 5, 10, 8, { authorizedMaxDays: DEFAULT_CANCEL_DAYS + REFRESH_AUTHORIZED_MARGIN_DAYS, interfaces: ['service-orders'], liveOnlyInterfaces: ['orders', 'order-returns'] })   // D-F46/D-F47: o SQL mais largo
+    await listPendingServiceInvoices(capture('pendentes'), SCHEMA, SCOPE, cfg.database, { page: 1, pageSize: 25 }, ['service-orders', 'orders'])
+    await listRefreshCandidates(capture('rodízio'), SCHEMA, SCOPE, 5, 10, 8, { authorizedMaxDays: DEFAULT_CANCEL_DAYS + REFRESH_AUTHORIZED_MARGIN_DAYS, interfaces: ['service-orders'], liveOnlyInterfaces: ['orders', 'order-returns'] })   // D-F46/D-F47: o SQL mais largo
+    // NE-1a parte 2 (D-NE9): as vivas do EMITTER do núcleo (guarda do DELETE do A1 e da habilitação) — pela view publicada de cada família
+    await countLiveTransmissions(capture('vivas do emissor'), INST, { branches: 'all' })
 
     for (const c of captured) {
       const [plan] = await pool.query(`EXPLAIN ${c.sql}`, c.params) as unknown as [Plan[]]

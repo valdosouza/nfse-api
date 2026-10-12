@@ -63,7 +63,9 @@ import {
   resetMunicipalTermsCache,
   REFRESH_LEASE_SECONDS,
 } from '../nfse/transmission'
-import { countLiveTransmissions } from '../nfse/repository'
+import { WEB, refOf, webRef } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
+// parte 2 da NE-1a (D-NE9): as vivas são contadas pelo EMITTER do núcleo (leituras PUBLICADAS de todas as famílias)
+const countLiveTransmissions = (q: any, inst: number, environment?: 'H' | 'P') => fiscal.countLiveTransmissions(q, inst, { branches: 'all', environment })
 
 // mesma normalização EM MEMÓRIA das rodadas 1–6: o ramo congelado das notas do dev tem cTribMun "0102" (anterior à D-N26b)
 jest.mock('../facts/service-facts', () => {
@@ -260,7 +262,7 @@ const upsertDirect = (inst: number, environment: 'H' | 'P' = 'H', serie = '900',
   outcome(withTransaction(c.pool, 'adv r7 upsert direto', { inst }, conn => fiscal.upsertIssuer(conn, SCHEMA, inst, 'SE', { environment, serie, userId: ADV_USER })))
 const putIssuer = (a: any, inst: number, environment: 'H' | 'P' = 'H', serie = '900') =>
   request(a).put('/v1/emitter/issuers/SE').set(bearer(tok({ institutionId: inst }))).send({ environment, serie }).then(httpOut)
-const passDirect = (c: AppContext = ctx) => refreshOpenServiceTransmissions(c, ACTOR, { budgetMs: 4000 })
+const passDirect = (c: AppContext = ctx) => refreshOpenServiceTransmissions(c, ACTOR, { terminal: WEB, budgetMs: 4000 })
   .then(r => ({ checked: r.checked, stoppedEarly: r.stoppedEarly, skipped: r.skipped, errors: r.errors.map(e => e.code) }), (e: any) => [e?.statusCode ?? e?.errno, e?.code ?? null])
 
 let realBefore: { sums: Record<string, string>; objects: string } = { sums: {}, objects: '' }
@@ -308,7 +310,7 @@ d('GATE ADVERSARIAL r7 — delta da sessão 2026-10-04 (cópia descartável fisc
       if (!(await fiscal.erp.institutionHasInterface(ctx.pool, SCHEMA, INST, key))) continue
       if (!X) {
         try {
-          const h = await svc.readServiceInvoice(ctx.pool, SCHEMA, INST, id)
+          const h = await svc.readServiceInvoice(ctx.pool, SCHEMA, refOf(INST, id))
           await svc.buildDpsBase(ctx.pool, SCHEMA, INST, h, 'H')
           X = id; continue
         } catch { /* cadastro incompleto — serve só de alvo sintético */ }
@@ -479,7 +481,7 @@ d('GATE ADVERSARIAL r7 — delta da sessão 2026-10-04 (cópia descartável fisc
         request(app).put('/v1/emitter/certificate').set(bearer(tok())).send({ pfxBase64, password: 'senha' }).then(httpOut),
         storeA1(pfx),
         request(app).post(`/v1/nfse/invoices/${X}/transmit`).set(bearer(tok())).then(httpOut),
-        outcome(transmitServiceInvoice(ctx, ACTOR, X)),
+        outcome(transmitServiceInvoice(ctx, ACTOR, webRef(ACTOR, X))),
         passDirect(),
       ])
       const rows = await issuerRowsOf(INST)
@@ -519,9 +521,9 @@ d('GATE ADVERSARIAL r7 — delta da sessão 2026-10-04 (cópia descartável fisc
         m.routePass = httpOut(await request(app).post('/v1/nfse/refresh').set(bearer(tok())).send({}))
         // a peça com o schema (contrato desde o retrabalho do delta: com ele, o predicado COMPLETO — inclusive a lacuna (b))
         m.openIssuer = await outcome(fiscal.openIssuer({ pool: ctx.pool, keyring: ctx.keyring }, INST, 'SE', { schemaName: SCHEMA }))
-        m.transmit = await outcome(transmitServiceInvoice(ctx, ACTOR, X))
-        m.refresh = await outcome(refreshServiceTransmission(ctx, ACTOR, Z))
-        m.cancel = await outcome(cancelServiceInvoiceAtAuthority(ctx, ACTOR, Z, 'adversarial r7 matriz'))
+        m.transmit = await outcome(transmitServiceInvoice(ctx, ACTOR, webRef(ACTOR, X)))
+        m.refresh = await outcome(refreshServiceTransmission(ctx, ACTOR, webRef(ACTOR, Z)))
+        m.cancel = await outcome(cancelServiceInvoiceAtAuthority(ctx, ACTOR, webRef(ACTOR, Z), 'adversarial r7 matriz'))
         m.pass = await passDirect()
         m.kindsZ = (await q(`SELECT kind FROM tb_invoice_service_transmission_event WHERE tb_institution_id = ? AND tb_invoice_id = ? ORDER BY attempt, event`, [INST, Z])).map(r => r.kind).join('')
         m.fisco = { ...fisco.calls }
@@ -702,13 +704,13 @@ d('GATE ADVERSARIAL r7 — delta da sessão 2026-10-04 (cópia descartável fisc
         await restoreCertFromReal()
         await seedAuthorized(Z, 5)
         const ops: (() => Promise<any>)[] = [
-          () => outcome(transmitServiceInvoice(ctx, ACTOR, X)),
+          () => outcome(transmitServiceInvoice(ctx, ACTOR, webRef(ACTOR, X))),
           () => request(app).put('/v1/emitter/certificate').set(bearer(tok())).send({ pfxBase64, password: 'senha' }).then(httpOut),
           () => request(app).delete('/v1/emitter/certificate').set(bearer(tok())).then(httpOut),
           () => putIssuer(app, INST, 'H', String(900 + i)),
           () => request(app).delete('/v1/emitter/issuers/SE').set(bearer(tok())).then(httpOut),
           () => passDirect(),
-          () => outcome(cancelServiceInvoiceAtAuthority(ctx, ACTOR, Z, `adversarial r7 rodada ${i}`)),
+          () => outcome(cancelServiceInvoiceAtAuthority(ctx, ACTOR, webRef(ACTOR, Z), `adversarial r7 rodada ${i}`)),
         ]
         const delays = ops.map(() => Math.floor(rnd() * 120))
         const res = await Promise.all(ops.map((op, k) => sleep(delays[k]).then(op)))

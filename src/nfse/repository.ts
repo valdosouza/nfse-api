@@ -1,7 +1,9 @@
 import {
   PoolConnection, Queryable, TransmissionEventKind, TransmissionSource, TransmissionEnvironment,
-  FINAL_TRANSMISSION_KINDS, legacyWallBeforeCutover, assertSchema,
+  assertSchema, InvoiceRef, InvoiceScope, LIVE_VOICE_KINDS, AUTHORIZED_KINDS, FINAL_TRANSMISSION_KINDS, sqlKindList,
+  InvoiceTx, assertInvoiceTx,
 } from 'fiscal-api'
+import { SERVICE_VOICE_FAMILY } from './voice-family'
 
 /**
  * SQL da FAMÍLIA NFS-e no `fiscal_api` (migration 001 da nfse-api — D-F30/D-F35): o DPS de cada vida,
@@ -11,6 +13,9 @@ import {
  * Sob a TRAVA DA NOTA todo escritor das tabelas da família já está serializado: as leituras daqui são
  * NÃO travantes (gate socrático M-4: `FOR UPDATE` redundante gerava gap lock e deadlock entre notas vizinhas).
  * Molde: `transmission.repository.ts` do setes-api (Onda 3) — mesmas regras D-N26/D-N27/D-I20.
+ * NE-1a parte 2 (D-NE12/D-NE59): a nota chega INTEIRA (`InvoiceRef` — o terminal por PARÂMETRO, nunca literal no SQL); as leituras em
+ * lote recebem o ESCOPO (estabelecimento + terminal). As três peças da VOZ (escritor e leitores de idempotência) são as GENÉRICAS do núcleo
+ * ligadas ao descritor da família (`./voice-family` — D-F108/D-NE74): o escritor recebe o `InvoiceTx` (sob a trava, na nota travada).
  */
 
 type Q = Queryable
@@ -124,22 +129,25 @@ export function mapTx(r: any): TransmissionRow {
 // DPS da VIDA (D-F30)
 // ---------------------------------------------------------------------------
 
-export async function getLifeDps(q: Q, institutionId: number, invoiceId: number, lifeEvent: number, forUpdate = false): Promise<LifeDps | null> {
+export async function getLifeDps(q: Q, ref: InvoiceRef, lifeEvent: number, forUpdate = false): Promise<LifeDps | null> {
   const [rows] = await q.query(
     `SELECT life_event AS lifeEvent, serie, dps_number AS dpsNumber, dps_id AS dpsId FROM tb_invoice_service_dps
-      WHERE tb_institution_id = ? AND tb_invoice_id = ? AND terminal = 0 AND life_event = ?${forUpdate ? ' FOR UPDATE' : ''}`,
-    [institutionId, invoiceId, lifeEvent])
+      WHERE tb_institution_id = ? AND tb_invoice_id = ? AND terminal = ? AND life_event = ?${forUpdate ? ' FOR UPDATE' : ''}`,
+    [ref.institutionId, ref.invoiceId, ref.terminal, lifeEvent])
   const r = rows[0]
   return r ? { lifeEvent: Number(r.lifeEvent), serie: String(r.serie), dpsNumber: Number(r.dpsNumber), dpsId: String(r.dpsId) } : null
 }
 
 /** Write-once: o DPS da vida nasce UMA vez (série + nDPS + Id congelados). */
-export async function insertLifeDps(conn: PoolConnection, institutionId: number, invoiceId: number, dps: LifeDps, userId: number | null): Promise<void> {
+/** D-NE75: escrita da família sob a trava — recebe o `InvoiceTx` (a nota TRAVADA), nunca `(conn, ref)` soltos. */
+export async function insertLifeDps(itx: InvoiceTx, dps: LifeDps, userId: number | null): Promise<void> {
+  assertInvoiceTx(itx)
+  const { conn, ref } = itx
   await conn.query(
     `INSERT INTO tb_invoice_service_dps
        (tb_institution_id, tb_invoice_id, terminal, life_event, serie, dps_number, dps_id, tb_user_id, created_at, updated_at, deleted)
-     VALUES (?, ?, 0, ?, ?, ?, ?, ?, NOW(), NOW(), 'N')`,
-    [institutionId, invoiceId, dps.lifeEvent, dps.serie, dps.dpsNumber, dps.dpsId, userId])
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), 'N')`,
+    [ref.institutionId, ref.invoiceId, ref.terminal, dps.lifeEvent, dps.serie, dps.dpsNumber, dps.dpsId, userId])
 }
 
 // ---------------------------------------------------------------------------
@@ -147,10 +155,10 @@ export async function insertLifeDps(conn: PoolConnection, institutionId: number,
 // ---------------------------------------------------------------------------
 
 /** Uma tentativa específica (a que CUNHOU o Id, por exemplo — MEDIUM-1). Sem filtro de vida. */
-export async function getTransmission(q: Q, institutionId: number, invoiceId: number, attempt: number, forUpdate = false): Promise<TransmissionRow | null> {
+export async function getTransmission(q: Q, ref: InvoiceRef, attempt: number, forUpdate = false): Promise<TransmissionRow | null> {
   const [rows] = await q.query(
-    `${TX_SELECT} WHERE t.tb_institution_id = ? AND t.tb_invoice_id = ? AND t.terminal = 0 AND t.attempt = ? AND t.deleted = 'N'${forUpdate ? ' FOR UPDATE' : ''}`,
-    [institutionId, invoiceId, attempt])
+    `${TX_SELECT} WHERE t.tb_institution_id = ? AND t.tb_invoice_id = ? AND t.terminal = ? AND t.attempt = ? AND t.deleted = 'N'${forUpdate ? ' FOR UPDATE' : ''}`,
+    [ref.institutionId, ref.invoiceId, ref.terminal, attempt])
   return rows[0] ? mapTx(rows[0]) : null
 }
 
@@ -158,13 +166,13 @@ export async function getTransmission(q: Q, institutionId: number, invoiceId: nu
  * A VIGENTE da vida (D-N26): quem DETÉM a chave; sem chave, a última. Leitor ÚNICO dos decisores da
  * nfse-api (gate do transmit, cancelamento, consulta) — mesma regra do `currentOf` do núcleo (D-F33).
  */
-export async function latestTransmission(q: Q, institutionId: number, invoiceId: number, lifeEvent: number | null, forUpdate = false): Promise<TransmissionRow | null> {
+export async function latestTransmission(q: Q, ref: InvoiceRef, lifeEvent: number | null, forUpdate = false): Promise<TransmissionRow | null> {
   if (lifeEvent == null) return null
   const [rows] = await q.query(
     `${TX_SELECT}
-      WHERE t.tb_institution_id = ? AND t.tb_invoice_id = ? AND t.terminal = 0 AND t.deleted = 'N' AND t.life_event = ?
+      WHERE t.tb_institution_id = ? AND t.tb_invoice_id = ? AND t.terminal = ? AND t.deleted = 'N' AND t.life_event = ?
       ORDER BY (t.access_key IS NOT NULL) DESC, t.attempt DESC LIMIT 1${forUpdate ? ' FOR UPDATE' : ''}`,
-    [institutionId, invoiceId, lifeEvent])
+    [ref.institutionId, ref.invoiceId, ref.terminal, lifeEvent])
   return rows[0] ? mapTx(rows[0]) : null
 }
 
@@ -174,31 +182,31 @@ export async function latestTransmission(q: Q, institutionId: number, invoiceId:
  * ambiente é OUTRO documento (outro host, outra chave); a chave de P nunca pousa numa tentativa de H.
  */
 export async function findTransmissionByDpsId(
-  q: Q, institutionId: number, invoiceId: number, lifeEvent: number, dpsId: string, environment: TransmissionEnvironment,
+  q: Q, ref: InvoiceRef, lifeEvent: number, dpsId: string, environment: TransmissionEnvironment,
 ): Promise<TransmissionRow | null> {
   const [rows] = await q.query(
     `${TX_SELECT}
-      WHERE t.tb_institution_id = ? AND t.tb_invoice_id = ? AND t.terminal = 0 AND t.deleted = 'N' AND t.life_event = ? AND d.dps_id = ?
+      WHERE t.tb_institution_id = ? AND t.tb_invoice_id = ? AND t.terminal = ? AND t.deleted = 'N' AND t.life_event = ? AND d.dps_id = ?
         AND t.environment = ?
       ORDER BY (t.access_key IS NOT NULL) DESC, t.attempt ASC LIMIT 1`,
-    [institutionId, invoiceId, lifeEvent, dpsId, environment])
+    [ref.institutionId, ref.invoiceId, ref.terminal, lifeEvent, dpsId, environment])
   return rows[0] ? mapTx(rows[0]) : null
 }
 
 /** Tentativa (da nota) que JÁ detém esta chave do fisco — corrida resposta direta × consulta (gate socrático M-5). */
-export async function findKeyHolder(q: Q, institutionId: number, invoiceId: number, accessKey: string): Promise<TransmissionRow | null> {
+export async function findKeyHolder(q: Q, ref: InvoiceRef, accessKey: string): Promise<TransmissionRow | null> {
   const [rows] = await q.query(
-    `${TX_SELECT} WHERE t.tb_institution_id = ? AND t.tb_invoice_id = ? AND t.terminal = 0 AND t.access_key = ? LIMIT 1`,
-    [institutionId, invoiceId, accessKey])
+    `${TX_SELECT} WHERE t.tb_institution_id = ? AND t.tb_invoice_id = ? AND t.terminal = ? AND t.access_key = ? LIMIT 1`,
+    [ref.institutionId, ref.invoiceId, ref.terminal, accessKey])
   return rows[0] ? mapTx(rows[0]) : null
 }
 
 /** Tentativas e vozes da VIDA [lifeEvent] (tela "No fisco", XML, DANFSe, reconfirmação). */
-export async function listLifeTransmissions(q: Q, institutionId: number, invoiceId: number, lifeEvent: number | null): Promise<{ transmissions: TransmissionRow[]; events: TransmissionEventRow[] }> {
+export async function listLifeTransmissions(q: Q, ref: InvoiceRef, lifeEvent: number | null): Promise<{ transmissions: TransmissionRow[]; events: TransmissionEventRow[] }> {
   if (lifeEvent == null) return { transmissions: [], events: [] }
   const [txs] = await q.query(
-    `${TX_SELECT} WHERE t.tb_institution_id = ? AND t.tb_invoice_id = ? AND t.terminal = 0 AND t.deleted = 'N' AND t.life_event = ? ORDER BY t.attempt`,
-    [institutionId, invoiceId, lifeEvent])
+    `${TX_SELECT} WHERE t.tb_institution_id = ? AND t.tb_invoice_id = ? AND t.terminal = ? AND t.deleted = 'N' AND t.life_event = ? ORDER BY t.attempt`,
+    [ref.institutionId, ref.invoiceId, ref.terminal, lifeEvent])
   const [events] = await q.query(
     `SELECT e.attempt, e.event, e.kind, e.authority_code AS authorityCode, e.message,
             DATE_FORMAT(e.dh, '%Y-%m-%d %H:%i:%s') AS dh, e.source, e.tb_user_id AS userId,
@@ -206,9 +214,9 @@ export async function listLifeTransmissions(q: Q, institutionId: number, invoice
        FROM tb_invoice_service_transmission_event e
        JOIN tb_invoice_service_transmission t
          ON t.tb_institution_id = e.tb_institution_id AND t.tb_invoice_id = e.tb_invoice_id AND t.terminal = e.terminal AND t.attempt = e.attempt
-      WHERE e.tb_institution_id = ? AND e.tb_invoice_id = ? AND e.terminal = 0 AND e.deleted = 'N' AND t.deleted = 'N' AND t.life_event = ?
+      WHERE e.tb_institution_id = ? AND e.tb_invoice_id = ? AND e.terminal = ? AND e.deleted = 'N' AND t.deleted = 'N' AND t.life_event = ?
       ORDER BY e.attempt, e.event`,
-    [institutionId, invoiceId, lifeEvent])
+    [ref.institutionId, ref.invoiceId, ref.terminal, lifeEvent])
   return {
     transmissions: (txs as any[]).map(mapTx),
     events: (events as any[]).map(e => ({
@@ -223,113 +231,64 @@ export async function listLifeTransmissions(q: Q, institutionId: number, invoice
 // ---------------------------------------------------------------------------
 
 /** Reserva a tentativa N+1 da nota (numeração contínua, atravessa as vidas). */
+/** D-NE75: a tentativa nasce sob a trava da nota — `InvoiceTx`. */
 export async function insertTransmission(
-  conn: PoolConnection, institutionId: number, invoiceId: number, lifeEvent: number, environment: TransmissionEnvironment, userId: number,
+  itx: InvoiceTx, lifeEvent: number, environment: TransmissionEnvironment, userId: number,
 ): Promise<number> {
+  assertInvoiceTx(itx)
+  const { conn, ref } = itx
   // sob a TRAVA DA NOTA (quem chama já travou): leitura não travante — sem gap lock no índice (M-4)
   const [mx] = await conn.query<any[]>(
     `SELECT COALESCE(MAX(attempt), 0) + 1 AS next FROM tb_invoice_service_transmission
-      WHERE tb_institution_id = ? AND tb_invoice_id = ? AND terminal = 0`,
-    [institutionId, invoiceId])
+      WHERE tb_institution_id = ? AND tb_invoice_id = ? AND terminal = ?`,
+    [ref.institutionId, ref.invoiceId, ref.terminal])
   const attempt = Number(mx[0].next)
   await conn.query(
     `INSERT INTO tb_invoice_service_transmission
        (tb_institution_id, tb_invoice_id, terminal, attempt, life_event, environment, tb_user_id, created_at, updated_at, deleted)
-     VALUES (?, ?, 0, ?, ?, ?, ?, NOW(), NOW(), 'N')`,
-    [institutionId, invoiceId, attempt, lifeEvent, environment, userId])
+     VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), 'N')`,
+    [ref.institutionId, ref.invoiceId, ref.terminal, attempt, lifeEvent, environment, userId])
   return attempt
 }
 
 /** WRITE-ONCE (D-I6 espelhada): só preenche o que ainda é NULL — chave/número/dhProc do fisco. */
 export async function fillAuthorityData(
-  conn: PoolConnection, institutionId: number, invoiceId: number, attempt: number,
+  itx: InvoiceTx, attempt: number,
   data: { accessKey?: string | null; nfseNumber?: string | null; dhProc?: string | null },
 ): Promise<void> {
+  // D-NE75 (gates da parte 2): a chave de acesso É o registro fiscal da D-NE56 (`authority_recorded`) que a F2a lê — escrita só na nota
+  // TRAVADA (`InvoiceTx`), como a voz
+  assertInvoiceTx(itx)
+  const { conn, ref } = itx
   await conn.query(
     `UPDATE tb_invoice_service_transmission
         SET access_key = COALESCE(access_key, ?), nfse_number = COALESCE(nfse_number, ?), dh_proc = COALESCE(dh_proc, ?), updated_at = NOW()
-      WHERE tb_institution_id = ? AND tb_invoice_id = ? AND terminal = 0 AND attempt = ?`,
-    [data.accessKey?.slice(0, 50) ?? null, data.nfseNumber?.slice(0, 13) ?? null, data.dhProc ?? null, institutionId, invoiceId, attempt])
+      WHERE tb_institution_id = ? AND tb_invoice_id = ? AND terminal = ? AND attempt = ?`,
+    [data.accessKey?.slice(0, 50) ?? null, data.nfseNumber?.slice(0, 13) ?? null, data.dhProc ?? null, ref.institutionId, ref.invoiceId, ref.terminal, attempt])
 }
 
-/**
- * D-F106 (= Q-F112 (b), Valdo 2026-10-11): vocabulário de ESCRITA da família NFS-e — lista POSITIVA (A/R/C/K/F/N): sem S (a voz S não
- * tem saída — D-F102/D-F105) e sem os kinds que a NE-1a trouxer para o tipo comum (P da NF-e — viva, em processamento — e D — FINAL,
- * denegada — gate R22, S2). O TIPO pega o produtor SEMÂNTICO (constante, shorthand, mapa, parâmetro) que nenhuma cerca textual pega; o
- * FUNIL abaixo confere a mesma lista em EXECUÇÃO (gate R22, R22-03 — cast, spread, JSON: o tipo some no JS). Ampliar = decisão.
- * A lista é UMA constante e o tipo DERIVA dela (o `satisfies` garante que cada kind existe no vocabulário comum; se o comum virar
- * `any`/`string`, o tipo da família continua a lista literal — a ressalva do adversarial da Rodada 22).
- * D-F107: o CHECK da migration da F2a protege EXATAMENTE esta lista (teste e sonda do boot comparam com o DDL). D-F108: na NE-1a ela vira
- * o `writeKinds` do DESCRITOR da família de serviço no núcleo — o escritor comum é genérico nela (nota no prompt da NF-e §12.8).
- */
-export const SERVICE_VOICE_WRITE_KINDS = ['A', 'R', 'C', 'K', 'F', 'N'] as const satisfies readonly TransmissionEventKind[]
-export type ServiceVoiceWriteKind = typeof SERVICE_VOICE_WRITE_KINDS[number]
-const SERVICE_VOICE_WRITE_SET: ReadonlySet<string> = new Set(SERVICE_VOICE_WRITE_KINDS)
-export interface TransmissionEventInput {
-  kind:           ServiceVoiceWriteKind
-  authorityCode?: string | null
-  message?:       string | null
-  dh?:            string | null
-  source:         TransmissionSource
-}
+// ---------------------------------------------------------------------------
+// A VOZ da família: o escritor e os leitores de idempotência são os GENÉRICOS do núcleo (`defineVoiceFamily` — D-F108/D-NE74),
+// ligados ao descritor de serviço (`./voice-family` — a tabela da voz e a lista de escrita moram lá). PROPRIEDADE-FUNÇÃO, nunca método:
+// o tipo do `kind` é a lista da família; o funil do núcleo a confere em execução; o escritor EXIGE o `InvoiceTx` (sob a trava da nota).
+// ---------------------------------------------------------------------------
 
-/** Append-only; nº do evento = MAX+1 sob a trava da nota. */
-export async function insertTransmissionEvent(
-  conn: PoolConnection, institutionId: number, invoiceId: number, attempt: number, userId: number | null, e: TransmissionEventInput,
-): Promise<number> {
-  // R22-03 do gate da Rodada 22: o funil ÚNICO da voz da NFS-e confere a lista da família em EXECUÇÃO (sensível a caixa — o 's' que a
-  // colação _ci leria como S também é recusado — D-F103); nada é lido nem gravado antes da recusa
-  if (!SERVICE_VOICE_WRITE_SET.has(e?.kind as string)) {
-    throw new Error(`D-F106: kind fora do vocabulário de escrita da NFS-e (${JSON.stringify(e?.kind)}) — nada gravado`)
-  }
-  const [mx] = await conn.query<any[]>(
-    `SELECT COALESCE(MAX(event), 0) + 1 AS next FROM tb_invoice_service_transmission_event
-      WHERE tb_institution_id = ? AND tb_invoice_id = ? AND terminal = 0 AND attempt = ?`,
-    [institutionId, invoiceId, attempt])
-  const event = Number(mx[0].next)
-  await conn.query(
-    `INSERT INTO tb_invoice_service_transmission_event
-       (tb_institution_id, tb_invoice_id, terminal, attempt, event, kind, authority_code, message, dh, source, tb_user_id, created_at, updated_at, deleted)
-     VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), 'N')`,
-    [institutionId, invoiceId, attempt, event, e.kind, e.authorityCode?.slice(0, 10) ?? null,
-     e.message ? String(e.message).slice(0, 255) : null, e.dh ?? null, e.source, userId])
-  return event
-}
+export { SERVICE_VOICE_WRITE_KINDS, SERVICE_VOICE_FAMILY } from './voice-family'
+export type { ServiceVoiceWriteKind, TransmissionEventInput } from './voice-family'
 
+/** Append-only; nº do evento = MAX+1 sob a trava da nota — recebe o `InvoiceTx` do `withInvoiceTx` (D-NE74). */
+export const insertTransmissionEvent = SERVICE_VOICE_FAMILY.insertTransmissionEvent
 /** Já existe esta fala (kind, dh)? Casa também a forma ANTIGA (parede de Brasília) até o corte (Q-TZ3). */
-export async function hasTransmissionEvent(
-  q: Q, institutionId: number, invoiceId: number, attempt: number, kind: TransmissionEventKind, dh: string | null,
-): Promise<boolean> {
-  const [rows] = await q.query(
-    `SELECT COUNT(*) AS n FROM tb_invoice_service_transmission_event
-      WHERE tb_institution_id = ? AND tb_invoice_id = ? AND terminal = 0 AND attempt = ? AND deleted = 'N'
-        AND kind = ? AND ${dh === null ? 'dh IS NULL' : 'dh IN (?, ?)'}`,
-    dh === null ? [institutionId, invoiceId, attempt, kind] : [institutionId, invoiceId, attempt, kind, dh, legacyWallBeforeCutover(dh) ?? dh])
-  return Number(rows?.[0]?.n ?? 0) > 0
-}
-
+export const hasTransmissionEvent = SERVICE_VOICE_FAMILY.hasTransmissionEvent
 /** Última fala de um KIND nesta tentativa (HIGH-3a: um C por tentativa, qualquer dh). */
-export async function findTransmissionEventByKind(
-  q: Q, institutionId: number, invoiceId: number, attempt: number, kind: TransmissionEventKind, forUpdate = false,
-): Promise<TransmissionEventRow | null> {
-  const [rows] = await q.query(
-    `SELECT attempt, event, kind, authority_code AS authorityCode, message, DATE_FORMAT(dh, '%Y-%m-%d %H:%i:%s') AS dh,
-            source, tb_user_id AS userId, DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS createdAt
-       FROM tb_invoice_service_transmission_event
-      WHERE tb_institution_id = ? AND tb_invoice_id = ? AND terminal = 0 AND attempt = ? AND deleted = 'N' AND kind = ?
-      ORDER BY event DESC LIMIT 1${forUpdate ? ' FOR UPDATE' : ''}`,
-    [institutionId, invoiceId, attempt, kind])
-  const r = rows[0]
-  if (!r) return null
-  return { ...r, attempt: Number(r.attempt), event: Number(r.event), userId: n(r.userId) } as TransmissionEventRow
-}
+export const findTransmissionEventByKind = SERVICE_VOICE_FAMILY.findTransmissionEventByKind
 
 /** "Nós olhamos o fisco" (com ou sem novidade) — só o throttle do rodízio; NUNCA prova (D-F90). */
-export async function touchQueriedAt(q: Q, institutionId: number, invoiceId: number, attempt: number): Promise<void> {
+export async function touchQueriedAt(q: Q, ref: InvoiceRef, attempt: number): Promise<void> {
   await q.query(
     `UPDATE tb_invoice_service_transmission SET last_queried_at = NOW()
-      WHERE tb_institution_id = ? AND tb_invoice_id = ? AND terminal = 0 AND attempt = ?`,
-    [institutionId, invoiceId, attempt])
+      WHERE tb_institution_id = ? AND tb_invoice_id = ? AND terminal = ? AND attempt = ?`,
+    [ref.institutionId, ref.invoiceId, ref.terminal, attempt])
 }
 
 /**
@@ -339,16 +298,16 @@ export async function touchQueriedAt(q: Q, institutionId: number, invoiceId: num
  * Relógio NOSSO (`NOW()`, o mesmo do `created_at` da voz). Comando único, sem trava longa.
  */
 export async function recordNfseNotGenerated(
-  q: Q, institutionId: number, invoiceId: number, attempt: number, seenLastEvent: number | null,
+  q: Q, ref: InvoiceRef, attempt: number, seenLastEvent: number | null,
 ): Promise<boolean> {
   const [r]: any = await q.query(
     `UPDATE tb_invoice_service_transmission t
         SET t.nfse_not_generated_at = NOW()
-      WHERE t.tb_institution_id = ? AND t.tb_invoice_id = ? AND t.terminal = 0 AND t.attempt = ?
+      WHERE t.tb_institution_id = ? AND t.tb_invoice_id = ? AND t.terminal = ? AND t.attempt = ?
         AND (SELECT COALESCE(MAX(e.event), 0) FROM tb_invoice_service_transmission_event e
               WHERE e.tb_institution_id = t.tb_institution_id AND e.tb_invoice_id = t.tb_invoice_id
                 AND e.terminal = t.terminal AND e.attempt = t.attempt AND e.deleted = 'N') = ?`,
-    [institutionId, invoiceId, attempt, seenLastEvent ?? 0])
+    [ref.institutionId, ref.invoiceId, ref.terminal, attempt, seenLastEvent ?? 0])
   return Number(r?.affectedRows ?? 0) > 0
 }
 
@@ -384,7 +343,7 @@ const clampDays = (d: number) => (Number.isFinite(d) ? Math.min(Math.max(Math.tr
  *    vazias = nenhuma candidata (nunca "sem filtro").
  */
 export async function listRefreshCandidates(
-  q: Q, schemaName: string, institutionId: number, minMinutes: number, inFlightMinutes: number, limit: number,
+  q: Q, schemaName: string, scope: InvoiceScope, minMinutes: number, inFlightMinutes: number, limit: number,
   opts: { authorizedHours?: number; authorizedMaxDays?: number; interfaces?: readonly string[]; liveOnlyInterfaces?: readonly string[] } = {},
 ): Promise<TransmissionRow[]> {
   const s = assertSchema(schemaName)
@@ -392,10 +351,13 @@ export async function listRefreshCandidates(
   const liveOnly = interfaces ? (opts.liveOnlyInterfaces ?? []) : []
   if (interfaces && interfaces.length === 0 && liveOnly.length === 0) return []
   const branch = `COALESCE(oi.interface_key, 'orders')`
+  // D-NE69 (= Q-NE69 (a), gates da NE-1a parte 1): as CLASSES vêm da `KIND_CLASS` (vivas com voz S/K/P · autorizadas A/N · finais); as
+  // letras de UM fato seguem pelo nome — F da revisita (D-F52) e o C do ERP (`l.last_kind`, a VIDA da nota, não a voz)
+  const LIVE = sqlKindList(LIVE_VOICE_KINDS), AUTHORIZED = sqlKindList(AUTHORIZED_KINDS), FINAL = sqlKindList(FINAL_TRANSMISSION_KINDS)
   const branchFilter = !interfaces ? ''
     : `AND (${[
       ...(interfaces.length ? [`${branch} IN (?)`] : []),
-      ...(liveOnly.length ? [`(${branch} IN (?) AND (le.kind IS NULL OR le.kind IN ('S','K')))`] : []),
+      ...(liveOnly.length ? [`(${branch} IN (?) AND (le.kind IS NULL OR le.kind IN (${LIVE})))`] : []),
     ].join(' OR ')})`
   const branchParams = !interfaces ? [] : [...(interfaces.length ? [[...interfaces]] : []), ...(liveOnly.length ? [[...liveOnly]] : [])]
   // D-F52: teto da revisita do F = o MESMO teto das autorizadas (D-F38); inteiro já no domínio (clampDays) — vai literal no SQL
@@ -407,13 +369,13 @@ export async function listRefreshCandidates(
        AND l.life_event = t.life_event
       ${interfaces ? `LEFT JOIN \`${s}\`.vw_order_interface oi
         ON oi.tb_institution_id = t.tb_institution_id AND oi.tb_order_id = t.tb_invoice_id AND oi.terminal = t.terminal` : ''}
-      WHERE t.tb_institution_id = ? AND t.terminal = 0 AND t.deleted = 'N'
+      WHERE t.tb_institution_id = ? AND t.terminal = ? AND t.deleted = 'N'
         AND (
           (le.kind IS NULL AND t.created_at < DATE_SUB(NOW(), INTERVAL ? MINUTE)
              AND (t.last_queried_at IS NULL OR t.last_queried_at < DATE_SUB(NOW(), INTERVAL ? MINUTE)))
-          OR (le.kind IN ('S','K')
+          OR (le.kind IN (${LIVE})
              AND (t.last_queried_at IS NULL OR t.last_queried_at < DATE_SUB(NOW(), INTERVAL ? MINUTE)))
-          OR (le.kind IN ('A','N') AND COALESCE(l.last_kind, '-') <> 'C'
+          OR (le.kind IN (${AUTHORIZED}) AND COALESCE(l.last_kind, '-') <> 'C'
              AND COALESCE(t.dh_proc, t.created_at) >= DATE_SUB(NOW(), INTERVAL ? DAY)
              AND (t.last_queried_at IS NULL OR t.last_queried_at < DATE_SUB(NOW(), INTERVAL ? HOUR)))
           OR (le.kind = 'F' AND le.source = 'Q' AND t.access_key IS NULL
@@ -425,28 +387,13 @@ export async function listRefreshCandidates(
                                 AND t2.terminal = t.terminal AND t2.life_event = t.life_event AND t2.attempt > t.attempt))
         )
         ${branchFilter}
-      ORDER BY (le.kind IN ('A','N','F')) ASC, (t.last_queried_at IS NULL) DESC, t.last_queried_at ASC, t.tb_invoice_id ASC
+      ORDER BY (le.kind IN (${FINAL})) ASC, (t.last_queried_at IS NULL) DESC, t.last_queried_at ASC, t.tb_invoice_id ASC
       LIMIT ?`,
-    [institutionId, inFlightMinutes, minMinutes, minMinutes,
+    [scope.institutionId, scope.terminal, inFlightMinutes, minMinutes, minMinutes,
       clampDays(opts.authorizedMaxDays ?? DEFAULT_CANCEL_DAYS + REFRESH_AUTHORIZED_MARGIN_DAYS), opts.authorizedHours ?? REFRESH_AUTHORIZED_HOURS,
       ...branchParams, limit])
   return (rows as any[]).map(mapTx)
 }
 
-/** Tentativas VIVAS (sem voz ou última voz não final) do modelo SE — guarda do emissor (D-I26/D-I27 espelhadas). */
-export async function countLiveTransmissions(q: Q, institutionId: number, environment?: TransmissionEnvironment): Promise<number> {
-  const finals = [...FINAL_TRANSMISSION_KINDS].map(k => `'${k}'`).join(',')
-  const [rows] = await q.query(
-    `SELECT COUNT(*) AS n
-       FROM tb_invoice_service_transmission t
-       LEFT JOIN tb_invoice_service_transmission_event le
-         ON le.tb_institution_id = t.tb_institution_id AND le.tb_invoice_id = t.tb_invoice_id
-        AND le.terminal = t.terminal AND le.attempt = t.attempt AND le.deleted = 'N'
-        AND le.event = (SELECT MAX(x.event) FROM tb_invoice_service_transmission_event x
-                         WHERE x.tb_institution_id = t.tb_institution_id AND x.tb_invoice_id = t.tb_invoice_id
-                           AND x.terminal = t.terminal AND x.attempt = t.attempt AND x.deleted = 'N')
-      WHERE t.tb_institution_id = ? AND t.deleted = 'N' AND (? IS NULL OR t.environment = ?)
-        AND (le.kind IS NULL OR le.kind NOT IN (${finals}))`,
-    [institutionId, environment ?? null, environment ?? null])
-  return Number(rows?.[0]?.n ?? 0)
-}
+// As tentativas VIVAS do emissor (guarda da habilitação e do A1) são contadas pelo EMITTER do núcleo pelas leituras PUBLICADAS de
+// todas as famílias (`countLiveTransmissions` do fiscal-api — D-NE9, parte 2 da NE-1a); a família não conta mais as dela aqui.

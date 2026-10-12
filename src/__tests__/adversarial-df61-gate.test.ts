@@ -141,6 +141,7 @@ import { adnAdapter } from '../authority/adn'
 import { buildDpsXml, buildDpsId, toTsString, unescapeXml } from '../authority/dps-builder'
 import type { DpsInput } from '../authority/types'
 import { IN_FLIGHT_MINUTES } from '../nfse/transmission'
+import { webRef, WEB } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
 
 const realTransport = transport.request
 const mockHttp = jest.fn()
@@ -185,7 +186,7 @@ function sefin(o: { nfse?: () => any; typed?: (code: string) => any; post?: (c: 
 const ctxH = { environment: 'H' as const, cert: Buffer.from('CERT'), key: Buffer.from('KEY') }
 /** deps com o ADAPTADOR REAL (o transporte é que é falso). */
 const realDeps = (): NfseDeps => ({ ...deps, adapter: adnAdapter as any })
-const kindsInserted = () => (repo.insertTransmissionEvent as jest.Mock).mock.calls.map((c: any[]) => c[5]?.kind)
+const kindsInserted = () => (repo.insertTransmissionEvent as jest.Mock).mock.calls.map((c: any[]) => c[3]?.kind)
 const prestOf = (xml: string) => xml.match(/<prest>[\s\S]*?<\/prest>/)?.[0] ?? ''
 const TS_STRING = /^(?:[!-ÿ][ -ÿ]*[!-ÿ]|[!-ÿ])$/
 const textOf = (xml: string, el: string): string | null => { const m = xml.match(new RegExp(`<${el}>([\\s\\S]*?)</${el}>`)); return m ? unescapeXml(m[1]) : null }
@@ -221,7 +222,7 @@ describe('ACHADO DF61-01 (MEDIUM) — nfse-api: 200 no GET TIPADO (o evento EXIS
   it('[CORRIGIDO — D-F63] [MEDIUM DF61-01b] refresh da nfse-api: K com 10 min + 200 tipado ilegível → grava N "não consta" (voz conclusiva sobre resposta ambígua)', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'K', lastEvent: 2, lastEventAgeMinutes: IN_FLIGHT_MINUTES }))
     sefin({ typed: code => (code === '101101' ? typedOk(typedItem(illegible[0][1])) : undefined) })
-    const out = await settle(refreshServiceTransmission(realDeps(), A, INVOICE, 'Q'))
+    const out = await settle(refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q'))
     expect(kindsInserted()).not.toContain('N')
     expect(out).toMatchObject({ statusCode: 502 })
   })
@@ -244,7 +245,7 @@ describe('ACHADO DF61-02 (MEDIUM — EXIGE DECISÃO; contraria "evento de outra 
   it('[CORRIGIDO — D-F63] [MEDIUM DF61-02b] refresh da nfse-api: K com 10 min + evento de OUTRA chave no tipado → N falso', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'K', lastEvent: 2, lastEventAgeMinutes: IN_FLIGHT_MINUTES }))
     sefin({ typed: code => (code === '101101' ? typedOk(typedItem(arquivo2(swapped[0][1]))) : undefined) })
-    await settle(refreshServiceTransmission(realDeps(), A, INVOICE, 'Q'))
+    await settle(refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q'))
     expect(kindsInserted()).not.toContain('N')
   })
 })
@@ -288,7 +289,7 @@ describe('ACHADO DF61-07 (LOW) — nfse-api: D-F59 decidida pelo ambiente lido F
     ;(fiscal.openIssuer as jest.Mock).mockReset().mockResolvedValueOnce(opened('H')).mockResolvedValue(opened('P'))
     const box: { sent: { env: string; xml: string } | null } = { sent: null }
     adapter.transmit.mockImplementation(async (ctx: any, xml: string) => { box.sent = { env: ctx.environment, xml }; throw unavailable() })
-    await settle(transmitServiceInvoice(deps, A, INVOICE))
+    await settle(transmitServiceInvoice(deps, A, webRef(A, INVOICE)))
     expect(box.sent).not.toBeNull()
     expect(box.sent!.env).toBe('P'); expect(box.sent!.xml).toContain('<tpAmb>1</tpAmb>')
     expect(prestOf(box.sent!.xml)).not.toContain('<IM>')
@@ -320,14 +321,14 @@ describe('RESISTIU — nfse-api (adaptador + núcleo fiscal-api + composição)'
       mockHttp.mockReset(); (repo.insertTransmissionEvent as jest.Mock).mockClear(); (repo.touchQueriedAt as jest.Mock).mockClear()
       ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'K', lastEvent: 2, lastEventAgeMinutes: IN_FLIGHT_MINUTES }))
       sefin({ typed: code => (code === '105104' ? resp() : undefined) })
-      const out = await settle(refreshServiceTransmission(realDeps(), A, INVOICE, 'Q'))
+      const out = await settle(refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q'))
       expect([status, out?.statusCode]).toEqual([status, status])
       expect(repo.insertTransmissionEvent).not.toHaveBeenCalled(); expect(repo.touchQueriedAt).not.toHaveBeenCalled()
     }
   })
   it('resistiu: 405 no POST /nfse (núcleo fiscal-api) → 502 ambíguo; a reserva fica em voo, nenhuma voz R/F', async () => {
     sefin({ post: () => ({ status: 405, headers: { allow: 'GET' }, text: '' }) })
-    const out = await settle(transmitServiceInvoice(realDeps(), A, INVOICE))
+    const out = await settle(transmitServiceInvoice(realDeps(), A, webRef(A, INVOICE)))
     expect(out).toMatchObject({ statusCode: 502, code: 'FISCAL_AUTHORITY_UNKNOWN_RESPONSE' })
     expect(repo.insertTransmission).toHaveBeenCalledTimes(1); expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()
   })
@@ -337,7 +338,7 @@ describe('RESISTIU — nfse-api (adaptador + núcleo fiscal-api + composição)'
       erpM.entityFiscal.mockImplementation(async (_q: any, id: number) => ({ ...entity(id), im: id === 1 ? '  01.065.013-677 ' : null }))
       let xml = ''
       adapter.transmit.mockReset().mockImplementation(async (_c: any, x: string) => { xml = x; throw unavailable() })
-      await settle(transmitServiceInvoice(deps, A, INVOICE))
+      await settle(transmitServiceInvoice(deps, A, webRef(A, INVOICE)))
       expect([env, prestOf(xml).includes('<IM>01.065.013-677</IM>')]).toEqual([env, env === 'H'])
       expect(xml).toContain(env === 'P' ? '<tpAmb>1</tpAmb>' : '<tpAmb>2</tpAmb>')
     }
@@ -346,9 +347,9 @@ describe('RESISTIU — nfse-api (adaptador + núcleo fiscal-api + composição)'
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     const mojibake = Buffer.from('Correção da emissão — AÇÃO', 'utf8').toString('latin1')
     sefin({ typed: code => (code === '101101' ? typedOk(typedItem(arquivo2(generatedEventXml().replace('cliente desistiu do serviço', mojibake)))) : undefined) })
-    const r = await refreshServiceTransmission(realDeps(), A, INVOICE, 'Q')
+    const r = await refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q')
     expect(r).toMatchObject({ kind: 'C' })
-    const c = (repo.insertTransmissionEvent as jest.Mock).mock.calls.find((x: any[]) => x[5]?.kind === 'C')![5]
+    const c = (repo.insertTransmissionEvent as jest.Mock).mock.calls.find((x: any[]) => x[3]?.kind === 'C')![3]
     expect(c.message).toBe(`Cancelada no fisco: ${mojibake}`)
   })
 })
@@ -359,10 +360,10 @@ describe('DF61-08 (LOW) — orçamento da passada na nfse-api também só é con
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     sefin({ typed: () => delay(40, () => sefinNone()) })
     const d = realDeps()
-    await refreshOpenServiceTransmissions(d, A, { budgetMs: 10_000 })          // aquece o cache do teto do PAM (fora da medida)
+    await refreshOpenServiceTransmissions(d, A, { terminal: WEB, budgetMs: 10_000 })          // aquece o cache do teto do PAM (fora da medida)
     mockHttp.mockClear()
     const t0 = Date.now()
-    const r = await refreshOpenServiceTransmissions(d, A, { budgetMs: 60 })
+    const r = await refreshOpenServiceTransmissions(d, A, { terminal: WEB, budgetMs: 60 })
     expect(r.checked).toBe(1)
     expect(Date.now() - t0).toBeLessThan(120)
   })
@@ -373,7 +374,7 @@ describe('ACHADO DF61-09 (LOW) — núcleo fiscal-api: a exceção da D-F61 cobr
     for (const status of [406, 415]) {
       mockHttp.mockReset(); (repo.insertTransmissionEvent as jest.Mock).mockClear()
       sefin({ post: () => ({ status, headers: {}, text: '' }) })
-      const out = await settle(transmitServiceInvoice(realDeps(), A, INVOICE))
+      const out = await settle(transmitServiceInvoice(realDeps(), A, webRef(A, INVOICE)))
       expect([status, out?.code, kindsInserted()]).toEqual([status, 'FISCAL_AUTHORITY_UNKNOWN_RESPONSE', []])
     }
   })

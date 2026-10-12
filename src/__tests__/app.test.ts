@@ -15,13 +15,14 @@ import { createApp, loadOpenApi } from '../app'
 import type { AppContext } from '../context'
 import { emitterRoutes } from '../modules/emitter/emitter.routes'
 import { nfseRoutes } from '../modules/nfse/nfse.routes'
+import { refLike, WEB } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
 
 jest.mock('fiscal-api', () => {
   const actual = jest.requireActual('fiscal-api')
   return {
     __esModule: true, ...actual,
     logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
-    emissionStillInErp: jest.fn(),
+    emissionStillInErp: jest.fn(), anyEmissionStillInErp: jest.fn(),
     erp: { ...actual.erp, orderInterface: jest.fn(), userHasPrivilege: jest.fn(), institutionHasInterface: jest.fn(), assertInstitutionSchema: jest.fn() },
   }
 })
@@ -57,6 +58,7 @@ beforeEach(() => {
   erpM.userHasPrivilege.mockResolvedValue(false)
   erpM.institutionHasInterface.mockResolvedValue(true)        // ramo contratado por padrão; a negação é explícita onde se testa
   ;(fiscal.emissionStillInErp as unknown as jest.Mock).mockResolvedValue(false)   // D-F39: virada (o padrão dos testes)
+  ;(fiscal.anyEmissionStillInErp as unknown as jest.Mock).mockResolvedValue(false) // o grão do estabelecimento (A1 — D-NE10)
   ;(tx.transmitServiceInvoice as jest.Mock).mockResolvedValue({ invoiceId: 10, attempt: 1, dpsId: 'D', accessKey: 'K', nfseNumber: '1', kind: 'A' })
   ;(tx.cancelServiceInvoiceAtAuthority as jest.Mock).mockResolvedValue({ invoiceId: 10, attempt: 1, atAuthority: true, transmissionEvent: 2, warnings: [], nextStep: 'apply-local-cancel' })
   ;(tx.getServiceFiscalView as jest.Mock).mockResolvedValue({ invoiceId: 10, state: 'none' })
@@ -95,7 +97,7 @@ describe('autorização de AÇÃO e licença (D-F13/D-F14)', () => {
     const ok = await request(app).post('/v1/nfse/invoices/10/transmit').set('Authorization', `Bearer ${token()}`)
     expect(ok.status).toBe(201)
     expect(ok.body).toEqual({ ok: true, data: expect.objectContaining({ kind: 'A' }) })
-    expect(tx.transmitServiceInvoice).toHaveBeenCalledWith(expect.anything(), { schemaName: 'setes_setes', institutionId: 1, userId: 7 }, 10)
+    expect(tx.transmitServiceInvoice).toHaveBeenCalledWith(expect.anything(), { schemaName: 'setes_setes', institutionId: 1, userId: 7 }, refLike(10))
   })
 
   it('D-F37: admin passa o PRIVILÉGIO, nunca a LICENÇA; leitura exige a interface CONTRATADA (Q-N32); cancelar exige CANCELAR', async () => {
@@ -137,17 +139,17 @@ describe('autorização de AÇÃO e licença (D-F13/D-F14)', () => {
     erpM.userHasPrivilege.mockImplementation(async (_p: any, _s: string, _u: number, key: string) => key === 'service-orders')
     expect((await request(app).post('/v1/nfse/refresh').set('Authorization', `Bearer ${token()}`).send({})).status).toBe(200)
     expect(tx.refreshOpenServiceTransmissions).toHaveBeenLastCalledWith(expect.anything(), { schemaName: 'setes_setes', institutionId: 1, userId: 7 },
-      expect.objectContaining({ interfaces: ['service-orders'], liveOnlyInterfaces: ['order-returns'] }))   // D-F47: cortado só com viva
+      expect.objectContaining({ terminal: WEB, interfaces: ['service-orders'], liveOnlyInterfaces: ['order-returns'] }))   // D-F47: cortado só com viva
     // admin passa o privilégio, nunca a licença (D-F37): todos os CONTRATADOS, o não contratado fica fora
     await request(app).post('/v1/nfse/refresh').set('Authorization', `Bearer ${token({ role: 'admin' })}`).send({})
     expect(tx.refreshOpenServiceTransmissions).toHaveBeenLastCalledWith(expect.anything(), expect.anything(),
-      expect.objectContaining({ interfaces: ['service-orders', 'orders'] }))
+      expect.objectContaining({ terminal: WEB, interfaces: ['service-orders', 'orders'] }))
     // devolução contratada com privilégio entra (o MESMO domínio da rota por nota — erp.orderInterface)
     erpM.institutionHasInterface.mockResolvedValue(true)
     erpM.userHasPrivilege.mockImplementation(async (_p: any, _s: string, _u: number, key: string) => key === 'order-returns')
     await request(app).post('/v1/nfse/refresh').set('Authorization', `Bearer ${token()}`).send({})
     expect(tx.refreshOpenServiceTransmissions).toHaveBeenLastCalledWith(expect.anything(), expect.anything(),
-      expect.objectContaining({ interfaces: ['order-returns'] }))
+      expect.objectContaining({ terminal: WEB, interfaces: ['order-returns'] }))
     // contratado sem privilégio em nenhum → 403 PRIVILEGE_REQUIRED, passada não roda
     ;(tx.refreshOpenServiceTransmissions as jest.Mock).mockClear()
     erpM.userHasPrivilege.mockResolvedValue(false)
@@ -166,6 +168,7 @@ describe('autorização de AÇÃO e licença (D-F13/D-F14)', () => {
 describe('CERCA DA VIRADA (D-F18/D-F39 — sem dual-write): estabelecimento ainda emitido pelo ERP só LÊ', () => {
   it('ações e escritas do emitente → 409 FISCAL_CUTOVER_PENDING antes de qualquer coisa; leituras seguem', async () => {
     ;(fiscal.emissionStillInErp as unknown as jest.Mock).mockImplementation(async (_q: any, _s: string, id: number) => id === 1)
+    ;(fiscal.anyEmissionStillInErp as unknown as jest.Mock).mockImplementation(async (_q: any, _s: string, id: number) => id === 1)
     const app = createApp(ctx())
     const auth = { Authorization: `Bearer ${token({ role: 'admin' })}` }
     for (const [m, p, body] of [
@@ -194,14 +197,14 @@ describe('CERCA DA VIRADA (D-F18/D-F39 — sem dual-write): estabelecimento aind
 
 describe('pendentes do lote — PAGINADOS (regra da casa) e só dos ramos visíveis (D-F14)', () => {
   beforeEach(() => {
-    ;(tx.listPending as jest.Mock).mockImplementation(async (_d: any, _a: any, page: any) => ({ data: [{ invoiceId: 10 }], page: page.page, pageSize: page.pageSize, total: 41 }))
+    ;(tx.listPending as jest.Mock).mockImplementation(async (_d: any, _a: any, _t: any, page: any) => ({ data: [{ invoiceId: 10 }], page: page.page, pageSize: page.pageSize, total: 41 }))
   })
 
   it('envelope { ok, data, page, pageSize, total }; default page 1 / pageSize 25; admin vê só os ramos CONTRATADOS (D-F37)', async () => {
     erpM.institutionHasInterface.mockImplementation(async (_p: any, _s: string, _i: number, key: string) => key === 'service-orders')
     const r = await request(createApp(ctx())).get('/v1/nfse/invoices/pending').set('Authorization', `Bearer ${token({ role: 'admin' })}`)
     expect(r.body).toEqual({ ok: true, data: [{ invoiceId: 10 }], page: 1, pageSize: 25, total: 41 })
-    expect(tx.listPending).toHaveBeenCalledWith(expect.anything(), { schemaName: 'setes_setes', institutionId: 1, userId: 7 }, { page: 1, pageSize: 25 }, ['service-orders'])
+    expect(tx.listPending).toHaveBeenCalledWith(expect.anything(), { schemaName: 'setes_setes', institutionId: 1, userId: 7 }, WEB, { page: 1, pageSize: 25 }, ['service-orders'])
   })
 
   it('usuário comum: só os ramos CONTRATADOS chegam à consulta; nenhum contratado → lista vazia (não 403)', async () => {
@@ -209,10 +212,10 @@ describe('pendentes do lote — PAGINADOS (regra da casa) e só dos ramos visív
     const app = createApp(ctx())
     const r = await request(app).get('/v1/nfse/invoices/pending?page=2&pageSize=10').set('Authorization', `Bearer ${token()}`)
     expect(r.status).toBe(200)
-    expect(tx.listPending).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), { page: 2, pageSize: 10 }, ['orders'])
+    expect(tx.listPending).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), WEB, { page: 2, pageSize: 10 }, ['orders'])
     erpM.institutionHasInterface.mockResolvedValue(false)
     await request(app).get('/v1/nfse/invoices/pending').set('Authorization', `Bearer ${token()}`)
-    expect(tx.listPending).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), { page: 1, pageSize: 25 }, [])
+    expect(tx.listPending).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), WEB, { page: 1, pageSize: 25 }, [])
   })
 
   it('page/pageSize fora da faixa → 400 VALIDATION_FAILED', async () => {

@@ -54,7 +54,7 @@ import fs from 'fs'
 import path from 'path'
 import {
   createFiscalPool, dbConfigFromEnv, MasterKeyRing, FsFiscalStorage, certificateInfo, keyMatchesCertificate,
-  validatePrivateKeyPem, certificateAad, assertSchema, PoolConnection, ISSUER_MODELS, emissionStillInErp, erp,
+  validatePrivateKeyPem, certificateAad, assertSchema, PoolConnection, ISSUER_MODELS, anyEmissionStillInErp, erp,
 } from 'fiscal-api'
 import { SERVICE_MODEL } from '../src/facts/service-facts'
 import { assertNoteSerieKept, retireErpServiceIssuer } from './cutover-erp'
@@ -438,8 +438,9 @@ async function cutover(pool: ReturnType<typeof createFiscalPool>, keyring: Maste
     // 6. D-F44: a habilitação SE do ERP é APOSENTADA na MESMA transação (a única escrita de uma API fiscal no ERP — D-F31);
     //    a reserva do setes-api que esperava a trava acorda e recebe 409 FISCAL_ISSUER_MISSING
     const retired = await retireErpServiceIssuer(c, s, institutionId, SERVICE_MODEL)
-    // 7. pós-condição pelo MESMO predicado que as rotas e o núcleo leem (D-F39) — virada que não fecha a cerca não comita
-    if (await emissionStillInErp(c, s, institutionId)) throw new Error(`${s}: depois da virada o predicado ainda diz "emissão do ERP" — nada gravado`)
+    // 7. pós-condição pelo predicado do ESTABELECIMENTO (D-F39; D-NE10: o ato é por institution — réplica em QUALQUER linha ou a lacuna (b)
+    //    da SE; o grão do modelo deixaria passar réplica de outro modelo) — virada que não fecha a cerca não comita
+    if (await anyEmissionStillInErp(c, s, institutionId)) throw new Error(`${s}: depois da virada o predicado ainda diz "emissão do ERP" — nada gravado`)
     if (DRY) await c.rollback(); else await c.commit()
     if (rep) await checkXmls(c, storage, rep)
     console.log(JSON.stringify({ dryRun: DRY, committed: !DRY,

@@ -35,10 +35,18 @@ const VOICE_TABLE = 'invoice_service_transmission_event'
 const S_LIT = String.raw`(?:'S'|"S")`
 /** INSERT/REPLACE com ou sem INTO e com os modificadores do MySQL (LOW_PRIORITY/HIGH_PRIORITY/DELAYED/IGNORE) — R22-07. */
 const INSERT_HEAD = String.raw`\b(?:INSERT|REPLACE)\b(?:\s+(?:LOW_PRIORITY|HIGH_PRIORITY|DELAYED|IGNORE))*(?:\s+INTO)?\s`
-/** SQL de ESCRITA na voz DA NFS-e — qualquer (escritor único — R22-05). */
+/**
+ * SQL de ESCRITA na voz DA NFS-e — qualquer (escritor único — R22-05). O ALVO da escrita é a voz: a tabela logo depois do INSERT/REPLACE
+ * (com ou sem schema), na lista de tabelas do UPDATE (antes do SET — inclui o UPDATE multi-tabela com JOIN) ou do DELETE (antes do WHERE).
+ * A voz LIDA num subselect de outra escrita (o `recordNfseNotGenerated` grava a TENTATIVA conferindo a última voz — D-F90) não é escrita
+ * na voz (NE-1a parte 2: o repositório da nfse-api deixou a lista de escritores quando a escrita da voz foi para o núcleo).
+ */
 function sqlWritesVoice(statement: string): boolean {
   const s = statement.replace(/\s+/g, ' ')
-  return new RegExp(String.raw`(?:${INSERT_HEAD}|\bUPDATE\b|\bDELETE\b)[^;]*${VOICE_TABLE}\b`, 'i').test(s)
+  const table = String.raw`(?:\x60?[\w?]+\x60?\.)?\x60?(?:tb_)?${VOICE_TABLE}\b`
+  return new RegExp(String.raw`${INSERT_HEAD}\s*${table}`, 'i').test(s)
+    || new RegExp(String.raw`\bUPDATE\b(?:(?!\bSET\b)[^;])*${VOICE_TABLE}\b(?:(?!\bWHERE\b)[^;])*\bSET\b`, 'i').test(s)
+    || new RegExp(String.raw`\bDELETE\b(?:(?!\bWHERE\b)[^;])*${VOICE_TABLE}\b`, 'i').test(s)
 }
 /** SQL de ESCRITA na voz DA NFS-e que grava S (D-F105: só a tabela da família de serviço). */
 function sqlWritesS(statement: string): boolean {
@@ -92,6 +100,30 @@ export function tsProducesS(code: string, opts: { sqlOnly?: boolean } = {}): boo
 }
 
 const WRITER = 'insertTransmissionEvent'
+const DESCRIBE = 'defineVoiceFamily'
+/** O descritor da família NFS-e (exportado por `nfse/voice-family.ts`) e os módulos que exportam o escritor. */
+const FAMILY_DESCRIPTOR = 'SERVICE_VOICE_FAMILY'
+const WRITER_MODULE = /(?:^|\/)(?:repository|voice-family|transmission\.repository)$/
+
+/**
+ * D-NE80 (gate da parte 2 — Valdo 2026-10-12): a TRAVA do `withInvoiceTx` do núcleo é a do ERP — numa família, `lock:` só pode ser
+ * `erp.lockInvoice` (ou ausente). Um "travante" que não trava produziria um `InvoiceTx` legítimo para uma escrita sem `FOR UPDATE`.
+ * true = violação.
+ */
+export function lockFlags(code: string): boolean {
+  const sf = ts.createSourceFile('x.ts', code, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  let bad = false
+  const visit = (n: ts.Node): void => {
+    if ((ts.isPropertyAssignment(n) || ts.isShorthandPropertyAssignment(n)) && n.name.getText(sf) === 'lock' && ts.isObjectLiteralExpression(n.parent)) {
+      if (!ts.isPropertyAssignment(n) || n.initializer.getText(sf) !== 'erp.lockInvoice') bad = true
+    }
+    if (ts.isObjectLiteralExpression(n) && n.properties.some(ts.isSpreadAssignment) && ts.isCallExpression(n.parent)
+      && /withInvoiceTx|withLockedInvoice/.test(n.parent.expression.getText(sf))) bad = true             // opções espalhadas no withInvoiceTx
+    ts.forEachChild(n, visit)
+  }
+  visit(sf)
+  return bad
+}
 const FAMILY = new Set(['A', 'R', 'C', 'K', 'F', 'N'])
 const unwrap = (e: ts.Expression): ts.Expression => {
   let x = e
@@ -108,14 +140,27 @@ const isCast = (e: ts.Expression): boolean => ts.isAsExpression(e) || ts.isTypeA
  *    da família nem `OUTCOME_KIND[…]`;
  *  - objeto com `kind` sob CAST passado a qualquer chamada (o alias que este texto não declara — R22-04);
  *  - MUTAÇÃO do `OUTCOME_KIND` (`Object.assign`/`defineProperty`/`Reflect.set`/atribuição/`delete` — R22-02);
- *  - SQL de escrita na voz da NFS-e — salvo nos escritores autorizados (`allowSqlWriter` — ESCRITOR ÚNICO, R22-05).
+ *  - SQL de escrita na voz da NFS-e — salvo nos escritores autorizados (`allowSqlWriter` — ESCRITOR ÚNICO, R22-05);
+ *  - declaração de família da voz — salvo no descritor autorizado (`allowFamilyDescriptor` — NE-1a parte 2: a lista de escrita mora no
+ *    descritor, D-F108). D-NE82 (a) (gate adversarial da parte 2, NE1A2-09): o NOME `defineVoiceFamily` não aparece fora dele em forma
+ *    nenhuma — identificador (import, alias, `.call`, `(0, f)`, desestruturação, `Reflect.apply`) ou texto (`core['defineVoiceFamily']`);
+ *  - o escritor ou o DESCRITOR como valor por texto/elemento/reflexão (NE1A2-10): o nome do escritor numa string (`x['insertTransmissionEvent']`,
+ *    `Reflect.get(x, 'insertTransmissionEvent')`), o descritor (`SERVICE_VOICE_FAMILY`) fora de `DESCRITOR.prop` e `Object.*`/`Reflect.*`/
+ *    espalhamento sobre o descritor ou sobre o NAMESPACE de um módulo que exporta o escritor.
  */
-export function writerCallFlags(code: string, opts: { allowSqlWriter?: boolean } = {}): boolean {
+export function writerCallFlags(code: string, opts: { allowSqlWriter?: boolean; allowFamilyDescriptor?: boolean } = {}): boolean {
   const sf = ts.createSourceFile('x.ts', code, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
   const consts = stringConsts(sf)
   const aliases = new Set([WRITER])
+  const familyAliases = new Set([DESCRIBE])
+  const descriptors = new Set([FAMILY_DESCRIPTOR])
+  const writerModules = new Set<string>()                          // namespaces (`import * as x`) de módulo que exporta o escritor
   const collect = (n: ts.Node): void => {
     if (ts.isImportSpecifier(n) && (n.propertyName ?? n.name).text === WRITER) aliases.add(n.name.text)
+    if (ts.isImportSpecifier(n) && (n.propertyName ?? n.name).text === DESCRIBE) familyAliases.add(n.name.text)
+    if (ts.isImportSpecifier(n) && (n.propertyName ?? n.name).text === FAMILY_DESCRIPTOR) descriptors.add(n.name.text)
+    if (ts.isNamespaceImport(n) && ts.isImportClause(n.parent) && ts.isImportDeclaration(n.parent.parent)
+      && ts.isStringLiteral(n.parent.parent.moduleSpecifier) && WRITER_MODULE.test(n.parent.parent.moduleSpecifier.text)) writerModules.add(n.name.text)
     if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer) {
       const v = unwrap(n.initializer)
       if ((ts.isIdentifier(v) && v.text === WRITER) || (ts.isPropertyAccessExpression(v) && v.name.text === WRITER)) aliases.add(n.name.text)
@@ -141,9 +186,53 @@ export function writerCallFlags(code: string, opts: { allowSqlWriter?: boolean }
   }
   const hasKindProp = (o: ts.ObjectLiteralExpression) => o.properties.some(q =>
     (ts.isPropertyAssignment(q) || ts.isShorthandPropertyAssignment(q)) && q.name.getText(sf) === 'kind')
+  const calleeName = (c: ts.CallExpression): string | null => {
+    const x = unwrap(c.expression)
+    return ts.isIdentifier(x) ? x.text : ts.isPropertyAccessExpression(x) ? x.name.text : null
+  }
+  /**
+   * O ESCRITOR como VALOR (parte 2 da NE-1a, passo 5): só pode aparecer como callee (a cerca de chamada confere o objeto), em
+   * import/export/declaração (a ligação do repositório), como 1º argumento DIRETO de uma política do núcleo que recebe o escritor
+   * (`reserveCancelRequest`/`releaseCancelRequest`) ou como propriedade do objeto literal que é o 1º argumento de `recordVoiceOnce`/`recordKindOnce` (as portas).
+   * Qualquer outra referência (argumento de uma função qualquer, valor guardado, retorno, cast) = violação: o embrulho que recebe o
+   * escritor e o chama com outro `kind` fica invisível à cerca de chamada.
+   */
+  const writerAsValueOk = (id: ts.Identifier): boolean => {
+    const p = id.parent
+    if (ts.isCallExpression(p) && p.expression === id) return true
+    if (ts.isImportSpecifier(p) || ts.isExportSpecifier(p) || ts.isImportClause(p) || ts.isTypeQueryNode(p)) return true
+    if ((ts.isVariableDeclaration(p) || ts.isFunctionDeclaration(p)) && p.name === id) return true
+    // `x.insertTransmissionEvent` só como callee ou como a LIGAÇÃO do repositório (NE1A2-10: `wrap(repo.insertTransmissionEvent)` escapava)
+    if (ts.isPropertyAccessExpression(p) && p.name === id) return (ts.isCallExpression(p.parent) && p.parent.expression === p) || isBindingInit(p)
+    if (ts.isCallExpression(p) && p.arguments[0] === id && /^(?:reserveCancelRequest|releaseCancelRequest)$/.test(calleeName(p) ?? '')) return true
+    const prop = (ts.isShorthandPropertyAssignment(p) || (ts.isPropertyAssignment(p) && p.initializer === id)) ? p : null
+    const obj = prop && ts.isObjectLiteralExpression(prop.parent) ? prop.parent : null
+    return !!obj && ts.isCallExpression(obj.parent) && obj.parent.arguments[0] === obj && /^(?:recordVoiceOnce|recordKindOnce)$/.test(calleeName(obj.parent) ?? '')
+  }
+  /** O descritor só como `DESCRITOR.prop` (ou import/export/a própria declaração) — nunca valor solto, espalhado ou refletido (NE1A2-10). */
+  const descriptorOk = (id: ts.Identifier): boolean => {
+    const p = id.parent
+    if (ts.isPropertyAccessExpression(p)) return p.expression === id ? p.name.text !== WRITER || ts.isCallExpression(p.parent) && p.parent.expression === p || isBindingInit(p) : true
+    if (ts.isImportSpecifier(p) || ts.isExportSpecifier(p) || ts.isTypeQueryNode(p)) return true
+    return ts.isVariableDeclaration(p) && p.name === id
+  }
+  /** `export const insertTransmissionEvent = SERVICE_VOICE_FAMILY.insertTransmissionEvent` — a LIGAÇÃO do repositório (nome = o escritor). */
+  const isBindingInit = (pa: ts.PropertyAccessExpression): boolean =>
+    ts.isVariableDeclaration(pa.parent) && pa.parent.initializer === pa && ts.isIdentifier(pa.parent.name) && pa.parent.name.text === WRITER
+  const isStr = (n: ts.Node, v: string) => (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) && n.text === v
   let bad = false
   const visit = (n: ts.Node): void => {
     if (bad) return
+    if (ts.isIdentifier(n) && aliases.has(n.text) && !writerAsValueOk(n)) bad = true
+    // D-NE82 (a): o nome do DESCRITOR genérico fora do descritor autorizado — qualquer grafia
+    if (!opts.allowFamilyDescriptor && ((ts.isIdentifier(n) && (n.text === DESCRIBE || familyAliases.has(n.text))) || isStr(n, DESCRIBE))) bad = true
+    // NE1A2-10: o nome do escritor em TEXTO (elemento, Reflect.get, defineProperty…)
+    if (isStr(n, WRITER)) bad = true
+    // NE1A2-10: o descritor fora de `DESCRITOR.prop`
+    if (ts.isIdentifier(n) && descriptors.has(n.text) && !descriptorOk(n)) bad = true
+    // NE1A2-10: reflexão/espalhamento sobre o NAMESPACE de um módulo do escritor (`Object.values(repo)`, `{ ...repo }`, `repo[k]`)
+    if (ts.isIdentifier(n) && writerModules.has(n.text) && !(ts.isPropertyAccessExpression(n.parent) && n.parent.expression === n)
+      && !ts.isNamespaceImport(n.parent)) bad = true
     if (ts.isCallExpression(n)) {
       if (isWriter(n.expression)) {
         const arg = n.arguments[n.arguments.length - 1]
@@ -151,6 +240,8 @@ export function writerCallFlags(code: string, opts: { allowSqlWriter?: boolean }
       }
       for (const a of n.arguments) if (isCast(a) && ts.isObjectLiteralExpression(unwrap(a)) && hasKindProp(unwrap(a) as ts.ObjectLiteralExpression)) bad = true
       const callee = unwrap(n.expression)
+      if (!opts.allowFamilyDescriptor && ((ts.isIdentifier(callee) && familyAliases.has(callee.text))
+        || (ts.isPropertyAccessExpression(callee) && callee.name.text === DESCRIBE))) bad = true
       if (ts.isPropertyAccessExpression(callee) && /^(?:Object|Reflect)$/.test(callee.expression.getText(sf))
         && /^(?:assign|defineProperty|defineProperties|set|deleteProperty|setPrototypeOf)$/.test(callee.name.text)
         && n.arguments[0] && isOutcomeKind(n.arguments[0])) bad = true
@@ -173,19 +264,28 @@ export function writerCallFlags(code: string, opts: { allowSqlWriter?: boolean }
   return bad
 }
 
-/** Os escritores AUTORIZADOS do SQL na voz da NFS-e (ESCRITOR ÚNICO — R22-05): os dois repositórios e a cópia do `migrate:setes`. */
+/**
+ * Os escritores AUTORIZADOS do SQL na voz da NFS-e (ESCRITOR ÚNICO — R22-05): o repositório do setes-api e a cópia do `migrate:setes`.
+ * NE-1a parte 2 (D-F108/D-NE74): o escritor da nfse-api é o GENÉRICO do núcleo (`fiscal-api/src/voice/event-table.ts` — fora desta cerca,
+ * D-F105; a do núcleo o nomeia como exceção), que escreve pela tabela do DESCRITOR — e o único descritor é `VOICE_FAMILY_DESCRIPTORS`.
+ */
 export const VOICE_SQL_WRITERS = [
-  'nfse-api/src/nfse/repository.ts',
   'nfse-api/scripts/migrate-from-setes-api.ts',
   'setes-api/src/shared/invoice-transmission/transmission.repository.ts',
 ]
+/** O ÚNICO lugar fora do núcleo que declara uma família da voz (`defineVoiceFamily`): um 2º descritor da tabela da NFS-e com outra lista
+ *  de escrita (com S) furaria a D-F106 sem SQL nenhum — a cerca o pega (NE-1a parte 2). */
+export const VOICE_FAMILY_DESCRIPTORS = ['nfse-api/src/nfse/voice-family.ts']
 
 /** Violações da cerca de chamada/escritor único no escopo (fora do NÚCLEO — D-F105; migrations `.sql` ficam fora: DDL, revisar-ddl). */
 export function voiceWriterViolations(files: string[] = voiceFenceScope()): string[] {
   return files.filter(f => fs.existsSync(f) && f.endsWith('.ts') && !path.resolve(f).startsWith(CORE_ROOT + path.sep))
-    .filter(f => writerCallFlags(fs.readFileSync(f, 'utf8'), {
-      allowSqlWriter: VOICE_SQL_WRITERS.includes(path.relative(WORKSPACE, f).replace(/\\/g, '/')),
-    }))
+    .filter(f => {
+      const r = path.relative(WORKSPACE, f).replace(/\\/g, '/')
+      return writerCallFlags(fs.readFileSync(f, 'utf8'), {
+        allowSqlWriter: VOICE_SQL_WRITERS.includes(r), allowFamilyDescriptor: VOICE_FAMILY_DESCRIPTORS.includes(r),
+      })
+    })
     .map(f => path.relative(WORKSPACE, f).replace(/\\/g, '/'))
 }
 

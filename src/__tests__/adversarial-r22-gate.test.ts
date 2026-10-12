@@ -35,6 +35,7 @@ import { insertTransmissionEvent } from '../nfse/repository'
 import type { TransmissionEventInput, ServiceVoiceWriteKind } from '../nfse/repository'
 import { OUTCOME_KIND } from '../nfse/transmission'
 import type { TransmissionEventKind as SharedKind, PoolConnection } from 'fiscal-api'
+import { itxOf, underTx } from './fixture-ref'   // NE-1a parte 2: a voz sob a trava (InvoiceTx)
 
 jest.setTimeout(180_000)
 
@@ -99,8 +100,8 @@ function fakeConn() {
     if (/^\s*INSERT INTO tb_invoice_service_transmission_event/.test(sql)) inserts.push(params)
     return [{ affectedRows: 1 }]
   })
-  // parâmetros do INSERT (repository.ts): [institution, nota, tentativa, evento, KIND, …]
-  return { conn: { query } as unknown as PoolConnection, query, inserts, kindsWritten: () => inserts.map(p => p[4]) }
+  // parâmetros do INSERT (escritor do núcleo, `voice/event-table.ts`): [institution, nota, TERMINAL, tentativa, evento, KIND, …]
+  return { conn: { query } as unknown as PoolConnection, query, inserts, kindsWritten: () => inserts.map(p => p[5]) }
 }
 
 // ===========================================================================
@@ -110,9 +111,9 @@ function fakeConn() {
 describe('0 — a cerca de CHAMADA (W) é a da peça `voice-kind-fence.ts`', () => {
   it('[CORRIGIDO na sessão] a réplica local saiu: (W) = `writerCallFlags` da peça — tudo o que o predicado do r21 (`writerCalls`: identificador nu, literal da família ou `OUTCOME_KIND[…]`) recusa, a peça recusa; o legítimo segue aceito', () => {
     const r21 = read(R21_FILE)
-    expect(r21).toContain(`ts.isIdentifier(n.expression) && n.expression.text === 'insertTransmissionEvent'`)   // o r21 continua com o predicado dele
+    expect(r21).toContain(`ts.isIdentifier(n.expression) && /^(?:insertTransmissionEvent|recordVoiceOnce|recordKindOnce)$/.test(n.expression.text)`)   // o r21 continua com o predicado dele (NE-1a parte 2: + a política do núcleo)
     expect(read(__filename)).not.toContain('function ' + 'callFenceFlags')
-    const call = (kind: string) => `insertTransmissionEvent(conn, 1, 1, 1, null, { kind: ${kind}, source: 'P' })`
+    const call = (kind: string) => `insertTransmissionEvent(itx, 1, null, { kind: ${kind}, source: 'P' })`
     for (const k of [`'S'`, `'P'`, `'D'`, 'WIDE', 'k', 'M.posted', `p ? WIDE : 'F'`]) expect([k, writerCallFlags(call(k))]).toEqual([k, true])
     for (const k of [`'A'`, `'R'`, `'C'`, `'K'`, `'F'`, `'N'`, `OUTCOME_KIND['local']`, 'OUTCOME_KIND[cls]']) expect([k, writerCallFlags(call(k))]).toEqual([k, false])
   })
@@ -126,8 +127,9 @@ const HEADER_NFSE = `import { insertTransmissionEvent, TransmissionEventInput, S
 import * as repo from '../nfse/repository'
 import { insertTransmissionEvent as put } from '../nfse/repository'
 import { OUTCOME_KIND } from '../nfse/transmission'
-import type { TransmissionEventKind } from 'fiscal-api'
-declare const conn: any
+import type { TransmissionEventKind, InvoiceTx } from 'fiscal-api'
+declare const itx: InvoiceTx                       // NE-1a parte 2 (D-NE74): o escritor recebe a transação SOB A TRAVA da nota
+declare const conn: any                            // a conexão crua (os ataques de SQL cru)
 declare const WIDE: TransmissionEventKind        // um kind do vocabulário COMUM vindo de qualquer lugar (pode ser S)
 declare const p: boolean
 export {}`
@@ -135,37 +137,37 @@ export {}`
 /** [rótulo, código, compila? (medido), cerca AST (A)?, cerca de chamada da peça (W)?] — o esperado DEPOIS das correções da sessão. */
 const ATTACKS: [string, string, boolean, boolean, boolean][] = [
   // --- o tipo pega (D-F106 cumpre o prometido) ---
-  ['literal', `insertTransmissionEvent(conn, 1, 1, 1, null, { kind: 'S', source: 'P' })`, false, true, true],
-  ['constante comum', `insertTransmissionEvent(conn, 1, 1, 1, null, { kind: WIDE, source: 'P' })`, false, false, true],
-  ['shorthand', `const kind: TransmissionEventKind = 'S'\ninsertTransmissionEvent(conn, 1, 1, 1, null, { kind, source: 'P' })`, false, false, true],
-  ['mapa novo', `const M = { posted: 'S' } as const\ninsertTransmissionEvent(conn, 1, 1, 1, null, { kind: M.posted, source: 'P' })`, false, false, true],
-  ['parâmetro', `const v = (k: TransmissionEventKind) => insertTransmissionEvent(conn, 1, 1, 1, null, { kind: k, source: 'P' })`, false, false, true],
-  ['ternário', `insertTransmissionEvent(conn, 1, 1, 1, null, { kind: p ? WIDE : 'F', source: 'P' })`, false, false, true],
-  ['não-nulo', `const k: TransmissionEventKind | null = WIDE\ninsertTransmissionEvent(conn, 1, 1, 1, null, { kind: k!, source: 'P' })`, false, false, true],
-  ['genérico', `function g<K extends TransmissionEventKind>(k: K) { return insertTransmissionEvent(conn, 1, 1, 1, null, { kind: k, source: 'P' }) }`, false, false, true],
-  ['spread ANTES do kind', `const b = { kind: WIDE }\ninsertTransmissionEvent(conn, 1, 1, 1, null, { ...b, source: 'P' })`, false, false, true],
-  ['spread Partial<comum>', `declare const o: Partial<{ kind: TransmissionEventKind }>\ninsertTransmissionEvent(conn, 1, 1, 1, null, { kind: 'F', source: 'P', ...o })`, false, false, true],
+  ['literal', `insertTransmissionEvent(itx, 1, null, { kind: 'S', source: 'P' })`, false, true, true],
+  ['constante comum', `insertTransmissionEvent(itx, 1, null, { kind: WIDE, source: 'P' })`, false, false, true],
+  ['shorthand', `const kind: TransmissionEventKind = 'S'\ninsertTransmissionEvent(itx, 1, null, { kind, source: 'P' })`, false, false, true],
+  ['mapa novo', `const M = { posted: 'S' } as const\ninsertTransmissionEvent(itx, 1, null, { kind: M.posted, source: 'P' })`, false, false, true],
+  ['parâmetro', `const v = (k: TransmissionEventKind) => insertTransmissionEvent(itx, 1, null, { kind: k, source: 'P' })`, false, false, true],
+  ['ternário', `insertTransmissionEvent(itx, 1, null, { kind: p ? WIDE : 'F', source: 'P' })`, false, false, true],
+  ['não-nulo', `const k: TransmissionEventKind | null = WIDE\ninsertTransmissionEvent(itx, 1, null, { kind: k!, source: 'P' })`, false, false, true],
+  ['genérico', `function g<K extends TransmissionEventKind>(k: K) { return insertTransmissionEvent(itx, 1, null, { kind: k, source: 'P' }) }`, false, false, true],
+  ['spread ANTES do kind', `const b = { kind: WIDE }\ninsertTransmissionEvent(itx, 1, null, { ...b, source: 'P' })`, false, false, true],
+  ['spread Partial<comum>', `declare const o: Partial<{ kind: TransmissionEventKind }>\ninsertTransmissionEvent(itx, 1, null, { kind: 'F', source: 'P', ...o })`, false, false, true],
   ['mapa da família atribuído', `OUTCOME_KIND.local = WIDE`, false, false, true],
-  ['literal as Input', `insertTransmissionEvent(conn, 1, 1, 1, null, { kind: 'S', source: 'P' } as TransmissionEventInput)`, false, true, true],
+  ['literal as Input', `insertTransmissionEvent(itx, 1, null, { kind: 'S', source: 'P' } as TransmissionEventInput)`, false, true, true],
   // --- o tipo NÃO pega, mas a cerca AST (A) ou a de chamada (W) pega ---
-  ['as any (objeto)', `insertTransmissionEvent(conn, 1, 1, 1, null, { kind: 'S', source: 'P' } as any)`, true, true, true],
-  ["'S' as WriteKind", `insertTransmissionEvent(conn, 1, 1, 1, null, { kind: 'S' as ServiceVoiceWriteKind, source: 'P' })`, true, true, true],
-  ['comum as WriteKind', `insertTransmissionEvent(conn, 1, 1, 1, null, { kind: WIDE as ServiceVoiceWriteKind, source: 'P' })`, true, false, true],
-  ['comum as Input', `insertTransmissionEvent(conn, 1, 1, 1, null, { kind: WIDE, source: 'P' } as TransmissionEventInput)`, true, false, true],
-  ['unknown + cast', `const u: unknown = { kind: WIDE, source: 'P' }\ninsertTransmissionEvent(conn, 1, 1, 1, null, u as TransmissionEventInput)`, true, false, true],
-  ['JSON.parse', `insertTransmissionEvent(conn, 1, 1, 1, null, JSON.parse('{"kind":"S","source":"P"}'))`, true, false, true],
-  ['Object.assign inline', `insertTransmissionEvent(conn, 1, 1, 1, null, Object.assign({ kind: 'F' as const, source: 'P' as const }, { kind: WIDE }))`, true, false, true],
+  ['as any (objeto)', `insertTransmissionEvent(itx, 1, null, { kind: 'S', source: 'P' } as any)`, true, true, true],
+  ["'S' as WriteKind", `insertTransmissionEvent(itx, 1, null, { kind: 'S' as ServiceVoiceWriteKind, source: 'P' })`, true, true, true],
+  ['comum as WriteKind', `insertTransmissionEvent(itx, 1, null, { kind: WIDE as ServiceVoiceWriteKind, source: 'P' })`, true, false, true],
+  ['comum as Input', `insertTransmissionEvent(itx, 1, null, { kind: WIDE, source: 'P' } as TransmissionEventInput)`, true, false, true],
+  ['unknown + cast', `const u: unknown = { kind: WIDE, source: 'P' }\ninsertTransmissionEvent(itx, 1, null, u as TransmissionEventInput)`, true, false, true],
+  ['JSON.parse', `insertTransmissionEvent(itx, 1, null, JSON.parse('{"kind":"S","source":"P"}'))`, true, false, true],
+  ['Object.assign inline', `insertTransmissionEvent(itx, 1, null, Object.assign({ kind: 'F' as const, source: 'P' as const }, { kind: WIDE }))`, true, false, true],
   ['SQL cru com S no texto', "conn.query(`INSERT INTO tb_invoice_service_transmission_event (kind, source) VALUES ('S', 'P')`)", true, true, true],
   // --- ESCAPAVAM das três camadas ANTES da sessão (ESCAPED_BEFORE); hoje a cerca de chamada da PEÇA pega todas ---
-  ['spread POSTERIOR de Record<string, unknown>', `declare const extra: Record<string, unknown>\ninsertTransmissionEvent(conn, 1, 1, 1, null, { kind: 'F', source: 'P', ...extra })`, true, false, true],
-  ['spread POSTERIOR de {}', `const extra: {} = { kind: WIDE }\ninsertTransmissionEvent(conn, 1, 1, 1, null, { kind: 'F', source: 'P', ...extra })`, true, false, true],
-  ['spread POSTERIOR de any', `declare const extra: any\ninsertTransmissionEvent(conn, 1, 1, 1, null, { kind: 'F', source: 'P', ...extra })`, true, false, true],
+  ['spread POSTERIOR de Record<string, unknown>', `declare const extra: Record<string, unknown>\ninsertTransmissionEvent(itx, 1, null, { kind: 'F', source: 'P', ...extra })`, true, false, true],
+  ['spread POSTERIOR de {}', `const extra: {} = { kind: WIDE }\ninsertTransmissionEvent(itx, 1, null, { kind: 'F', source: 'P', ...extra })`, true, false, true],
+  ['spread POSTERIOR de any', `declare const extra: any\ninsertTransmissionEvent(itx, 1, null, { kind: 'F', source: 'P', ...extra })`, true, false, true],
   ['Object.assign no OUTCOME_KIND', `Object.assign(OUTCOME_KIND, { local: WIDE })`, true, false, true],
   ['Object.assign no OUTCOME_KIND (literal S)', `Object.assign(OUTCOME_KIND, { local: 'S' })`, true, false, true],
   ['Reflect.set no OUTCOME_KIND', `Reflect.set(OUTCOME_KIND, 'auth_failed', 'S')`, true, false, true],
-  ['namespace + cast', `repo.insertTransmissionEvent(conn, 1, 1, 1, null, { kind: WIDE as ServiceVoiceWriteKind, source: 'P' })`, true, false, true],
-  ['alias + as any', `put(conn, 1, 1, 1, null, { kind: WIDE, source: 'P' } as any)`, true, false, true],
-  ['escritor com cast de função', `;(insertTransmissionEvent as (...a: any[]) => Promise<number>)(conn, 1, 1, 1, null, { kind: WIDE, source: 'P' })`, true, false, true],
+  ['namespace + cast', `repo.insertTransmissionEvent(itx, 1, null, { kind: WIDE as ServiceVoiceWriteKind, source: 'P' })`, true, false, true],
+  ['alias + as any', `put(itx, 1, null, { kind: WIDE, source: 'P' } as any)`, true, false, true],
+  ['escritor com cast de função', `;(insertTransmissionEvent as (...a: any[]) => Promise<number>)(itx, 1, null, { kind: WIDE, source: 'P' })`, true, false, true],
   ['SQL cru com placeholder (S nos parâmetros)', "conn.query('INSERT INTO tb_invoice_service_transmission_event (kind, source) VALUES (?, ?)', ['S', 'P'])", true, false, true],
   ['SQL cru com placeholder (kind comum)', "conn.query('INSERT INTO tb_invoice_service_transmission_event (kind, source) VALUES (?, ?)', [WIDE, 'P'])", true, false, true],
 ]
@@ -185,8 +187,8 @@ describe('ATAQUE 1 — furar o TIPO do escritor da NFS-e (D-F106) × as cercas (
 
   it('resistiu (MEDIDO): o cabeçalho dos ataques compila sozinho e o escritor legítimo (literal da família, `OUTCOME_KIND[…]`) segue aceito', () => {
     const ok = compileInMemory(NFSE, VIRTUAL_NFSE, HEADER_NFSE, [
-      ['A', `insertTransmissionEvent(conn, 1, 1, 1, null, { kind: 'A', source: 'P' })`],
-      ['mapa', `insertTransmissionEvent(conn, 1, 1, 1, null, { kind: OUTCOME_KIND['local'], source: 'P' })`],
+      ['A', `insertTransmissionEvent(itx, 1, null, { kind: 'A', source: 'P' })`],
+      ['mapa', `insertTransmissionEvent(itx, 1, null, { kind: OUTCOME_KIND['local'], source: 'P' })`],
     ]).snippet
     expect([...ok.values()]).toEqual([[], []])
   })
@@ -241,34 +243,35 @@ describe('ATAQUE 1b — o escritor REAL (`insertTransmissionEvent`) em execuçã
     const { conn, query, kindsWritten } = fakeConn()
     // <r22:spread>
     const extra: Record<string, unknown> = JSON.parse('{"kind":"S"}')
-    await expect(insertTransmissionEvent(conn, 1, 6200, 1, 7, { kind: 'F', source: 'P', ...extra })).rejects.toThrow(/D-F106/)
+    await expect(insertTransmissionEvent(itxOf(conn, 1, 6200), 1, 7, { kind: 'F', source: 'P', ...extra })).rejects.toThrow(/D-F106/)
     // </r22:spread>
     expect(kindsWritten()).toEqual([])
     expect(query).not.toHaveBeenCalled()
     const code = region('spread')
     expect([tsProducesS(code), writerCallFlags(code)]).toEqual([false, true])
   })
-  it('[CORRIGIDO na sessão] [LOW R22-03] o funil ÚNICO da voz da NFS-e (`insertTransmissionEvent` — nfse-api `src/nfse/repository.ts` · setes-api `transmission.repository.ts`) recusa EM EXECUÇÃO kind fora da lista da família ANTES de qualquer query — fecha de uma vez R22-01/R22-02/R22-04 e todo cast (o tipo some no JS)', async () => {
+  it('[CORRIGIDO na sessão] [LOW R22-03] o funil ÚNICO da voz da NFS-e (`insertTransmissionEvent` — o GENÉRICO do núcleo `voice/event-table.ts` ligado ao descritor `src/nfse/voice-family.ts` (NE-1a parte 2, D-F108) · setes-api `transmission.repository.ts`) recusa EM EXECUÇÃO kind fora da lista da família ANTES de qualquer query — fecha de uma vez R22-01/R22-02/R22-04 e todo cast (o tipo some no JS)', async () => {
     const { conn, query, inserts } = fakeConn()
     const ev = { kind: 'S', source: 'P' } as unknown as TransmissionEventInput
-    await expect(insertTransmissionEvent(conn, 1, 6200, 1, 7, ev)).rejects.toThrow(/D-F106: kind fora do vocabulário de escrita da NFS-e \("S"\) — nada gravado/)
+    await expect(insertTransmissionEvent(itxOf(conn, 1, 6200), 1, 7, ev)).rejects.toThrow(/D-F106: kind fora do vocabulário de escrita da NFS-e \("S"\) — nada gravado/)
     expect(inserts).toEqual([])
     expect(query).not.toHaveBeenCalled()
   })
   it('[CORRIGIDO na sessão] o escritor confere em execução — S, P, D, "s" minúsculo (que a colação _ci leria como S — D-F103), vazio e ausente são recusados sem query; os seis da família gravam', async () => {
     const { conn, query, kindsWritten } = fakeConn()
     for (const k of ['S', 'P', 'D', 's', 'a', '', undefined, null]) {
-      await expect(insertTransmissionEvent(conn, 1, 6200, 1, 7, { kind: k, source: 'P' } as unknown as TransmissionEventInput)).rejects.toThrow(/D-F106/)
+      await expect(insertTransmissionEvent(itxOf(conn, 1, 6200), 1, 7, { kind: k, source: 'P' } as unknown as TransmissionEventInput)).rejects.toThrow(/D-F106/)
     }
     expect(query).not.toHaveBeenCalled()
-    for (const k of ['A', 'R', 'C', 'K', 'F', 'N'] as const) await insertTransmissionEvent(conn, 1, 6200, 1, 7, { kind: k, source: 'P' })
+    // D-NE81 (gates da parte 2): o escritor real confere a IDENTIDADE do InvoiceTx — a escrita legítima vai por um de verdade
+    await underTx(conn, 1, 6200, async itx => { for (const k of ['A', 'R', 'C', 'K', 'F', 'N'] as const) await insertTransmissionEvent(itx, 1, 7, { kind: k, source: 'P' }) })
     expect(kindsWritten()).toEqual(['A', 'R', 'C', 'K', 'F', 'N'])
   })
   it('[CORRIGIDO na sessão] `Object.assign(OUTCOME_KIND, { local: … })` ainda compila NESTE arquivo SEM cast, mas LANÇA em execução (mapa CONGELADO — R22-02) e o mapa do processo não muda; a cerca de chamada da peça vê o trecho', () => {
     // <r22:map>
     expect(() => Object.assign(OUTCOME_KIND, { local: 'S' })).toThrow(TypeError)
     // </r22:map>
-    expect(OUTCOME_KIND).toEqual({ rejected: 'R', auth_failed: 'F', local: 'F' })
+    expect(OUTCOME_KIND).toEqual({ rejected: 'R', auth_failed: 'F', chain_untrusted: 'F', local: 'F' })   // D-NE57: a cadeia do servidor grava F
     const code = region('map')
     expect([tsProducesS(code), writerCallFlags(code)]).toEqual([false, true])
   })
@@ -338,20 +341,20 @@ describe('ATAQUE 3 — NE-1a simulada: o tipo comum ganha P/D (e casos-limite)',
     expect(t).not.toBe(kinds)
     return t
   }
-  const PROD = [path.join(SRC_ROOT, 'nfse', 'repository.ts'), path.join(SRC_ROOT, 'nfse', 'transmission.ts')]
+  const PROD = [path.join(SRC_ROOT, 'nfse', 'repository.ts'), path.join(SRC_ROOT, 'nfse', 'transmission.ts'), path.join(SRC_ROOT, 'nfse', 'voice-family.ts')]
   const PROBES: [string, string][] = [
-    ['P', `insertTransmissionEvent(conn, 1, 1, 1, null, { kind: 'P', source: 'P' })`],
-    ['D', `insertTransmissionEvent(conn, 1, 1, 1, null, { kind: 'D', source: 'P' })`],
-    ['S', `insertTransmissionEvent(conn, 1, 1, 1, null, { kind: 'S', source: 'P' })`],
-    ['comum', `insertTransmissionEvent(conn, 1, 1, 1, null, { kind: WIDE, source: 'P' })`],
+    ['P', `insertTransmissionEvent(itx, 1, null, { kind: 'P', source: 'P' })`],
+    ['D', `insertTransmissionEvent(itx, 1, null, { kind: 'D', source: 'P' })`],
+    ['S', `insertTransmissionEvent(itx, 1, null, { kind: 'S', source: 'P' })`],
+    ['comum', `insertTransmissionEvent(itx, 1, null, { kind: WIDE, source: 'P' })`],
     ['mapa P', `const M: Record<'x', ServiceVoiceWriteKind> = { x: 'P' }`],
-    ['F', `insertTransmissionEvent(conn, 1, 1, 1, null, { kind: 'F', source: 'P' })`],
+    ['F', `insertTransmissionEvent(itx, 1, null, { kind: 'F', source: 'P' })`],
   ]
-  it('resistiu [NE-1a — D-NE14: a simulação virou o REAL]: com `TransmissionEventKind` += P/D no núcleo de verdade, o escritor da NFS-e RECUSA P, D, S, o comum e o mapa com P; aceita F; e a produção da nfse-api (repository.ts, transmission.ts) segue compilando sem erro', () => {
+  it('resistiu [NE-1a — D-NE14: a simulação virou o REAL]: com `TransmissionEventKind` += P/D no núcleo de verdade, o escritor da NFS-e RECUSA P, D, S, o comum e o mapa com P; aceita F; e a produção da nfse-api (repository.ts, transmission.ts, voice-family.ts) segue compilando sem erro', () => {
     expect(kinds).toMatch(/export type TransmissionEventKind = 'S' \| 'A' \| 'R' \| 'C' \| 'K' \| 'F' \| 'N' \| 'P' \| 'D'/)
     const r = compileInMemory(NFSE, VIRTUAL_NFSE, HEADER_NFSE, PROBES, { alsoCheck: PROD })
     expect(PROBES.map(([l]) => [l, r.snippet.get(l)!.length > 0])).toEqual([['P', true], ['D', true], ['S', true], ['comum', true], ['mapa P', true], ['F', false]])
-    expect([...r.real.values()]).toEqual([[], []])
+    expect([...r.real.values()]).toEqual([[], [], []])
   })
   it('[CORRIGIDO na sessão] se o tipo comum virar `string`, a lista da família CONTINUA A/R/C/K/F/N (deriva da constante literal; o `satisfies` aceita): o escritor recusa P, D, S, o comum e o mapa com P; aceita F — nada passa calado e nada quebra à toa', () => {
     const r = compileInMemory(NFSE, VIRTUAL_NFSE, HEADER_NFSE, PROBES, { overrides: { [CORE_KINDS]: widen('export type TransmissionEventKind = string') }, alsoCheck: PROD })
@@ -360,18 +363,22 @@ describe('ATAQUE 3 — NE-1a simulada: o tipo comum ganha P/D (e casos-limite)',
   it('[CORRIGIDO na sessão] ressalva do adversarial fechada: se o tipo comum virar `any`, o `Extract<any, …>` dava `any` e a D-F106 EVAPORAVA; DERIVADA da constante, a família continua a lista literal — o escritor recusa P, D, S e o mapa com P; aceita F; o comum `any` (atribuível a tudo) compila, e o FUNIL em execução o pega (R22-03)', () => {
     const r = compileInMemory(NFSE, VIRTUAL_NFSE, HEADER_NFSE, PROBES, { overrides: { [CORE_KINDS]: widen('export type TransmissionEventKind = any') }, alsoCheck: PROD })
     expect(PROBES.map(([l]) => [l, r.snippet.get(l)!.length > 0])).toEqual([['P', true], ['D', true], ['S', true], ['comum', false], ['mapa P', true], ['F', false]])
-    expect([...r.real.values()]).toEqual([[], []])
+    expect([...r.real.values()]).toEqual([[], [], []])
   })
   it('[CORRIGIDO na sessão] a definição é a lista POSITIVA numa CONSTANTE (`SERVICE_VOICE_WRITE_KINDS = [\'A\', \'R\', \'C\', \'K\', \'F\', \'N\'] as const satisfies readonly TransmissionEventKind[]`) com o tipo DERIVADO dela, IDÊNTICA na nfse-api e no setes-api — nunca `Exclude<…, \'S\'>` (deixaria P/D entrarem com a NE-1a) nem `Extract` (evaporava com `any`)', () => {
-    const list = /export const SERVICE_VOICE_WRITE_KINDS = \['A', 'R', 'C', 'K', 'F', 'N'\] as const satisfies readonly TransmissionEventKind\[\]/
+    // a nfse-api a CONGELA em execução (gate NE1A2-11 da parte 2 da NE-1a); a cópia do setes-api fica como está (morre na F2a)
+    const list = /export const SERVICE_VOICE_WRITE_KINDS = (?:Object\.freeze\()?\['A', 'R', 'C', 'K', 'F', 'N'\] as const satisfies readonly TransmissionEventKind\[\]/
     const derived = /export type ServiceVoiceWriteKind = typeof SERVICE_VOICE_WRITE_KINDS\[number\]/
     const setesRepo = path.join(SETES_IT, 'transmission.repository.ts')
-    for (const f of [path.join(SRC_ROOT, 'nfse', 'repository.ts'), setesRepo].filter(f => fs.existsSync(f))) {
+    for (const f of [path.join(SRC_ROOT, 'nfse', 'voice-family.ts'), setesRepo].filter(f => fs.existsSync(f))) {
       const t = read(f)
       expect(t).toMatch(list)
       expect(t).toMatch(derived)
       expect(t).not.toMatch(/ServiceVoiceWriteKind\s*=\s*(?:Exclude|Extract)</)
     }
+    // NE-1a parte 2 (D-F108): o repositório da nfse-api RE-EXPORTA a lista do descritor — uma só definição
+    expect(read(path.join(SRC_ROOT, 'nfse', 'repository.ts'))).toMatch(/export \{ SERVICE_VOICE_WRITE_KINDS, SERVICE_VOICE_FAMILY \} from '\.\/voice-family'/)
+    expect(read(path.join(SRC_ROOT, 'nfse', 'repository.ts'))).not.toMatch(/SERVICE_VOICE_WRITE_KINDS = \[/)
   })
   // testemunhas de COMPILAÇÃO no tipo REAL (o ts-jest confere): o escritor recusa S; a família aceita os seis
   it('resistiu: testemunhas de compilação no tipo REAL — S fora; A/R/C/K/F/N dentro; e o comum NÃO cabe na família', () => {
@@ -461,19 +468,22 @@ describe('ATAQUE 4 — casts e formas de chamada no código REAL', () => {
     visit(sf)
     return out
   }
-  it('resistiu: NENHUM cast toca a escrita — os únicos casts com tipo da voz são de LEITURA (`… as TransmissionEventRow[]`/`as TransmissionEventRow` nos dois repositórios); nada dentro de chamada ao escritor nem no valor de `kind`', () => {
+  it('resistiu: NENHUM cast toca a escrita — os únicos casts com tipo da voz são de LEITURA (`… as TransmissionEventRow[]`/`as TransmissionEventRow` no repositório do setes-api; o da nfse-api saiu com o leitor para o núcleo na NE-1a parte 2); nada dentro de chamada ao escritor nem no valor de `kind`', () => {
     const files = scope()
     expect(files.length).toBeGreaterThan(40)
     const hits = files.flatMap(f => kindCasts(read(f)).map(h => `${rel(f)}: ${h}`))
-    expect(hits.filter(h => !/^(?:nfse-api\/src\/nfse\/repository\.ts|setes-api\/src\/shared\/invoice-transmission\/transmission\.repository\.ts): TransmissionEventRow(?:\[\])? @/.test(h))).toEqual([])
-    expect(hits).toHaveLength(fs.existsSync(SETES_IT) ? 4 : 1)
+    expect(hits.filter(h => !/^setes-api\/src\/shared\/invoice-transmission\/transmission\.repository\.ts: TransmissionEventRow(?:\[\])? @/.test(h))).toEqual([])
+    expect(hits).toHaveLength(fs.existsSync(SETES_IT) ? 3 : 0)
   })
   it('resistiu: toda chamada REAL ao escritor é por identificador NU, com objeto literal SEM spread e `kind` literal da família ou `OUTCOME_KIND[…]` — nfse-api (src+scripts) e a pasta INTEIRA da composição do setes-api (o r21 lia só `invoice-transmission.ts`)', () => {
     const calls: { f: string; text: string; ok: boolean }[] = []
     for (const f of [...walkTs(path.join(NFSE, 'src')), ...walkTs(path.join(NFSE, 'scripts')), ...walkTs(SETES_IT)]) {
       const sf = ts.createSourceFile(f, read(f), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
       const visit = (n: ts.Node): void => {
-        if (ts.isCallExpression(n) && /insertTransmissionEvent$/.test(n.expression.getText(sf)) && !ts.isFunctionDeclaration(n.parent)) {
+        if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && /^(?:reserveCancelRequest|releaseCancelRequest)$/.test(n.expression.text)) {
+          // NE-1a parte 2 (passo 5): K/N FIXOS na política do núcleo; o escritor vai NU como 1º argumento (a cerca de valor confere)
+          calls.push({ f: rel(f), text: n.getText(sf).slice(0, 80), ok: ts.isIdentifier(n.arguments[0]) && n.arguments[0].text === 'insertTransmissionEvent' })
+        } else if (ts.isCallExpression(n) && (/insertTransmissionEvent$/.test(n.expression.getText(sf)) || (ts.isIdentifier(n.expression) && /^(?:recordVoiceOnce|recordKindOnce)$/.test(n.expression.text))) && !ts.isFunctionDeclaration(n.parent)) {
           const obj = n.arguments[n.arguments.length - 1]
           const lit = obj && ts.isObjectLiteralExpression(obj) ? obj : null
           const kind = lit?.properties.find(q => ts.isPropertyAssignment(q) && q.name.getText(sf) === 'kind') as ts.PropertyAssignment | undefined
@@ -490,17 +500,28 @@ describe('ATAQUE 4 — casts e formas de chamada no código REAL', () => {
     if (fs.existsSync(SETES_IT)) expect(calls.filter(c => c.f.startsWith('setes-api/')).length).toBeGreaterThanOrEqual(8)
     expect(calls.filter(c => !c.ok)).toEqual([])
   })
-  it('resistiu: o escritor tem UMA assinatura (sem sobrecarga) e o último parâmetro é `TransmissionEventInput` — nfse-api e setes-api', () => {
+  it('resistiu: o escritor tem UMA assinatura (sem sobrecarga) e o último parâmetro é a entrada da FAMÍLIA — nfse-api (ligação ao genérico do núcleo: `VoiceFamily<K>.insertTransmissionEvent` é PROPRIEDADE-FUNÇÃO com `VoiceEventInput<K>`; NE-1a parte 2) e setes-api (`TransmissionEventInput`)', () => {
     const sigs = (f: string) => {
       const sf = ts.createSourceFile(f, read(f), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
       return sf.statements.filter((s): s is ts.FunctionDeclaration => ts.isFunctionDeclaration(s) && s.name?.text === 'insertTransmissionEvent')
         .map(d => d.parameters[d.parameters.length - 1].type?.getText(sf))
     }
-    expect(sigs(path.join(SRC_ROOT, 'nfse', 'repository.ts'))).toEqual(['TransmissionEventInput'])
+    const nfseRepo = read(path.join(SRC_ROOT, 'nfse', 'repository.ts'))
+    expect(sigs(path.join(SRC_ROOT, 'nfse', 'repository.ts'))).toEqual([])
+    expect(nfseRepo.match(/export const insertTransmissionEvent = [^\n]*/g)).toEqual(['export const insertTransmissionEvent = SERVICE_VOICE_FAMILY.insertTransmissionEvent'])
+    const coreTable = path.join(WORKSPACE, 'fiscal-api', 'src', 'voice', 'event-table.ts')
+    const sf = ts.createSourceFile(coreTable, read(coreTable), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+    const fam = sf.statements.find((s): s is ts.InterfaceDeclaration => ts.isInterfaceDeclaration(s) && s.name.text === 'VoiceFamily')!
+    const members = fam.members.filter(m => m.name?.getText(sf) === 'insertTransmissionEvent')
+    expect(members.map(m => ts.SyntaxKind[m.kind])).toEqual(['PropertySignature'])       // nunca MethodSignature (bivariante)
+    const fnType = (members[0] as ts.PropertySignature).type!
+    expect(ts.isFunctionTypeNode(fnType)).toBe(true)
+    const ps = (fnType as ts.FunctionTypeNode).parameters
+    expect([ps[0].type?.getText(sf), ps[ps.length - 1].type?.getText(sf)]).toEqual(['InvoiceTx', 'VoiceEventInput<K>'])
     const setesRepo = path.join(SETES_IT, 'transmission.repository.ts')
     if (fs.existsSync(setesRepo)) expect(sigs(setesRepo)).toEqual(['TransmissionEventInput'])
   })
-  it('[CORRIGIDO na sessão] os escritores SQL da voz da NFS-e são EXATAMENTE os dois funis tipados + a cópia do `migrate:setes` = a lista `VOICE_SQL_WRITERS` da peça (ESCRITOR ÚNICO, R22-05); nenhum UPDATE põe `kind`', () => {
+  it('[CORRIGIDO na sessão] os escritores SQL da voz da NFS-e são EXATAMENTE o funil tipado do setes-api + a cópia do `migrate:setes` = a lista `VOICE_SQL_WRITERS` da peça (ESCRITOR ÚNICO, R22-05) — o da nfse-api é o GENÉRICO do núcleo, que escreve pela tabela do DESCRITOR (`${table}`, nunca o literal; NE-1a parte 2); nenhum UPDATE põe `kind`', () => {
     /** Textos SQL (literais e templates, substituição = '?') de um fonte TS, pelo AST. */
     const sqlTexts = (code: string): string[] => {
       const sf = ts.createSourceFile('x.ts', code, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
@@ -519,10 +540,16 @@ describe('ATAQUE 4 — casts e formas de chamada no código REAL', () => {
     const files = voiceFenceScope().filter(f => f.endsWith('.ts') && fs.existsSync(f))
     const inserters = files.filter(f => sqlTexts(read(f)).some(s => INSERT.test(s))).map(rel).sort()
     expect(inserters).toEqual([
-      'nfse-api/scripts/migrate-from-setes-api.ts', 'nfse-api/src/nfse/repository.ts',
+      'nfse-api/scripts/migrate-from-setes-api.ts',
       ...(fs.existsSync(SETES_IT) ? ['setes-api/src/shared/invoice-transmission/transmission.repository.ts'] : []),
     ].sort())
     if (fs.existsSync(SETES_IT)) expect(inserters).toEqual([...VOICE_SQL_WRITERS].sort())
+    // o genérico do núcleo: INSERT pela tabela do descritor, e o ÚNICO descritor da tabela da NFS-e é o da família (`voice-family.ts`)
+    const core = read(path.join(WORKSPACE, 'fiscal-api', 'src', 'voice', 'event-table.ts'))
+    expect(core).toMatch(/INSERT INTO \$\{table\}/)
+    expect(core).not.toMatch(/tb_invoice_service_transmission_event/)
+    const descriptors = files.filter(f => /defineVoiceFamily\(/.test(read(f)) && !f.startsWith(path.resolve(WORKSPACE, 'fiscal-api') + path.sep)).map(rel)
+    expect(descriptors).toEqual(['nfse-api/src/nfse/voice-family.ts'])
     const kindUpdates = files.flatMap(f => sqlTexts(read(f)).filter(s => { const m = UPDATE_SET.exec(s); return !!m && /\bkind`?\s*=/i.test(m[1]) }).map(s => `${rel(f)}: ${s.slice(0, 80)}`))
     expect(kindUpdates).toEqual([])
   })

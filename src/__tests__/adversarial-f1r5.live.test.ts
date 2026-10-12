@@ -39,7 +39,9 @@ import {
   transmitServiceInvoice, refreshServiceTransmission, cancelServiceInvoiceAtAuthority, refreshOpenServiceTransmissions,
   resetMunicipalTermsCache, listPending,
 } from '../nfse/transmission'
-import { countLiveTransmissions } from '../nfse/repository'
+import { refOf, webRef, WEB } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
+// parte 2 da NE-1a (D-NE9): as vivas são contadas pelo EMITTER do núcleo (leituras PUBLICADAS de todas as famílias)
+const countLiveTransmissions = (q: any, inst: number, environment?: 'H' | 'P') => fiscal.countLiveTransmissions(q, inst, { branches: 'all', environment })
 
 // mesma normalização EM MEMÓRIA das rodadas 1–4: o ramo congelado das notas do dev tem cTribMun "0102" (anterior à D-N26b)
 jest.mock('../facts/service-facts', () => {
@@ -356,7 +358,7 @@ d('GATE ADVERSARIAL r5 — re-prova do delta da Rodada 4 (cópia descartável fi
         if (busy.has(id)) continue
         if (fresh.length < 2) {
           try {
-            const h = await svc.readServiceInvoice(ctx.pool, SCHEMA, INST, id)
+            const h = await svc.readServiceInvoice(ctx.pool, SCHEMA, refOf(INST, id))
             await svc.buildDpsBase(ctx.pool, SCHEMA, INST, h, 'H')
             fresh.push(id); continue
           } catch { /* cadastro incompleto — serve só de alvo sintético */ }
@@ -388,7 +390,7 @@ d('GATE ADVERSARIAL r5 — re-prova do delta da Rodada 4 (cópia descartável fi
           const http = await request(app).post(`/v1/nfse/invoices/${Z}/cancel`).set(bearer(tok())).send({ reason: 'cancelamento adversarial r5 na réplica' })
           const afterHttp = await kindsOf(Z)
           let err: any
-          try { await cancelServiceInvoiceAtAuthority(ctx, ACTOR, Z, 'cancelamento adversarial r5 na réplica') } catch (e) { err = e }
+          try { await cancelServiceInvoiceAtAuthority(ctx, ACTOR, webRef(ACTOR, Z), 'cancelamento adversarial r5 na réplica') } catch (e) { err = e }
           return { before, http: [http.status, http.body.code], afterHttp, direct: [err?.statusCode, err?.code], afterDirect: await kindsOf(Z) }
         }
         await w(`UPDATE tb_establishment_issuer SET deleted = 'S' WHERE tb_institution_id = ? AND model = 'SE'`, [INST])
@@ -476,7 +478,7 @@ d('GATE ADVERSARIAL r5 — re-prova do delta da Rodada 4 (cópia descartável fi
           const [[{ cid }]] = await blocker.query('SELECT CONNECTION_ID() AS cid') as any
           await blocker.beginTransaction()
           await blocker.query(`SELECT tb_institution_id FROM tb_establishment_certificate WHERE tb_institution_id = ? FOR UPDATE`, [INST])
-          const pRes = transmitServiceInvoice(ctx, ACTOR, Y).then(r => ({ ok: r }), (e: any) => ({ err: [e.statusCode, e.code] }))
+          const pRes = transmitServiceInvoice(ctx, ACTOR, webRef(ACTOR, Y)).then(r => ({ ok: r }), (e: any) => ({ err: [e.statusCode, e.code] }))
           mvcc.reserveBlocked = await waitBlocked(Number(cid), [/tb_establishment_certificate/, /LOCK IN SHARE MODE/i])
           // ordem ATUAL do `clearCertificate` (corrigida na re-prova R4): TRAVA das linhas da habilitação (lockIssuerRows) →
           // guarda da família (FOR UPDATE + contagem) — o snapshot nasce DEPOIS da trava
@@ -515,7 +517,7 @@ d('GATE ADVERSARIAL r5 — re-prova do delta da Rodada 4 (cópia descartável fi
           const [[{ cid }]] = await blocker.query('SELECT CONNECTION_ID() AS cid') as any
           await blocker.beginTransaction()
           await blocker.query(`SELECT tb_institution_id FROM tb_establishment_certificate WHERE tb_institution_id = ? FOR UPDATE`, [INST])
-          const pRes = transmitServiceInvoice(ctx, ACTOR, X).then(r => ({ ok: r }), (e: any) => ({ err: [e.statusCode, e.code] }))
+          const pRes = transmitServiceInvoice(ctx, ACTOR, webRef(ACTOR, X)).then(r => ({ ok: r }), (e: any) => ({ err: [e.statusCode, e.code] }))
           e2e.reserveBlocked = await waitBlocked(Number(cid), [/tb_establishment_certificate/, /LOCK IN SHARE MODE/i])
           const pDel = request(app).delete('/v1/emitter/certificate').set(bearer(tok())).then(r => r)
           e2e.deleteBlocked = await waitBlocked(Number(cid), [/tb_establishment_issuer/, /FOR UPDATE/i])
@@ -529,7 +531,7 @@ d('GATE ADVERSARIAL r5 — re-prova do delta da Rodada 4 (cópia descartável fi
         }
         e2e.txX = (await q(`SELECT attempt, last_kind AS k FROM vw_invoice_service_transmission WHERE tb_institution_id = ? AND tb_invoice_id = ?`, [INST, X]))
         e2e.cert = await certOfCopy()
-        try { await refreshServiceTransmission(ctx, ACTOR, X); e2e.refresh = 'ok' } catch (e: any) { e2e.refresh = [e.statusCode, e.code] }
+        try { await refreshServiceTransmission(ctx, ACTOR, webRef(ACTOR, X)); e2e.refresh = 'ok' } catch (e: any) { e2e.refresh = [e.statusCode, e.code] }
         // eslint-disable-next-line no-console
         console.log('[adv-r5] DELETE do A1 × reserva (rota real)', JSON.stringify(e2e), '| envios ao fisco falso', fisco.calls.transmit)
         expect(e2e.reserveBlocked).toBe(true)
@@ -590,10 +592,10 @@ d('GATE ADVERSARIAL r5 — re-prova do delta da Rodada 4 (cópia descartável fi
         fisco.queryHangOnceMs = 63_000                                  // ex.: GET /dps + GET /nfse no timeout de inatividade (2 × 30 s)
         let p1Done = false
         const t0 = Date.now()
-        const p1 = refreshOpenServiceTransmissions(ctx, ACTOR).then(r => { p1Done = true; return r })
+        const p1 = refreshOpenServiceTransmissions(ctx, ACTOR, { terminal: WEB }).then(r => { p1Done = true; return r })
         await sleep(61_000)
         lease.p1RunningWhenP2Started = !p1Done
-        lease.p2 = await refreshOpenServiceTransmissions(ctx, ACTOR)
+        lease.p2 = await refreshOpenServiceTransmissions(ctx, ACTOR, { terminal: WEB })
         lease.p1 = await p1
         lease.p1Ms = Date.now() - t0
         lease.queries = fisco.calls.query
@@ -617,7 +619,7 @@ d('GATE ADVERSARIAL r5 — re-prova do delta da Rodada 4 (cópia descartável fi
         const ids: number[] = []
         let total = -1
         for (let page = 1; page < 1000; page++) {
-          const r = await listPending(ctx, ACTOR, { page, pageSize }, interfaces)
+          const r = await listPending(ctx, ACTOR, WEB, { page, pageSize }, interfaces)
           if (total < 0) total = r.total
           expect(r.total).toBe(total)
           if (!r.data.length) break
@@ -630,7 +632,7 @@ d('GATE ADVERSARIAL r5 — re-prova do delta da Rodada 4 (cópia descartável fi
         const b = await all(both)
         const so = await all(['service-orders'])
         const or = await all(['orders'])
-        const beyond = await listPending(ctx, ACTOR, { page: 100_000, pageSize: 100 }, both)
+        const beyond = await listPending(ctx, ACTOR, WEB, { page: 100_000, pageSize: 100 }, both)
         // eslint-disable-next-line no-console
         console.log('[adv-r5] pendentes', JSON.stringify({ total: b.total, serviceOrders: so.total, orders: or.total }))
         expect(b.ids.length).toBe(b.total)
@@ -639,20 +641,20 @@ d('GATE ADVERSARIAL r5 — re-prova do delta da Rodada 4 (cópia descartável fi
         expect(so.ids.filter(id => or.ids.includes(id))).toEqual([])
         expect(new Set([...so.ids, ...or.ids])).toEqual(new Set(b.ids))
         expect([beyond.data.length, beyond.total]).toEqual([0, b.total])
-        expect((await listPending(ctx, ACTOR, { page: 1, pageSize: 5 }, [])).total).toBe(0)
+        expect((await listPending(ctx, ACTOR, WEB, { page: 1, pageSize: 5 }, [])).total).toBe(0)
       })
 
       it('sem achado: tentativa de OUTRA institution com o mesmo id de nota não esconde a pendente; a da própria (A) esconde; R não esconde', async () => {
-        const first = (await listPending(ctx, ACTOR, { page: 1, pageSize: 1 }, both))
+        const first = (await listPending(ctx, ACTOR, WEB, { page: 1, pageSize: 1 }, both))
         const V = first.data[0].invoiceId
         const t0 = first.total
         await seedAuthorized(V, 1, OTHER_INST)
-        const withOther = await listPending(ctx, ACTOR, { page: 1, pageSize: 100 }, both)
+        const withOther = await listPending(ctx, ACTOR, WEB, { page: 1, pageSize: 100 }, both)
         await seedAuthorized(V, 1, INST)
-        const withOwnA = await listPending(ctx, ACTOR, { page: 1, pageSize: 100 }, both)
+        const withOwnA = await listPending(ctx, ACTOR, WEB, { page: 1, pageSize: 100 }, both)
         await w(`UPDATE tb_invoice_service_transmission_event SET kind = 'R', dh = NULL WHERE tb_institution_id = ? AND tb_invoice_id = ?`, [INST, V])
         await w(`UPDATE tb_invoice_service_transmission SET access_key = NULL, nfse_number = NULL, dh_proc = NULL WHERE tb_institution_id = ? AND tb_invoice_id = ?`, [INST, V])
-        const withOwnR = await listPending(ctx, ACTOR, { page: 1, pageSize: 100 }, both)
+        const withOwnR = await listPending(ctx, ACTOR, WEB, { page: 1, pageSize: 100 }, both)
         await purge([V])
         // eslint-disable-next-line no-console
         console.log('[adv-r5] isolamento', JSON.stringify({ V, t0, outra: withOther.total, propriaA: withOwnA.total, propriaR: withOwnR.total }))

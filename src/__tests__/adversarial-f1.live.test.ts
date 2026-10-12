@@ -22,6 +22,7 @@ import { disposableFiscalDb, DisposableFiscalDb } from './live-harness'
 import { createApp } from '../app'
 import type { TaxAuthorityAdapter, AuthorityContext } from '../authority/types'
 import { refreshOpenServiceTransmissions, resetMunicipalTermsCache, listPending } from '../nfse/transmission'
+import { refOf, WEB } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
 
 /** Gate da Rodada 18 (R18-03/R18-04): a prova exige a IDENTIDADE da candidata e a VIDA — os testes antigos de 1 argumento passam por aqui. */
 const proven = (c: any, life?: any[]) => {
@@ -236,7 +237,7 @@ d('GATE ADVERSARIAL F1 — banco real + fisco falso', () => {
       const id = Number(r.id)
       if (maxAttemptBefore.has(id)) continue
       try {
-        const h = await svc.readServiceInvoice(ctx.pool, SCHEMA, INST, id)
+        const h = await svc.readServiceInvoice(ctx.pool, SCHEMA, refOf(INST, id))
         await svc.buildDpsBase(ctx.pool, SCHEMA, INST, h, 'H')
         fresh.push(id)
       } catch { /* cadastro incompleto — não serve de alvo */ }
@@ -357,7 +358,7 @@ d('GATE ADVERSARIAL F1 — banco real + fisco falso', () => {
       // eslint-disable-next-line no-console
       console.log('[adv] ramos contratados', contracted, '| ramos no lote do usuário', [...keys], '| total', pending.body.total)
       expect([...keys].every(k => contracted.includes(k))).toBe(true)
-      const all = await listPending(ctx, { schemaName: SCHEMA, institutionId: INST, userId: 266 }, { page: 1, pageSize: 100_000 }, contracted)
+      const all = await listPending(ctx, { schemaName: SCHEMA, institutionId: INST, userId: 266 }, WEB, { page: 1, pageSize: 100_000 }, contracted)
       expect(pending.body.total).toBe(all.total)
     })
 
@@ -519,7 +520,7 @@ d('GATE ADVERSARIAL F1 — banco real + fisco falso', () => {
       expect([t3.status, t3.body.code]).toEqual([409, 'FISCAL_EFFECT_PENDING'])
       const again = track('ciclo cancel 2', await request(app).post(`/v1/nfse/invoices/${id}/cancel`).set(a).send({ reason: 'segunda vez, idempotente' }))
       expect(again.body.data).toMatchObject({ atAuthority: false })
-      const listed = (await listPending(ctx, { schemaName: SCHEMA, institutionId: INST, userId: ADV_USER }, { page: 1, pageSize: 100_000 }, null)).data.some(x => x.invoiceId === id)
+      const listed = (await listPending(ctx, { schemaName: SCHEMA, institutionId: INST, userId: ADV_USER }, WEB, { page: 1, pageSize: 100_000 }, null)).data.some(x => x.invoiceId === id)
       // eslint-disable-next-line no-console
       console.log('[adv] nota com voz C (efeito local pendente) aparece no lote de pendentes?', listed)
     })
@@ -528,7 +529,7 @@ d('GATE ADVERSARIAL F1 — banco real + fisco falso', () => {
       const life = await fiscal.erp.invoiceLife(ctx.pool, SCHEMA, fiscal.invoiceRef(INST, B, fiscal.WEB_TERMINAL))
       expect(life?.lastKind).toBe('E')
       expect((await lastOf(B)).lastKind).toBe('C')
-      const listed = (await listPending(ctx, { schemaName: SCHEMA, institutionId: INST, userId: ADV_USER }, { page: 1, pageSize: 100_000 }, null)).data.some(x => x.invoiceId === B)
+      const listed = (await listPending(ctx, { schemaName: SCHEMA, institutionId: INST, userId: ADV_USER }, WEB, { page: 1, pageSize: 100_000 }, null)).data.some(x => x.invoiceId === B)
       expect(listed).toBe(false)
     })
 
@@ -798,8 +799,8 @@ d('GATE ADVERSARIAL F1 — banco real + fisco falso', () => {
       const small = createFiscalPool({ ...ctx.db, connectionLimit: 2 })
       const deps = { ...ctx, pool: small }
       const run = Promise.all([
-        refreshOpenServiceTransmissions(deps, { schemaName: SCHEMA, institutionId: 1, userId: ADV_USER }, { budgetMs: 2000 }),
-        refreshOpenServiceTransmissions(deps, { schemaName: SCHEMA, institutionId: 2, userId: ADV_USER }, { budgetMs: 2000 }),
+        refreshOpenServiceTransmissions(deps, { schemaName: SCHEMA, institutionId: 1, userId: ADV_USER }, { terminal: WEB, budgetMs: 2000 }),
+        refreshOpenServiceTransmissions(deps, { schemaName: SCHEMA, institutionId: 2, userId: ADV_USER }, { terminal: WEB, budgetMs: 2000 }),
       ]).then(() => 'terminou')
       const outcome = await Promise.race([run, sleep(8000).then(() => 'TRAVADO')])
       // eslint-disable-next-line no-console
@@ -816,8 +817,8 @@ d('GATE ADVERSARIAL F1 — banco real + fisco falso', () => {
       const lives = await q(`SELECT DISTINCT tb_invoice_id AS inv, life_event AS life FROM tb_invoice_service_transmission WHERE tb_institution_id = ? AND deleted = 'N'`, [INST])
       const diverge: string[] = []
       for (const l of lives) {
-        const bySql = await repo.latestTransmission(ctx.pool, INST, Number(l.inv), Number(l.life))
-        const { transmissions } = await repo.listLifeTransmissions(ctx.pool, INST, Number(l.inv), Number(l.life))
+        const bySql = await repo.latestTransmission(ctx.pool, refOf(INST, Number(l.inv)), Number(l.life))
+        const { transmissions } = await repo.listLifeTransmissions(ctx.pool, refOf(INST, Number(l.inv)), Number(l.life))
         const byLib = fiscal.currentOf(transmissions)
         if ((bySql?.attempt ?? null) !== (byLib?.attempt ?? null)) diverge.push(`${l.inv}/${l.life}: sql ${bySql?.attempt} × lib ${byLib?.attempt}`)
       }

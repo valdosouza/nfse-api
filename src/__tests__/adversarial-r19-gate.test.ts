@@ -204,6 +204,7 @@ const ambiguousLogs = () => ((fiscal.logger as any).error as jest.Mock).mock.cal
 // ===========================================================================
 import { HttpError, AuthorityHttpError } from 'fiscal-api'
 import { transmitServiceInvoice, logAmbiguousFiscal, IN_FLIGHT_MINUTES } from '../nfse/transmission'
+import { webRef, WEB, webScope, itxLike } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
 
 const origins = () => ambiguousLogs().map((c: any[]) => c[1]?.origin)
 const unknownBoom = () => new HttpError(502, 'Fisco respondeu sem situação legível para a NFS-e', undefined, ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE)
@@ -321,7 +322,7 @@ describe('ACHADO R19-03 (LOW, fora do delta — a mesma classe do R18-02, por ou
   it('[CORRIGIDO na sessão — R19-03] consulta da tela de tentativa SEM chave → GET /dps devolve a chave do TERCEIRO → 502 `dps-fora-do-contrato` ANTES de perguntar por ela; nenhum log (nem o do transporte) leva o documento', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(inFlightP())
     fiscoP({ dps: () => ok({ chaveAcesso: FOREIGN_KEY }), nfse: () => ({ status: 405, headers: { allow: 'POST' }, text: '' }) })
-    const out = await settle(refreshServiceTransmission(realDeps(), A, INVOICE, 'Q', SCREEN))
+    const out = await settle(refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q', SCREEN))
     expect(out).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
     expect(mockHttp.mock.calls.some((c: any[]) => String(c[0].url).endsWith(`/nfse/${FOREIGN_KEY}`))).toBe(false)
     expect(causeOf()).toBe('dps-fora-do-contrato')
@@ -331,14 +332,14 @@ describe('ACHADO R19-03 (LOW, fora do delta — a mesma classe do R18-02, por ou
   it('[CORRIGIDO na sessão] [LOW R19-03] a chave de OUTRO emitente vinda do GET /dps nunca é perguntada ao fisco (falha FECHADO antes: ambígua `dps-fora-do-contrato`)', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(inFlightP())
     fiscoP({ dps: () => ok({ chaveAcesso: FOREIGN_KEY }), nfse: () => ({ status: 405, headers: {}, text: '' }) })
-    await settle(refreshServiceTransmission(realDeps(), A, INVOICE, 'Q', SCREEN))
+    await settle(refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q', SCREEN))
     expect(mockHttp.mock.calls.some((c: any[]) => String(c[0].url).includes(FOREIGN_KEY))).toBe(false)
   })
   it('[CORRIGIDO na sessão] [LOW R19-03] …e NENHUM log (nem o do transporte) leva o documento do terceiro — 405 e falha de rede na consulta pela chave dele', async () => {
     for (const nfse of [() => ({ status: 405, headers: {}, text: '' }), () => { throw Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }) }]) {
       ;(repo.latestTransmission as jest.Mock).mockResolvedValue(inFlightP())
       mockHttp.mockReset(); fiscoP({ dps: () => ok({ chaveAcesso: FOREIGN_KEY }), nfse })
-      await settle(refreshServiceTransmission(realDeps(), A, INVOICE, 'Q', SCREEN))
+      await settle(refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q', SCREEN))
     }
     expect(allLogs()).not.toContain(THIRD_CPF)
   })
@@ -346,14 +347,14 @@ describe('ACHADO R19-03 (LOW, fora do delta — a mesma classe do R18-02, por ou
     reconfirmScenario()
     const noDps = nfseXmlOf(FOREIGN_KEY).replace(/<DPS>[\s\S]*<\/DPS>/, '')
     fiscoP({ dps: () => ok({ chaveAcesso: FOREIGN_KEY }), nfse: () => ok({ nfseXmlGZipB64: gz(noDps) }) })
-    await settle(reconfirmBeforeLocalCancel(realDeps(), A, INVOICE))
+    await settle(reconfirmBeforeLocalCancel(realDeps(), A, webRef(A, INVOICE)))
     expect(JSON.stringify((repo.fillAuthorityData as jest.Mock).mock.calls.map(c => c.slice(1)))).not.toContain(FOREIGN_KEY)
   })
   it('[CORRIGIDO na sessão — R19-03] o cenário "implausível" — a chave do terceiro NÃO pousa na tentativa 1 e nenhuma voz nasce com ela', async () => {
     reconfirmScenario()
     const noDps = nfseXmlOf(FOREIGN_KEY).replace(/<DPS>[\s\S]*<\/DPS>/, '')
     fiscoP({ dps: () => ok({ chaveAcesso: FOREIGN_KEY }), nfse: () => ok({ nfseXmlGZipB64: gz(noDps) }) })
-    await settle(reconfirmBeforeLocalCancel(realDeps(), A, INVOICE))
+    await settle(reconfirmBeforeLocalCancel(realDeps(), A, webRef(A, INVOICE)))
     expect(JSON.stringify((repo.fillAuthorityData as jest.Mock).mock.calls)).not.toContain(FOREIGN_KEY)
     expect(JSON.stringify((repo.insertTransmissionEvent as jest.Mock).mock.calls)).not.toContain(FOREIGN_KEY)
   })
@@ -456,7 +457,7 @@ describe('RESISTIU — D-F98: a causa chega ao alarme por TODO caminho real (ada
   it.each(consulta)('resistiu: consulta da TELA — %s → UM alarme "consulta" com a causa `%s`', async (_l, cause, arrange) => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     arrange()
-    expect(await settle(refreshServiceTransmission(realDeps(), A, INVOICE, 'Q', SCREEN))).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
+    expect(await settle(refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q', SCREEN))).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
     expect(origins()).toEqual(['consulta'])
     expect(causeOf()).toBe(cause)
   })
@@ -469,7 +470,7 @@ describe('RESISTIU — D-F98: a causa chega ao alarme por TODO caminho real (ada
   it.each(zeroB)('resistiu: passo 0b do TRANSMITIR — %s → nada reservado, UM alarme "transmissao" com a causa `%s`', async (_l, cause, arrange) => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(interrupted())
     arrange()
-    expect(await settle(transmitServiceInvoice(realDeps(), A, INVOICE))).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
+    expect(await settle(transmitServiceInvoice(realDeps(), A, webRef(A, INVOICE)))).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
     expect(repo.insertTransmission).not.toHaveBeenCalled()
     expect(origins()).toEqual(['transmissao'])
     expect(causeOf()).toBe(cause)
@@ -481,7 +482,7 @@ describe('RESISTIU — D-F98: a causa chega ao alarme por TODO caminho real (ada
       ;(repo.latestTransmission as jest.Mock).mockResolvedValue(t)
       ;(repo.listRefreshCandidates as jest.Mock).mockResolvedValue([t])
       arrange()
-      const r = await refreshOpenServiceTransmissions(realDeps(), A)
+      const r = await refreshOpenServiceTransmissions(realDeps(), A, { terminal: WEB })
       expect(r.errors).toEqual([expect.objectContaining({ invoiceId: INVOICE, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })])
       expect(origins()).toEqual(['rodizio'])
       expect(causeOf()).toBe(cause)
@@ -493,7 +494,7 @@ describe('RESISTIU — D-F98: a causa chega ao alarme por TODO caminho real (ada
       ;(fiscal.logger.error as jest.Mock).mockClear(); mockHttp.mockReset(); stamps = []
       reconfirmScenario()
       arrange()
-      expect(await settle(reconfirmBeforeLocalCancel(realDeps(), A, INVOICE))).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
+      expect(await settle(reconfirmBeforeLocalCancel(realDeps(), A, webRef(A, INVOICE)))).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
       expect(origins()).toEqual(['reconferencia'])
       expect(causeOf()).toBe(cause)
       expect(stamps).toEqual([])
@@ -503,7 +504,7 @@ describe('RESISTIU — D-F98: a causa chega ao alarme por TODO caminho real (ada
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'unknown', nfseXml: nfseXmlOf(KEY), dhProc: '2026-09-21T10:15:30-03:00' })
     conn.rollback.mockRejectedValueOnce(new Error('Connection lost: The server closed the connection.'))
-    expect(await settle(refreshServiceTransmission(deps, A, INVOICE, 'Q', SCREEN))).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
+    expect(await settle(refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q', SCREEN))).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
     expect(causeOf()).toBe('situacao-ilegivel')
   })
   it('resistiu: re-embrulho fora da lista não forja causa — o alarme lê `nao-classificada` de um 502 sem marca (o alarme continua, sem texto)', () => {
@@ -522,7 +523,7 @@ describe('RESISTIU — D-F98: a causa chega ao alarme por TODO caminho real (ada
 describe('RESISTIU — D-F98 (c): nenhuma porta leva Id/CPF/CNPJ/letras do terceiro — mensagem HTTP, relatório, logs (índice E transporte), vozes', () => {
   it.each(THIRD_PARTIES)('resistiu: POST /nfse (transmitir) devolve a NFS-e de OUTRO DPS — terceiro com $label → 502 ambíguo, nenhuma voz, nada do terceiro em lugar nenhum', async ({ dpsId, needles }) => {
     mockHttp.mockImplementation(async (call: HttpsCall) => (call.method === 'POST' && /\/nfse$/.test(call.url) ? foreignNfse(dpsId) : /convenio/.test(call.url) ? ok({ prazoCancelamentoDias: 365 }) : notFound()))
-    const out = await settle(transmitServiceInvoice(realDeps(), A, INVOICE))
+    const out = await settle(transmitServiceInvoice(realDeps(), A, webRef(A, INVOICE)))
     expect(out).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
     expect(ambiguousCauseOf(out)).toBe('nfse-de-outro-dps')
     expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()
@@ -532,7 +533,7 @@ describe('RESISTIU — D-F98 (c): nenhuma porta leva Id/CPF/CNPJ/letras do terce
   it.each(THIRD_PARTIES)('resistiu: consulta da TELA — terceiro com $label', async ({ dpsId, needles }) => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     fisco({ nfse: () => foreignNfse(dpsId) })
-    const out = await settle(refreshServiceTransmission(realDeps(), A, INVOICE, 'Q', SCREEN))
+    const out = await settle(refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q', SCREEN))
     expect(causeOf()).toBe('nfse-de-outro-dps')
     const hay = haystack(out)
     for (const n of needles) expect(hay).not.toContain(n)
@@ -540,7 +541,7 @@ describe('RESISTIU — D-F98 (c): nenhuma porta leva Id/CPF/CNPJ/letras do terce
   it.each(THIRD_PARTIES)('resistiu: passo 0b do TRANSMITIR — terceiro com $label', async ({ dpsId, needles }) => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(interrupted())
     fiscoP({ dpsKey: KEY, nfse: () => foreignNfse(dpsId) })
-    const out = await settle(transmitServiceInvoice(realDeps(), A, INVOICE))
+    const out = await settle(transmitServiceInvoice(realDeps(), A, webRef(A, INVOICE)))
     expect(causeOf()).toBe('nfse-de-outro-dps')
     expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()                      // nenhuma voz F com o Id alheio
     const hay = haystack(out)
@@ -551,7 +552,7 @@ describe('RESISTIU — D-F98 (c): nenhuma porta leva Id/CPF/CNPJ/letras do terce
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(t)
     ;(repo.listRefreshCandidates as jest.Mock).mockResolvedValue([t])
     fisco({ nfse: () => foreignNfse(dpsId) })
-    const r = await refreshOpenServiceTransmissions(realDeps(), A)
+    const r = await refreshOpenServiceTransmissions(realDeps(), A, { terminal: WEB })
     expect(r.errors).toHaveLength(1)
     const hay = haystack(r)
     for (const n of needles) expect(hay).not.toContain(n)
@@ -559,7 +560,7 @@ describe('RESISTIU — D-F98 (c): nenhuma porta leva Id/CPF/CNPJ/letras do terce
   it.each(THIRD_PARTIES)('resistiu: RECONFERÊNCIA — terceiro com $label', async ({ dpsId, needles }) => {
     reconfirmScenario()
     fiscoP({ dpsKey: KEY, nfse: () => foreignNfse(dpsId) })
-    const out = await settle(reconfirmBeforeLocalCancel(realDeps(), A, INVOICE))
+    const out = await settle(reconfirmBeforeLocalCancel(realDeps(), A, webRef(A, INVOICE)))
     expect(causeOf()).toBe('nfse-de-outro-dps')
     const hay = haystack(out)
     for (const n of needles) expect(hay).not.toContain(n)
@@ -574,7 +575,7 @@ describe('RESISTIU — D-F99 × reserva morta: a tentativa sem voz ganha voz soz
   it('resistiu: o rodízio REVISITA a tentativa sem voz (SQL real das candidatas: `le.kind IS NULL` com a reserva mais velha que o mínimo)', async () => {
     let sql = ''
     const actual = jest.requireActual('../nfse/repository') as typeof repo
-    await actual.listRefreshCandidates({ query: async (s: string) => { sql = s; return [[]] } } as any, 'setes_setes', 1, 5, IN_FLIGHT_MINUTES, 8)
+    await actual.listRefreshCandidates({ query: async (s: string) => { sql = s; return [[]] } } as any, 'setes_setes', webScope(1), 5, IN_FLIGHT_MINUTES, 8)
     expect(sql.replace(/\s+/g, ' ')).toMatch(/le\.kind IS NULL AND t\.created_at < DATE_SUB\(NOW\(\), INTERVAL \? MINUTE\)/)
   })
   it('resistiu: vida = [F por consulta (1), reserva MORTA (2, sem voz há > 10 min)] → a prova não passa; a consulta da 2 (rodízio) pergunta o GET /dps, ouve E2404 e FECHA a 2 com F (D-F51); a nova candidata é a 2 e o E2404 POSTERIOR ao F dela prova', async () => {
@@ -583,8 +584,8 @@ describe('RESISTIU — D-F99 × reserva morta: a tentativa sem voz ganha voz soz
     expect(reconfirmationProven(f1 as any, [f1, dead] as any)).toBe(false)
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(dead)
     fiscoP({})                                                                         // GET /dps → E2404 (tipoAmbiente 1 = P)
-    expect(await refreshServiceTransmission(realDeps(), A, INVOICE, 'Q', { attempt: 2, fromRun: true })).toMatchObject({ attempt: 2, changed: true, kind: 'F' })
-    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(expect.anything(), 1, INVOICE, 2, A.userId, expect.objectContaining({ kind: 'F', source: 'Q' }))
+    expect(await refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q', { attempt: 2, fromRun: true })).toMatchObject({ attempt: 2, changed: true, kind: 'F' })
+    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(itxLike(expect.anything(), 1, INVOICE), 2, A.userId, expect.objectContaining({ kind: 'F', source: 'Q' }))
     const f2 = F({ attempt: 2, createdAt: '2026-10-11 09:00:00', lastEventAt: '2026-10-11 10:30:00' })
     const life = [f1, f2]
     expect(reconfirmationCandidate(life as any)?.attempt).toBe(2)

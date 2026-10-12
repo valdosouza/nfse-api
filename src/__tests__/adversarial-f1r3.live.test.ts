@@ -22,7 +22,9 @@ import { disposableFiscalDb, DisposableFiscalDb } from './live-harness'
 import { createApp } from '../app'
 import type { TaxAuthorityAdapter, AuthorityContext } from '../authority/types'
 import { resetMunicipalTermsCache } from '../nfse/transmission'
-import { countLiveTransmissions } from '../nfse/repository'
+import { refOf } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
+// parte 2 da NE-1a (D-NE9): as vivas são contadas pelo EMITTER do núcleo (leituras PUBLICADAS de todas as famílias)
+const countLiveTransmissions = (q: any, inst: number, environment?: 'H' | 'P') => fiscal.countLiveTransmissions(q, inst, { branches: 'all', environment })
 
 // mesma normalização EM MEMÓRIA das rodadas 1/2: o ramo congelado das notas do dev tem cTribMun "0102"
 // (anterior à D-N26b) → 422 antes de reservar. Nada é escrito no ERP.
@@ -232,7 +234,7 @@ d('GATE ADVERSARIAL F1 — 3ª rodada — ordem de travas da reserva × escritor
       const id = Number(r.id)
       if (maxAttemptBefore.has(id) || dpsBefore.has(id)) continue
       try {
-        const h = await svc.readServiceInvoice(ctx.pool, SCHEMA, INST, id)
+        const h = await svc.readServiceInvoice(ctx.pool, SCHEMA, refOf(INST, id))
         await svc.buildDpsBase(ctx.pool, SCHEMA, INST, h, 'H')
         fresh.push(id)
       } catch { /* cadastro incompleto — não serve de alvo */ }

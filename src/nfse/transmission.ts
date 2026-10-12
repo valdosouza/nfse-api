@@ -3,9 +3,10 @@ import {
   MasterKeyRing, FiscalStorage, OpenedIssuer, openIssuer, nextDpsNumber, erp, AuthorityHttpError,
   signXml, isLocalCredentialError, toDbDateTime, nowIsoIn, withZoneWall, DEFAULT_TIME_ZONE,
   isLiveTransmission, isAuthorized, fiscalStateOf, localCancelPending, isSubstitutionCancel, CANCEL_EVENT_CODES, reconfirmationCandidate, currentOf,
-  acquireRefreshLease, releaseRefreshLease, renewRefreshLease, getIssuer, newCrashRef, contentionToHttpError, emissionStillInErp,
+  acquireRefreshLease, releaseRefreshLease, renewRefreshLease, getIssuer, newCrashRef, contentionToHttpError, emissionStillInErp, SERVICE_ISSUER_MODEL,
   ServiceFiscalState, TransmissionEventKind, TransmissionSource, AuthorityEnvironment, AuthorityContext, Queryable, runShortCommand,
-  tagAmbiguous, ambiguousCauseOf, invoiceRef, WEB_TERMINAL, InvoiceRef,
+  tagAmbiguous, ambiguousCauseOf, invoiceRef, InvoiceRef, InvoiceScope, InvoiceTx, withInvoiceTx as withLockedInvoice,
+  classifyAuthorityError, OUTCOME_KIND, EMITTER_FAILURE_CODES, unhandledOutcome, recordVoiceOnce, recordKindOnce, reserveCancelRequest, releaseCancelRequest,
 } from 'fiscal-api'
 import type { TaxAuthorityAdapter, NfseQuery, MunicipalTerms } from '../authority/types'
 import fs from 'fs'
@@ -19,7 +20,7 @@ import {
   TransmissionRow, TransmissionEventRow, getLifeDps, insertLifeDps, getTransmission, latestTransmission,
   findTransmissionByDpsId, findKeyHolder, listLifeTransmissions, insertTransmission, fillAuthorityData, insertTransmissionEvent,
   hasTransmissionEvent, findTransmissionEventByKind, touchQueriedAt, recordNfseNotGenerated, listRefreshCandidates,
-  DEFAULT_CANCEL_DAYS, REFRESH_AUTHORIZED_MARGIN_DAYS, ServiceVoiceWriteKind,
+  DEFAULT_CANCEL_DAYS, REFRESH_AUTHORIZED_MARGIN_DAYS,
 } from './repository'
 import { toTsString } from '../authority/dps-builder'
 
@@ -82,27 +83,35 @@ export const nfseFileName = (accessKey: string) => `${String(accessKey).replace(
 export const cancelEventFileName = (accessKey: string) => `${String(accessKey).replace(/\D/g, '')}-evt101101.xml`
 
 /**
- * NE-1a (D-NE12, parte 1 — D-NE59): os leitores do ERP do núcleo recebem a referência INTEIRA da nota (terminal por parâmetro). Borda
- * PROVISÓRIA: a nota da NFS-e da web é a do terminal da web; a parte 2 da NE-1a leva a referência até a rota (`WEB_TERMINAL` só lá).
+ * NE-1a parte 2 (D-NE12/D-NE59): a nota chega INTEIRA da borda (`InvoiceRef` — o terminal vem da ROTA; `WEB_TERMINAL` só lá). A
+ * referência é do estabelecimento de quem pede: outra institution ou terminal fora do domínio é erro de quem chama (falha ALTO).
  */
-export const webInvoice = (institutionId: number, invoiceId: number): InvoiceRef => invoiceRef(institutionId, invoiceId, WEB_TERMINAL)
+function refOf(actor: Actor, ref: InvoiceRef): InvoiceRef {
+  if (!ref || ref.institutionId !== actor.institutionId || !Number.isInteger(ref.invoiceId) || !Number.isInteger(ref.terminal) || ref.terminal < 0) {
+    throw new Error(`Referência da nota inválida para quem pede (institution ${actor.institutionId}): ${JSON.stringify(ref)}`)
+  }
+  // CÓPIA congelada (gate NE1A2-12): a composição usa a referência em várias transações — a do chamador pode ser mutável
+  return invoiceRef(ref.institutionId, ref.invoiceId, ref.terminal)
+}
+
+/** Escopo das leituras em LOTE (rodízio, pendentes): o estabelecimento de quem pede + o terminal dito pela borda. */
+function scopeOf(actor: Actor, terminal: number): InvoiceScope {
+  if (!Number.isInteger(terminal) || terminal < 0) throw new Error(`Terminal inválido: ${JSON.stringify(terminal)}`)
+  return { institutionId: actor.institutionId, terminal }
+}
 
 // ---------------------------------------------------------------------------
 // Transação sob a TRAVA DA NOTA (D-F27/D-F31): a 1ª coisa que a transação faz no ERP
 // ---------------------------------------------------------------------------
 
-async function withInvoiceTx<T>(
-  deps: NfseDeps, label: string, actor: Actor, invoiceId: number,
-  fn: (conn: PoolConnection, locked: erp.LockedInvoice) => Promise<T>,
+// A peça é do NÚCLEO (parte 2 da NE-1a — D-NE13/D-NE58/D-NE74): o `InvoiceTx` que ela produz é a ÚNICA porta do escritor da voz. O leitor
+// travante é o do índice (`erp.lockInvoice` — o mesmo do núcleo; a costura que os testes da família simulam).
+function withInvoiceTx<T>(
+  deps: NfseDeps, label: string, actor: Actor, ref: InvoiceRef,
+  fn: (itx: InvoiceTx) => Promise<T>,
   opts: { requireAlive?: boolean } = {},
 ): Promise<T> {
-  return withTransaction(deps.pool, label, { institutionId: actor.institutionId, invoiceId }, async conn => {
-    const locked = await erp.lockInvoice(conn, actor.schemaName, webInvoice(actor.institutionId, invoiceId))
-    if (!locked || (opts.requireAlive && !locked.alive)) {
-      throw new HttpError(404, `Nota ${invoiceId} não encontrada`, undefined, ErrorCodes.INVOICE_NOT_FOUND)
-    }
-    return fn(conn, locked)
-  })
+  return withLockedInvoice(deps.pool, actor, refOf(actor, ref), { label, requireAlive: opts.requireAlive, lock: erp.lockInvoice }, fn)
 }
 
 function assertTransmittable(header: ServiceInvoiceHeader): void {
@@ -206,20 +215,11 @@ function buildSignedCancel(accessKey: string, reason: string, dhEvento: string, 
 /** Contexto mTLS no ambiente CONGELADO da tentativa (D-N6); o A1 é UM para H e P (D-N31). */
 const ctxFor = (opened: OpenedIssuer, environment: AuthorityEnvironment): AuthorityContext => ({ environment, cert: opened.cert, key: opened.key })
 
-export type AuthorityOutcome = 'rejected' | 'auth_failed' | 'ambiguous' | 'local'
-
-/** Recusa EXPLÍCITA → R; credencial recusada → F; credencial LOCAL → F (Q-N30b); o resto é AMBÍGUO (D-I21). */
-export function classifyAuthorityError(err: unknown): AuthorityOutcome {
-  if (!(err instanceof AuthorityHttpError)) return 'ambiguous'
-  if (err.code === ErrorCodes.FISCAL_DPS_REJECTED) return 'rejected'
-  if (err.code === ErrorCodes.FISCAL_AUTHORITY_AUTH_FAILED) return 'auth_failed'
-  if (err.code === ErrorCodes.FISCAL_CERT_INVALID) return 'local'
-  return 'ambiguous'
-}
-
-// D-F106: o mapa grava na voz — tipado pelo vocabulário de ESCRITA da família (o compilador recusa S/P/D aqui) e CONGELADO (gate R22,
-// R22-02: `Object.assign`/`Reflect.set` compilavam sem cast e trocavam a voz de toda falha local do processo)
-export const OUTCOME_KIND: Readonly<Record<Exclude<AuthorityOutcome, 'ambiguous'>, ServiceVoiceWriteKind>> = Object.freeze({ rejected: 'R', auth_failed: 'F', local: 'F' })
+// Desfecho → voz (recusa EXPLÍCITA → R; credencial recusada → F; credencial LOCAL → F — Q-N30b; o resto AMBÍGUO — D-I21): peças do NÚCLEO
+// (parte 2 da NE-1a, passo 5 — `fiscal-api/src/voice/outcome.ts`), re-exportadas com os mesmos nomes. D-F106: o `OUTCOME_KIND` grava na
+// voz — CONGELADO (gate R22, R22-02) e com valores literais R/F; quem o usa no escritor desta família passa pelo tipo da lista dela.
+export { classifyAuthorityError, OUTCOME_KIND, EMITTER_FAILURE_CODES } from 'fiscal-api'
+export type { AuthorityOutcome } from 'fiscal-api'
 
 export function firstAuthorityCode(err: AuthorityHttpError): string | null {
   for (const f of err.fields ?? []) {
@@ -234,13 +234,6 @@ export function authorityMessage(err: AuthorityHttpError): string {
   const parts = (err.fields ?? []).map(f => f.message).filter(Boolean)
   return (parts.length ? parts.join(' — ') : err.message).slice(0, 255)
 }
-
-/** Erros do EMISSOR, não da nota (LOW-A): a passada do rodízio pára no 1º. */
-export const EMITTER_FAILURE_CODES: ReadonlySet<string> = new Set([
-  ErrorCodes.FISCAL_AUTHORITY_UNAVAILABLE, ErrorCodes.FISCAL_AUTHORITY_AUTH_FAILED, ErrorCodes.FISCAL_CERT_INVALID,
-  ErrorCodes.FISCAL_ISSUER_MISSING, ErrorCodes.FISCAL_CERT_MISSING, ErrorCodes.FISCAL_CERT_EXPIRED,
-  ErrorCodes.FISCAL_MASTER_KEY_UNAVAILABLE,
-])
 
 // Prazo de cancelamento do PAM (D-N15) — cache de DADO (não é controle): 1 h por município/ambiente; a FALHA também é
 // guardada (10 min — gates da Rodada 4: convênio lento/fora não pode ser re-perguntado a cada passada do rodízio)
@@ -305,10 +298,12 @@ export interface TransmitResult {
   kind:       TransmissionEventKind
 }
 
-export async function transmitServiceInvoice(deps: NfseDeps, actor: Actor, invoiceId: number): Promise<TransmitResult> {
+export async function transmitServiceInvoice(deps: NfseDeps, actor: Actor, ref: InvoiceRef): Promise<TransmitResult> {
   const { schemaName: s, institutionId, userId } = actor
+  ref = refOf(actor, ref)                                     // conferida e COPIADA uma vez (NE1A2-12)
+  const { invoiceId } = ref
   // (a) tudo que é do ERP e pode faltar falha ANTES de reservar e antes do fisco
-  const header = await readServiceInvoice(deps.pool, s, institutionId, invoiceId)
+  const header = await readServiceInvoice(deps.pool, s, ref)
   assertTransmittable(header)
   // (b) habilitação + A1 válido (409 legíveis — nunca chamada às cegas)
   const opened0 = await openIssuer(estDeps(deps), institutionId, SERVICE_MODEL, { schemaName: actor.schemaName })
@@ -321,10 +316,10 @@ export async function transmitServiceInvoice(deps: NfseDeps, actor: Actor, invoi
   buildSignedDps(base, opened0.issuer.serie, 1, opened0)
 
   // (0b) reserva INTERROMPIDA (sem voz há mais de 10 min — HIGH-3 da Onda 2): pergunta ao fisco ANTES
-  const latest0 = await latestTransmission(deps.pool, institutionId, invoiceId, header.lifeEvent)
+  const latest0 = await latestTransmission(deps.pool, ref, header.lifeEvent)
   // D-F95 (= Q-F101 (b)): o ambíguo do passo 0b (GET /dps ou a consulta pela chave) vai ao alarme com a origem "transmissao"
   if (latest0 && isInterruptedInFlight(latest0)) {
-    try { await reconcileInterrupted(deps, actor, latest0, opened0) }
+    try { await reconcileInterrupted(deps, actor, ref, latest0, opened0) }
     catch (err) { logAmbiguousFiscal('transmissao', { institutionId: actor.institutionId, invoiceId, attempt: latest0.attempt }, err); throw err }
   }
 
@@ -333,33 +328,34 @@ export async function transmitServiceInvoice(deps: NfseDeps, actor: Actor, invoi
   // Gate adversarial R2: o emissor e o A1 são travados ANTES de qualquer leitura não travante — o snapshot do
   // REPEATABLE READ nasce na 1ª leitura consistente; nascendo antes da trava do emissor, a reserva que esperava
   // um DELETE do A1 acordava e assinava com o A1 já apagado.
-  const reserved = await withInvoiceTx(deps, 'reserva da transmissão', actor, invoiceId, async (conn, locked) => {
+  const reserved = await withInvoiceTx(deps, 'reserva da transmissão', actor, ref, async itx => {
+    const { conn, locked } = itx
     if (!locked.alive || locked.lastEvent !== header.lastInvoiceEvent || locked.lifeEvent !== header.lifeEvent) throw changedDuringTransmit()
     const life = locked.lifeEvent!
     const opened = await openIssuer(estDeps(deps), institutionId, SERVICE_MODEL, { conn, forUpdate: true, schemaName: actor.schemaName })
     // sob a TRAVA DA NOTA todo escritor das tentativas está serializado: leitura NÃO travante (gate M-4 —
     // o FOR UPDATE aqui gerava gap lock ANTES do contador e deadlock entre notas vizinhas)
-    const latest = await latestTransmission(conn, institutionId, invoiceId, life)
+    const latest = await latestTransmission(conn, ref, life)
     if (latest && (isLiveTransmission(latest) || isAuthorized(latest))) throw liveTransmissionError(latest)
     // M2 do socrático da Onda 3 (Q-N33): voz C do fisco com o C local ainda pendente — reenviar o MESMO Id
     // não tem desfecho bom (o fisco ecoa a NFS-e cancelada). Resolve-se no ERP antes (D-F28).
     // D-F67/D-F68: SUBSTITUÍDA no fisco (e105102) = nunca reenviar o mesmo DPS, mantida ou não a nota
     if (isSubstitutionCancel(latest)) throw substituted(latest!.attempt)
     if (latest?.lastKind === 'C' && locked.lastKind !== 'C') throw effectPending(latest.attempt)
-    if ((await branchUpdatedAt(conn, s, institutionId, invoiceId)) !== header.branchUpdatedAt) throw changedDuringTransmit()
-    let dps = await getLifeDps(conn, institutionId, invoiceId, life)
+    if ((await branchUpdatedAt(conn, s, ref)) !== header.branchUpdatedAt) throw changedDuringTransmit()
+    let dps = await getLifeDps(conn, ref, life)
     if (!dps) {
       // D-N3/D-F30: a 1ª transmissão DESTA VIDA cunha série + nDPS (contador do emissor — D-N18) e o Id
       if (!opened.issuer.serie) throw new HttpError(409, 'Habilitação do emissor SE sem série', undefined, ErrorCodes.FISCAL_ISSUER_MISSING)
       const nDps = await nextDpsNumber(conn, institutionId)
       dps = { lifeEvent: life, serie: opened.issuer.serie, dpsNumber: nDps, dpsId: serviceDpsId(base.emitter, opened.issuer.serie, nDps) }
-      await insertLifeDps(conn, institutionId, invoiceId, dps, userId)
+      await insertLifeDps(itx, dps, userId)
     } else if (serviceDpsId(base.emitter, dps.serie, dps.dpsNumber) !== dps.dpsId) {
       // o fisco já conhece o Id desta vida; município/CNPJ do emitente mudaram desde então (D-F30)
       throw new HttpError(409, `O Id do DPS desta nota (${dps.dpsId}) mudaria com o cadastro atual do estabelecimento — o fisco já conhece o Id antigo; nada enviado`,
         [{ field: 'emitter', message: 'Município ou CNPJ do emitente mudou desde a 1ª tentativa' }], ErrorCodes.FISCAL_DPS_ID_CHANGED)
     }
-    const attempt = await insertTransmission(conn, institutionId, invoiceId, life, opened.issuer.environment, userId)
+    const attempt = await insertTransmission(itx, life, opened.issuer.environment, userId)
     const { dpsId, xml } = buildSignedDps(base, dps.serie, dps.dpsNumber, opened, opened.issuer.environment)
     return { attempt, dpsId, xml, opened }
   }, { requireAlive: true })
@@ -378,8 +374,8 @@ export async function transmitServiceInvoice(deps: NfseDeps, actor: Actor, invoi
     // (g') AMBÍGUO: o fisco PODE ter gerado a NFS-e — a reserva fica EM VOO; a consulta por dps_id reconcilia
     if (cls === 'ambiguous') throw err
     const aerr = err as AuthorityHttpError
-    await withInvoiceTx(deps, 'voz do fisco (recusa)', actor, invoiceId, async conn => {
-      await insertTransmissionEvent(conn, institutionId, invoiceId, reserved.attempt, userId, {
+    await withInvoiceTx(deps, 'voz do fisco (recusa)', actor, ref, async itx => {
+      await insertTransmissionEvent(itx, reserved.attempt, userId, {
         kind: OUTCOME_KIND[cls], source: 'P', authorityCode: firstAuthorityCode(aerr), message: authorityMessage(aerr),
       })
     })
@@ -389,25 +385,24 @@ export async function transmitServiceInvoice(deps: NfseDeps, actor: Actor, invoi
 
   // (g) AUTORIZADA: write-once do fisco + voz A + XML da NFS-e
   const dh = toDbDateTime(outcome.dhProc)
-  const holderAttempt = await withInvoiceTx(deps, 'voz do fisco (autorizada)', actor, invoiceId, async conn => {
+  const holderAttempt = await withInvoiceTx(deps, 'voz do fisco (autorizada)', actor, ref, async itx => {
+    const { conn } = itx
     // gate socrático M-5: a consulta (rodízio/outra tela) pode ter pousado ESTA chave numa irmã durante o
     // POST — a chave é UMA (UNIQUE); a reservada fecha como envio reconciliado, nunca 500
-    const holder = await findKeyHolder(conn, institutionId, invoiceId, outcome.accessKey)
+    const holder = await findKeyHolder(conn, ref, outcome.accessKey)
     if (holder && holder.attempt !== reserved.attempt) {
-      const cur = await getTransmission(conn, institutionId, invoiceId, reserved.attempt)
+      const cur = await getTransmission(conn, ref, reserved.attempt)
       if (cur && cur.lastKind === null) {
-        await insertTransmissionEvent(conn, institutionId, invoiceId, reserved.attempt, userId, {
+        await insertTransmissionEvent(itx, reserved.attempt, userId, {
           kind: 'F', source: 'P', message: `A NFS-e deste DPS pertence à tentativa ${holder.attempt} (chave ${outcome.accessKey}) — envio reconciliado`,
         })
       }
       return holder.attempt
     }
-    await fillAuthorityData(conn, institutionId, invoiceId, reserved.attempt, { accessKey: outcome.accessKey, nfseNumber: outcome.nfseNumber, dhProc: dh })
-    if (!(await hasTransmissionEvent(conn, institutionId, invoiceId, reserved.attempt, 'A', dh))) {
-      await insertTransmissionEvent(conn, institutionId, invoiceId, reserved.attempt, userId, {
-        kind: 'A', source: 'P', dh, message: `NFS-e ${outcome.nfseNumber ?? ''} chave ${outcome.accessKey}`.trim(),
-      })
-    }
+    await fillAuthorityData(itx, reserved.attempt, { accessKey: outcome.accessKey, nfseNumber: outcome.nfseNumber, dhProc: dh })
+    await recordVoiceOnce({ insertTransmissionEvent, hasTransmissionEvent }, itx, reserved.attempt, userId, {
+      kind: 'A', source: 'P', dh, message: `NFS-e ${outcome.nfseNumber ?? ''} chave ${outcome.accessKey}`.trim(),
+    })
     return reserved.attempt
   })
   await saveXmlSafe(deps, actor, base.emitter.cnpj, nfseFileName(outcome.accessKey), outcome.nfseXml, new Date(), environment, 'XML da NFS-e autorizada')
@@ -419,14 +414,14 @@ export async function transmitServiceInvoice(deps: NfseDeps, actor: Actor, invoi
  * Envio interrompido (reserva sem voz > 10 min): GET /dps/{id}. Achou → A pela consulta; não achou →
  * F "sem resposta" (o POST /nfse é síncrono — 10 min depois, ou a NFS-e existe ou nunca chegou).
  */
-async function reconcileInterrupted(deps: NfseDeps, actor: Actor, tx: TransmissionRow, opened: OpenedIssuer): Promise<void> {
+async function reconcileInterrupted(deps: NfseDeps, actor: Actor, ref: InvoiceRef, tx: TransmissionRow, opened: OpenedIssuer): Promise<void> {
   if (!tx.dpsId) return
   const key = await deps.adapter.queryDpsAccessKey(ctxFor(opened, tx.environment), tx.dpsId)
   if (key) {
-    await refreshServiceTransmission(deps, actor, tx.invoiceId, 'Q', { attempt: tx.attempt })
+    await refreshServiceTransmission(deps, actor, ref, 'Q', { attempt: tx.attempt })
     return
   }
-  await recordInterruptedFailure(deps, actor, tx)
+  await recordInterruptedFailure(deps, actor, ref, tx)
 }
 
 /**
@@ -436,13 +431,14 @@ async function reconcileInterrupted(deps: NfseDeps, actor: Actor, tx: Transmissi
  * em voo de ramo cortado nunca fechava e travava o emitente; D-F47). Sob a trava da nota; reconfere que segue sem voz.
  * Devolve true se gravou.
  */
-async function recordInterruptedFailure(deps: NfseDeps, actor: Actor, tx: TransmissionRow): Promise<{ recorded: boolean; current: TransmissionRow | null }> {
-  return withInvoiceTx(deps, 'reconciliação do envio interrompido', actor, tx.invoiceId, async conn => {
+async function recordInterruptedFailure(deps: NfseDeps, actor: Actor, ref: InvoiceRef, tx: TransmissionRow): Promise<{ recorded: boolean; current: TransmissionRow | null }> {
+  return withInvoiceTx(deps, 'reconciliação do envio interrompido', actor, ref, async itx => {
+    const { conn } = itx
     // sob a trava da nota a leitura é não travante (o snapshot nasce DEPOIS da trava — PADROES §9 regra 2)
-    const cur = await getTransmission(conn, actor.institutionId, tx.invoiceId, tx.attempt)
+    const cur = await getTransmission(conn, ref, tx.attempt)
     if (!cur || cur.lastKind !== null) return { recorded: false, current: cur }
-    await touchQueriedAt(conn, actor.institutionId, tx.invoiceId, tx.attempt)
-    await insertTransmissionEvent(conn, actor.institutionId, tx.invoiceId, tx.attempt, actor.userId, {
+    await touchQueriedAt(conn, ref, tx.attempt)
+    await insertTransmissionEvent(itx, tx.attempt, actor.userId, {
       kind: 'F', source: 'Q', message: 'Sem resposta do fisco e nenhuma NFS-e gerada para este DPS — envio interrompido',
     })
     return { recorded: true, current: cur }
@@ -465,19 +461,19 @@ export interface RefreshResult {
 
 /** Voz C desta tentativa — idempotente por KIND (HIGH-3a: um C por tentativa, qualquer dh). Sem efeito. */
 async function recordCancelVoice(
-  conn: PoolConnection, institutionId: number, userId: number | null, invoiceId: number, attempt: number,
+  itx: InvoiceTx, userId: number | null, attempt: number,
   source: TransmissionSource, dh: string | null, motive: string | null, eventCode: string | null = null,
 ): Promise<{ event: number; inserted: boolean; code: string | null }> {
-  const existing = await findTransmissionEventByKind(conn, institutionId, invoiceId, attempt, 'C')   // sob a trava da nota
-  if (existing) return { event: existing.event, inserted: false, code: existing.authorityCode ?? null }
   // D-F64: a SUBSTITUIÇÃO (e105102) fica escrita na voz — o efeito local (do setes-api, D-F28) NÃO é automático para ela
   const voiceText = `Cancelada no fisco${eventCode === '105102' ? ' por SUBSTITUIÇÃO (e105102)' : ''}${motive ? ': ' + motive : ''}`
-  const event = await insertTransmissionEvent(conn, institutionId, invoiceId, attempt, userId, {
-    // D-F68/D-F71: o TIPO do evento de cancelamento vai em `authority_code` (escrito uma vez; fora do domínio = NULL, nunca
-    // o 500 do CHECK — o adaptador só entrega códigos de CANCEL_EVENT_CODES)
-    kind: 'C', source, dh, message: voiceText.slice(0, 255), authorityCode: eventCode && CANCEL_EVENT_CODES.has(eventCode) ? eventCode : null,
+  // D-F68/D-F71: o TIPO do evento de cancelamento vai em `authority_code` (escrito uma vez; fora do domínio = NULL, nunca
+  // o 500 do CHECK — o adaptador só entrega códigos de CANCEL_EVENT_CODES)
+  const code = eventCode && CANCEL_EVENT_CODES.has(eventCode) ? eventCode : null
+  // um C por tentativa, qualquer dh (HIGH-3a) — a política "por kind" é do núcleo; já havendo, vale o código que está lá
+  const r = await recordKindOnce({ insertTransmissionEvent, findTransmissionEventByKind }, itx, attempt, userId, {
+    kind: 'C', source, dh, message: voiceText.slice(0, 255), authorityCode: code,
   })
-  return { event, inserted: true, code: eventCode && CANCEL_EVENT_CODES.has(eventCode) ? eventCode : null }
+  return r.inserted ? { event: r.event, inserted: true, code } : { event: r.event, inserted: false, code: r.existing.authorityCode ?? null }
 }
 
 /**
@@ -502,29 +498,31 @@ export function logAmbiguousFiscal(
 }
 
 export async function refreshServiceTransmission(
-  deps: NfseDeps, actor: Actor, invoiceId: number, source: Exclude<TransmissionSource, 'P'> = 'Q',
+  deps: NfseDeps, actor: Actor, ref: InvoiceRef, source: Exclude<TransmissionSource, 'P'> = 'Q',
   opts: { query?: NfseQuery; attempt?: number; fromRun?: boolean; origin?: 'consulta' } = {},
 ): Promise<RefreshResult> {
   try {
-    return await refreshServiceTransmissionInner(deps, actor, invoiceId, source, opts)
+    return await refreshServiceTransmissionInner(deps, actor, ref, source, opts)
   } catch (err) {
     // D-F91/D-F95: registra quem DISSE a origem (consulta da tela); o rodízio e a reconferência/transmissão registram por si, com mais
     // contexto — sem origem dita, nada (nunca deduzida pela ausência de flags — R17-03)
-    if (opts.origin) logAmbiguousFiscal(opts.origin, { institutionId: actor.institutionId, invoiceId, attempt: opts.attempt ?? null }, err)
+    if (opts.origin) logAmbiguousFiscal(opts.origin, { institutionId: actor.institutionId, invoiceId: ref.invoiceId, attempt: opts.attempt ?? null }, err)
     throw err
   }
 }
 
 async function refreshServiceTransmissionInner(
-  deps: NfseDeps, actor: Actor, invoiceId: number, source: Exclude<TransmissionSource, 'P'>,
+  deps: NfseDeps, actor: Actor, ref: InvoiceRef, source: Exclude<TransmissionSource, 'P'>,
   opts: { query?: NfseQuery; attempt?: number; fromRun?: boolean },
 ): Promise<RefreshResult> {
   const { schemaName: s, institutionId, userId } = actor
-  const life = await erp.invoiceLife(deps.pool, s, webInvoice(institutionId, invoiceId))
+  ref = refOf(actor, ref)                                     // conferida e COPIADA uma vez (NE1A2-12)
+  const { invoiceId } = ref
+  const life = await erp.invoiceLife(deps.pool, s, ref)
   if (!life) throw new HttpError(404, `Nota ${invoiceId} não encontrada`, undefined, ErrorCodes.INVOICE_NOT_FOUND)
   // R3-1: quem sabe qual tentativa quer olhar diz — senão a vigente da vida
-  const tx0 = (opts.attempt != null ? await getTransmission(deps.pool, institutionId, invoiceId, opts.attempt) : null)
-    ?? await latestTransmission(deps.pool, institutionId, invoiceId, life?.lifeEvent ?? null)
+  const tx0 = (opts.attempt != null ? await getTransmission(deps.pool, ref, opts.attempt) : null)
+    ?? await latestTransmission(deps.pool, ref, life?.lifeEvent ?? null)
   if (!tx0) throw new HttpError(409, `Nota ${invoiceId} nunca foi transmitida ao fisco`, undefined, ErrorCodes.FISCAL_NOT_TRANSMITTED)
   const pendingOf = (kind: TransmissionEventKind | null, code: string | null = null) => localCancelPending({ lastKind: kind, lastCode: code }, life?.lastKind ?? null)
   const unchanged = (tx: TransmissionRow): RefreshResult =>
@@ -533,7 +531,7 @@ async function refreshServiceTransmissionInner(
   if (tx0.lastKind === 'C') {                                // C é o fim da história da tentativa (o efeito é do ERP)
     // D-F78 (= Q-F85 (a), Valdo 2026-10-10): a consulta relê o fisco SÓ para arquivar o XML do evento que faltou (Q-N38 —
     // e, na substituição, a chave da substituta — D-F76); a voz não muda
-    if (!opts.query) await archiveCancelEventIfMissing(deps, actor, invoiceId, tx0)
+    if (!opts.query) await archiveCancelEventIfMissing(deps, actor, ref, tx0)
     return unchanged(tx0)
   }
 
@@ -546,7 +544,7 @@ async function refreshServiceTransmissionInner(
     const ctx = ctxFor(opened, tx0.environment)
     if (!accessKey) {
       // a chave é da tentativa que CUNHOU o Id: se uma irmã JÁ a detém (R3-1: esta é órfã), consulta-se por ela
-      const holder = await findTransmissionByDpsId(deps.pool, institutionId, invoiceId, tx0.lifeEvent, tx0.dpsId, tx0.environment)
+      const holder = await findTransmissionByDpsId(deps.pool, ref, tx0.lifeEvent, tx0.dpsId, tx0.environment)
       if (holder?.accessKey) {
         accessKey = holder.accessKey
         target = holder
@@ -556,15 +554,15 @@ async function refreshServiceTransmissionInner(
         if (!accessKey) {
           // D-F51: em voo há ≥ IN_FLIGHT_MINUTES e o fisco sem o DPS = envio interrompido → F (o mesmo veredito do transmitir)
           if (isInterruptedInFlight(tx0)) {
-            const closed = await recordInterruptedFailure(deps, actor, tx0)
+            const closed = await recordInterruptedFailure(deps, actor, ref, tx0)
             if (closed.recorded) return { invoiceId, attempt: tx0.attempt, changed: true, kind: 'F', accessKey: null, localCancelPending: pendingOf('F') }
             // gate r10 LOW [r10-lost-race-stale]: outro escritor gravou a voz antes (sob a trava ela já existe) — devolve a voz
             // LIDA e NÃO carimba last_queried_at: este GET /dps é ANTERIOR à voz do vencedor (a prova da D-F29 exige posterior)
             if (closed.current) return unchanged(closed.current)
           }
-          await touchQueriedAt(deps.pool, institutionId, invoiceId, tx0.attempt)   // em voo recente (ou já com voz): "nós olhamos"
+          await touchQueriedAt(deps.pool, ref, tx0.attempt)   // em voo recente (ou já com voz): "nós olhamos"
           // D-F90: o E2404 desta pergunta é fato (inclusive na revisita do F — D-F52); só pousa se a voz vista ainda é a última
-          await recordNfseNotGenerated(deps.pool, institutionId, invoiceId, tx0.attempt, tx0.lastEvent ?? null)
+          await recordNfseNotGenerated(deps.pool, ref, tx0.attempt, tx0.lastEvent ?? null)
           return unchanged(tx0)
         }
         target = holder ?? tx0
@@ -585,17 +583,18 @@ async function refreshServiceTransmissionInner(
   }
   const dhA = toDbDateTime(nfse.dhProc ?? parsed.dhProc)
 
-  const result = await withInvoiceTx(deps, 'voz do fisco (consulta)', actor, invoiceId, async (conn, locked): Promise<RefreshResult> => {
+  const result = await withInvoiceTx(deps, 'voz do fisco (consulta)', actor, ref, async (itx): Promise<RefreshResult> => {
+    const { conn, locked } = itx
     const pendingNow = (kind: TransmissionEventKind | null, code: string | null = null) => localCancelPending({ lastKind: kind, lastCode: code }, locked.lastKind)
-    const tx = await getTransmission(conn, institutionId, invoiceId, target.attempt)      // sob a trava da nota
+    const tx = await getTransmission(conn, ref, target.attempt)      // sob a trava da nota
     if (!tx) return { ...unchanged(target), localCancelPending: pendingNow(target.lastKind, target.lastCode) }
-    await touchQueriedAt(conn, institutionId, invoiceId, tx.attempt)
+    await touchQueriedAt(conn, ref, tx.attempt)
     // R3-1: a tentativa que perguntou está em voo e a NFS-e deste Id é de OUTRA — órfã: encerra com F
     if (tx0.attempt !== tx.attempt && tx0.lastKind === null) {
-      const orphan = await getTransmission(conn, institutionId, invoiceId, tx0.attempt)
+      const orphan = await getTransmission(conn, ref, tx0.attempt)
       if (orphan && orphan.lastKind === null) {
-        await touchQueriedAt(conn, institutionId, invoiceId, orphan.attempt)
-        await insertTransmissionEvent(conn, institutionId, invoiceId, orphan.attempt, userId, {
+        await touchQueriedAt(conn, ref, orphan.attempt)
+        await insertTransmissionEvent(itx, orphan.attempt, userId, {
           kind: 'F', source, message: `A NFS-e deste DPS pertence à tentativa ${tx.attempt} (chave ${accessKey}) — envio reconciliado`,
         })
       }
@@ -604,22 +603,21 @@ async function refreshServiceTransmissionInner(
       throw tagAmbiguous(new HttpError(502, 'Fisco respondeu sem situação legível para a NFS-e — nada gravado; verifique o adaptador',
         undefined, ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE), nfse.unknownCause ?? 'situacao-ilegivel')   // gate R19 (S3)
     }
-    await fillAuthorityData(conn, institutionId, invoiceId, tx.attempt, { accessKey: nfse.accessKey, nfseNumber: parsed.nNFSe, dhProc: dhA })
+    await fillAuthorityData(itx, tx.attempt, { accessKey: nfse.accessKey, nfseNumber: parsed.nNFSe, dhProc: dhA })
     let changed = false
     let kind: TransmissionEventKind | null = tx.lastKind
     // A: quando a tentativa ainda não a tem — inclusive depois de R/F (MEDIUM-1); nunca depois de C/K
     if (!isAuthorized(tx) && tx.lastKind !== 'C' && tx.lastKind !== 'K'
-        && !(await hasTransmissionEvent(conn, institutionId, invoiceId, tx.attempt, 'A', dhA))) {
-      await insertTransmissionEvent(conn, institutionId, invoiceId, tx.attempt, userId, {
-        kind: 'A', source, dh: dhA, message: `NFS-e ${parsed.nNFSe ?? ''} chave ${nfse.accessKey}`.trim(),
-      })
+        && (await recordVoiceOnce({ insertTransmissionEvent, hasTransmissionEvent }, itx, tx.attempt, userId, {
+          kind: 'A', source, dh: dhA, message: `NFS-e ${parsed.nNFSe ?? ''} chave ${nfse.accessKey}`.trim(),
+        })) !== null) {
       changed = true; kind = 'A'
     }
     if (nfse.status !== 'cancelled') {
       // D-N17/D-N28: K sem cancelamento no fisco → N "pedido não consta" — só depois da CARÊNCIA
       if (tx.lastKind === 'K' && (tx.lastEventAgeMinutes ?? 0) >= IN_FLIGHT_MINUTES) {
         const zone = await erp.institutionZone(conn, s, institutionId)
-        await insertTransmissionEvent(conn, institutionId, invoiceId, tx.attempt, userId, {
+        await insertTransmissionEvent(itx, tx.attempt, userId, {
           kind: 'N', source, dh: toDbDateTime(nowIsoIn(zone)), message: 'Pedido de cancelamento não consta no fisco — NFS-e segue autorizada',
         })
         changed = true; kind = 'N'
@@ -627,7 +625,7 @@ async function refreshServiceTransmissionInner(
       return { invoiceId, attempt: tx.attempt, changed, kind, accessKey: nfse.accessKey, localCancelPending: false }
     }
     // C do fisco: só a VOZ (por KIND). O C local é do setes-api (D-F28).
-    const v = await recordCancelVoice(conn, institutionId, userId, invoiceId, tx.attempt, source,
+    const v = await recordCancelVoice(itx, userId, tx.attempt, source,
       toDbDateTime(nfse.cancelled?.dhEvento), nfse.cancelled?.motive ?? null, nfse.cancelled?.eventCode ?? null)
     return { invoiceId, attempt: tx.attempt, changed: changed || v.inserted, kind: 'C', accessKey: nfse.accessKey,
       localCancelPending: pendingNow('C', v.code) }
@@ -658,9 +656,10 @@ async function refreshServiceTransmissionInner(
  * D-F78 (= Q-F85 (a)): XML do evento de cancelamento que não foi arquivado na 1ª leitura (disco/CNPJ falharam) — relê o fisco
  * e grava SÓ o arquivo, se a resposta for o cancelamento DESTE código (ou a voz não tiver código). Nada de voz: a C é final.
  */
-async function archiveCancelEventIfMissing(deps: NfseDeps, actor: Actor, invoiceId: number, tx: TransmissionRow): Promise<void> {
+async function archiveCancelEventIfMissing(deps: NfseDeps, actor: Actor, ref: InvoiceRef, tx: TransmissionRow): Promise<void> {
   if (!tx.accessKey) return
   const { schemaName: s, institutionId } = actor
+  const { invoiceId } = ref
   // R13-06 do gate adversarial: best-effort (Q-N38: falhar ao gravar só avisa) — fisco fora ou A1 vencido não fazem a consulta
   // de um estado FINAL falhar; a próxima consulta tenta de novo
   try {
@@ -701,15 +700,17 @@ export interface ReconfirmResult {
  * POSTERIOR ao F — D-F90) antes de cancelar localmente. Fisco fora/ambíguo → o erro sobe (fail-closed: não se prova
  * no escuro) e nada é carimbado como prova.
  */
-export async function reconfirmBeforeLocalCancel(deps: NfseDeps, actor: Actor, invoiceId: number): Promise<ReconfirmResult> {
+export async function reconfirmBeforeLocalCancel(deps: NfseDeps, actor: Actor, ref: InvoiceRef): Promise<ReconfirmResult> {
   const { schemaName: s, institutionId } = actor
-  const life = await erp.invoiceLife(deps.pool, s, webInvoice(institutionId, invoiceId))
+  ref = refOf(actor, ref)                                     // conferida e COPIADA uma vez (NE1A2-12)
+  const { invoiceId } = ref
+  const life = await erp.invoiceLife(deps.pool, s, ref)
   if (!life) throw new HttpError(404, `Nota ${invoiceId} não encontrada`, undefined, ErrorCodes.INVOICE_NOT_FOUND)
-  const { transmissions } = await listLifeTransmissions(deps.pool, institutionId, invoiceId, life.lifeEvent)
+  const { transmissions } = await listLifeTransmissions(deps.pool, ref, life.lifeEvent)
   const cand = reconfirmationCandidate(transmissions)
   if (!cand) return { invoiceId, needed: false, found: false, attempt: null, accessKey: null }
   try {
-    return await reconfirmCandidate(deps, actor, invoiceId, cand, transmissions, life.lifeEvent)
+    return await reconfirmCandidate(deps, actor, ref, cand, transmissions, life.lifeEvent)
   } catch (err) {
     logAmbiguousFiscal('reconferencia', { institutionId, invoiceId, attempt: cand.attempt }, err)   // D-F91
     throw err
@@ -717,18 +718,19 @@ export async function reconfirmBeforeLocalCancel(deps: NfseDeps, actor: Actor, i
 }
 
 async function reconfirmCandidate(
-  deps: NfseDeps, actor: Actor, invoiceId: number, cand: TransmissionRow, transmissions: TransmissionRow[], lifeEvent: number | null,
+  deps: NfseDeps, actor: Actor, ref: InvoiceRef, cand: TransmissionRow, transmissions: TransmissionRow[], lifeEvent: number | null,
 ): Promise<ReconfirmResult> {
   const { institutionId } = actor
+  const { invoiceId } = ref
   const opened = await openIssuer(estDeps(deps), institutionId, SERVICE_MODEL, { schemaName: actor.schemaName })
   const ctx = ctxFor(opened, cand.environment)
   const key = await deps.adapter.queryDpsAccessKey(ctx, cand.dpsId!)
   if (!key) {
-    await touchQueriedAt(deps.pool, institutionId, invoiceId, cand.attempt)
+    await touchQueriedAt(deps.pool, ref, cand.attempt)
     // D-F90: a prova é o E2404 desta pergunta, gravado só se a voz vista (o F da candidata) ainda é a última. LOW-4 do gate da
     // Rodada 16: se a guarda recusou (outra voz nasceu durante a pergunta), a resposta NÃO afirma a reconferência — o app consulta
     // de novo (a F2a recusaria o cancelamento local de qualquer jeito; a resposta não pode dizer um fato que não foi gravado)
-    if (!(await recordNfseNotGenerated(deps.pool, institutionId, invoiceId, cand.attempt, cand.lastEvent ?? null))) {
+    if (!(await recordNfseNotGenerated(deps.pool, ref, cand.attempt, cand.lastEvent ?? null))) {
       throw new HttpError(409, 'A tentativa mudou durante a reconferência no fisco — consulte a nota de novo antes de cancelar',
         [{ field: 'fiscal', message: 'Tentativa mudou' }], ErrorCodes.RESOURCE_BUSY)
     }
@@ -741,8 +743,8 @@ async function reconfirmCandidate(
   // a chave de um ambiente só pousa numa tentativa DESSE ambiente (gate adversarial HIGH)
   const minter = [...transmissions].sort((a, b) => a.attempt - b.attempt)
     .find(t => t.dpsId === cand.dpsId && t.environment === cand.environment) ?? cand
-  await refreshServiceTransmission(deps, actor, invoiceId, 'Q', { attempt: minter.attempt, query })
-  const after = await listLifeTransmissions(deps.pool, institutionId, invoiceId, lifeEvent)
+  await refreshServiceTransmission(deps, actor, ref, 'Q', { attempt: minter.attempt, query })
+  const after = await listLifeTransmissions(deps.pool, ref, lifeEvent)
   if (!after.transmissions.some(t => !!t.accessKey)) {
     throw new HttpError(409, `A NFS-e deste DPS existe no fisco (chave ${key}) mas não foi reconciliada — consulte a nota antes de cancelar`,
       [{ field: 'fiscal', message: 'NFS-e existe no fisco' }], ErrorCodes.FISCAL_TRANSMISSION_IN_PROGRESS)
@@ -764,14 +766,16 @@ export interface CancelAtAuthorityResult {
   nextStep:          'apply-local-cancel'
 }
 
-export async function cancelServiceInvoiceAtAuthority(deps: NfseDeps, actor: Actor, invoiceId: number, reason: string): Promise<CancelAtAuthorityResult> {
+export async function cancelServiceInvoiceAtAuthority(deps: NfseDeps, actor: Actor, ref: InvoiceRef, reason: string): Promise<CancelAtAuthorityResult> {
   const { schemaName: s, institutionId, userId } = actor
+  ref = refOf(actor, ref)                                     // conferida e COPIADA uma vez (NE1A2-12)
+  const { invoiceId } = ref
   const motive = String(reason ?? '').trim()
   if (!motive) throw new HttpError(400, 'Motivo do cancelamento é obrigatório', [{ field: 'reason', message: 'Obrigatório' }], ErrorCodes.INVOICE_REASON_REQUIRED)
   // (0) D-F39: RÉPLICA do ERP recusa ANTES de qualquer voz (gate adversarial R4: o K da reserva era gravado na tentativa
   // copiada e só depois o `openIssuer` recusava — a próxima re-sincronia acusaria dual-write)
   // (gates R4, re-prova): o predicado COMPLETO — réplica viva OU excluída, e a lacuna sem linha com SE no ERP
-  if (await emissionStillInErp(deps.pool, s, institutionId)) {
+  if (await emissionStillInErp(deps.pool, s, institutionId, SERVICE_ISSUER_MODEL)) {
     throw new HttpError(409, 'A emissão fiscal deste estabelecimento ainda é do ERP — a API fiscal só consulta até a virada',
       undefined, ErrorCodes.FISCAL_CUTOVER_PENDING)
   }
@@ -781,20 +785,23 @@ export async function cancelServiceInvoiceAtAuthority(deps: NfseDeps, actor: Act
   // adversarial M: sem a reserva, dois "Cancelar NFS-e" simultâneos mandavam dois e101101 e o 2º voltava
   // "recusado" com a NFS-e já cancelada). Quem chega depois vê K → 409 FISCAL_CANCEL_IN_FLIGHT.
   type Decision = { already: { attempt: number; event: number } } | { authorized: TransmissionRow; dhEvento: string }
-  const decision = await withInvoiceTx(deps, 'decisão do cancelamento fiscal', actor, invoiceId, async (conn, locked): Promise<Decision> => {
+  const decision = await withInvoiceTx(deps, 'decisão do cancelamento fiscal', actor, ref, async (itx): Promise<Decision> => {
+    const { conn, locked } = itx
     // as saídas que NÃO falam com o fisco (C já gravada = idempotente; R/F/sem tentativa = "cancele no ERP"; viva) vêm
     // ANTES de abrir o emissor — leituras não travantes da tentativa (gate adversarial r8 MEDIUM [r8-cancel-idem]: com o
     // openIssuer primeiro, o retry com voz C e A1 vencido virava 409 FISCAL_CERT_* e o app não seguia ao setes-api)
-    const tx = await latestTransmission(conn, institutionId, invoiceId, locked.lifeEvent)
+    const tx = await latestTransmission(conn, ref, locked.lifeEvent)
     if (tx?.lastKind === 'C') {
-      const voice = await findTransmissionEventByKind(conn, institutionId, invoiceId, tx.attempt, 'C')
+      const voice = await findTransmissionEventByKind(conn, ref, tx.attempt, 'C')
       return { already: { attempt: tx.attempt, event: voice?.event ?? tx.lastEvent ?? 0 } }
     }
-    if (!tx || tx.lastKind === 'R' || tx.lastKind === 'F') {
+    // pelas CLASSES do vocabulário comum (gate socrático da parte 2 — antes eram letras soltas): VIVA (sem voz, S, K — e o P da NF-e) =
+    // em andamento; o que não é AUTORIZADA (R, F — e o D da NF-e) = não há NFS-e para cancelar no fisco; só A/N seguem
+    if (tx && isLiveTransmission(tx)) throw liveTransmissionError(tx)
+    if (!tx || !isAuthorized(tx)) {
       throw new HttpError(409, 'Não há NFS-e autorizada para cancelar no fisco — cancele a nota direto no sistema',
         [{ field: 'fiscal', message: tx ? `Última voz ${tx.lastKind}` : 'Nunca transmitida' }], ErrorCodes.FISCAL_NOT_AUTHORIZED)
     }
-    if (tx.lastKind === null || tx.lastKind === 'S' || tx.lastKind === 'K') throw liveTransmissionError(tx)
     if (!tx.accessKey) throw new HttpError(409, `Transmissão ${tx.attempt} autorizada sem chave de acesso — consulte antes`, undefined, ErrorCodes.FISCAL_TRANSMISSION_IN_PROGRESS)
     // re-prova final R4 (MEDIUM): a reserva K passa pela TRAVA da habilitação (ordem nota → habilitação → A1, a da reserva
     // da transmissão) — sem ela o DELETE do A1 contava as vivas antes do K e apagava o certificado com o pedido em curso.
@@ -803,11 +810,9 @@ export async function cancelServiceInvoiceAtAuthority(deps: NfseDeps, actor: Act
     await openIssuer(estDeps(deps), institutionId, SERVICE_MODEL, { conn, forUpdate: true, schemaName: s })
     const zone = await erp.institutionZone(conn, s, institutionId)
     const dhEvento = nowIsoIn(zone)
-    // K e o N de liberação são fatos NOSSOS, não voz do fisco: dh NULL — a chave única (kind, dh) é a
-    // idempotência da VOZ do fisco; K → N → K no mesmo segundo colidia nela (500 — adversarial ao vivo, retrabalho)
-    await insertTransmissionEvent(conn, institutionId, invoiceId, tx.attempt, userId, {
-      kind: 'K', source: 'P', dh: null, message: 'Pedido de cancelamento ao fisco em andamento',
-    })
+    // a RESERVA (K, fato NOSSO — dh NULL) é peça do núcleo (`reserveCancelRequest`): o escritor desta família cabe nela porque a lista
+    // dela tem K (o tipo prova); o funil confere de novo em execução
+    await reserveCancelRequest(insertTransmissionEvent, itx, tx.attempt, userId)
     return { authorized: tx, dhEvento }                                                 // A, ou N depois de K (D-N17)
   }, { requireAlive: true })
   if ('already' in decision) {
@@ -817,12 +822,9 @@ export async function cancelServiceInvoiceAtAuthority(deps: NfseDeps, actor: Act
   const dhEvento = decision.dhEvento
 
   /** O pedido NÃO vigora (recusado pelo fisco ou nem enviado): N devolve a NFS-e a autorizada (D-N17). */
-  const release = (message: string) => withInvoiceTx(deps, 'pedido de cancelamento não vigora', actor, invoiceId, async conn => {
-    const cur = await getTransmission(conn, institutionId, invoiceId, tx.attempt)
-    if (!cur || cur.lastKind !== 'K') return
-    await insertTransmissionEvent(conn, institutionId, invoiceId, tx.attempt, userId, {
-      kind: 'N', source: 'P', dh: null, message: message.slice(0, 255),                // fato nosso (ver o K acima)
-    })
+  const release = (message: string) => withInvoiceTx(deps, 'pedido de cancelamento não vigora', actor, ref, async itx => {
+    const cur = await getTransmission(itx.conn, ref, tx.attempt)                         // sob a MESMA trava
+    await releaseCancelRequest(insertTransmissionEvent, itx, tx.attempt, userId, message, cur)   // N só depois do K (peça do núcleo)
   })
 
   // (2) preparo LOCAL — falhou aqui, o fisco não foi chamado: o pedido não vigora
@@ -850,19 +852,29 @@ export async function cancelServiceInvoiceAtAuthority(deps: NfseDeps, actor: Act
   try {
     registered = await deps.adapter.registerEvent(ctx, tx.accessKey!, signed.xml)
   } catch (err) {
+    // `switch` EXAUSTIVO (parte 2 da NE-1a, passo 5): desfecho novo sem caso NÃO compila — antes, um if-encadeado o deixava cair calado
+    // no ambíguo, e o K da reserva ficava preso
     const cls = classifyAuthorityError(err)
-    if (cls === 'rejected') {
-      const aerr = err as AuthorityHttpError
-      await release(`Fisco recusou o cancelamento: ${authorityMessage(aerr)}`)
-      throw new HttpError(409, `Fisco recusou o cancelamento: ${authorityMessage(aerr)}`, aerr.fields, ErrorCodes.FISCAL_CANCEL_REFUSED)
+    switch (cls) {
+      case 'rejected': {
+        const aerr = err as AuthorityHttpError
+        await release(`Fisco recusou o cancelamento: ${authorityMessage(aerr)}`)
+        throw new HttpError(409, `Fisco recusou o cancelamento: ${authorityMessage(aerr)}`, aerr.fields, ErrorCodes.FISCAL_CANCEL_REFUSED)
+      }
+      case 'auth_failed':
+      case 'local':                                                     // R3-2: o fisco NÃO processou o pedido
+        await release(`Pedido de cancelamento não aceito (credencial): ${err instanceof HttpError ? errMsg(err) : 'falha de credencial'}`)
+        throw err
+      case 'chain_untrusted':                                           // D-NE57: NÓS recusamos o servidor antes do aperto de mão — nada enviado
+        await release(`Pedido de cancelamento não enviado (certificado do servidor do fisco não confiável): ${err instanceof HttpError ? errMsg(err) : 'cadeia TLS'}`)
+        throw err
+      case 'ambiguous':
+        // AMBÍGUO: o fisco PODE ter cancelado — o K da reserva FICA e bloqueia tudo até a consulta reconciliar (C ou N)
+        logger.warn('Pedido de cancelamento sem resposta — K em voo', { institutionId, invoiceId, attempt: tx.attempt, err: errMsg(err) })
+        throw err
+      default:
+        return unhandledOutcome(cls)
     }
-    if (cls === 'auth_failed' || cls === 'local') {                   // R3-2: o fisco NÃO processou o pedido
-      await release(`Pedido de cancelamento não aceito (credencial): ${err instanceof HttpError ? errMsg(err) : 'falha de credencial'}`)
-      throw err
-    }
-    // AMBÍGUO: o fisco PODE ter cancelado — o K da reserva FICA e bloqueia tudo até a consulta reconciliar (C ou N)
-    logger.warn('Pedido de cancelamento sem resposta — K em voo', { institutionId, invoiceId, attempt: tx.attempt, err: errMsg(err) })
-    throw err
   }
 
   // (4) Q-N38: o evento GERADO pelo fisco no arquivo fiscal (mesma pasta da NFS-e — mês da autorização)
@@ -872,8 +884,8 @@ export async function cancelServiceInvoiceAtAuthority(deps: NfseDeps, actor: Act
 
   // (5) o fisco cancelou (irreversível): a VOZ C. O C local é do setes-api, que o app chama em seguida.
   const dhC = toDbDateTime(registered.dhEvento ?? dhEvento)
-  const out = await withInvoiceTx(deps, 'voz C do fisco', actor, invoiceId, conn =>
-    recordCancelVoice(conn, institutionId, userId, invoiceId, tx.attempt, 'P', dhC, signed.xMotivo, '101101'))   // D-F68: o pedido é NOSSO (e101101)
+  const out = await withInvoiceTx(deps, 'voz C do fisco', actor, ref, itx =>
+    recordCancelVoice(itx, userId, tx.attempt, 'P', dhC, signed.xMotivo, '101101'))   // D-F68: o pedido é NOSSO (e101101)
   logger.info('NFS-e cancelada no fisco', { institutionId, invoiceId, attempt: tx.attempt, accessKey: tx.accessKey })
   return { invoiceId, attempt: tx.attempt, atAuthority: true, transmissionEvent: out.event, warnings, nextStep: 'apply-local-cancel' }
 }
@@ -964,14 +976,18 @@ const isBusy = (err: unknown) => err instanceof HttpError && err.code === ErrorC
  */
 export async function refreshOpenServiceTransmissions(
   deps: NfseDeps, actor: Actor,
-  opts: { minMinutes?: number; limit?: number; budgetMs?: number; interfaces?: readonly string[]; liveOnlyInterfaces?: readonly string[] } = {},
+  opts: { terminal: number; minMinutes?: number; limit?: number; budgetMs?: number; interfaces?: readonly string[]; liveOnlyInterfaces?: readonly string[] },
 ): Promise<RefreshRunReport> {
   const report: RefreshRunReport = { checked: 0, changed: 0, errors: [], stoppedEarly: false, skipped: false }
+  // NE-1a parte 2 (D-NE12): o terminal das notas desta passada vem da borda — a referência de cada candidata é montada com ele
+  const scope = scopeOf(actor, opts.terminal)
+  // a candidata é DESTE escopo (o SQL filtrou por ele): estabelecimento e terminal do escopo, o id da linha
+  const refOfTx = (tx: TransmissionRow): InvoiceRef => invoiceRef(scope.institutionId, tx.invoiceId, scope.terminal)
   let lease = await leaseCommand(deps, actor, 'tomar', q => acquireRefreshLease(q, actor.institutionId, SERVICE_MODEL, REFRESH_LEASE_SECONDS))
   if (!lease) {
     // sem aluguel: dizer "outra passada em curso" só quando for verdade (gates R2/R4). D-F39 PRIMEIRO, pelo predicado
     // COMPLETO (gates do delta de 2026-10-04 — F1/F2: réplica EXCLUÍDA e lacuna (b) diziam "configure a habilitação")
-    if (await emissionStillInErp(deps.pool, actor.schemaName, actor.institutionId)) {
+    if (await emissionStillInErp(deps.pool, actor.schemaName, actor.institutionId, SERVICE_ISSUER_MODEL)) {
       throw new HttpError(409, 'A emissão fiscal deste estabelecimento ainda é do ERP — a API fiscal só consulta até a virada',
         undefined, ErrorCodes.FISCAL_CUTOVER_PENDING)
     }
@@ -988,7 +1004,7 @@ export async function refreshOpenServiceTransmissions(
     const authorizedMaxDays = ceiling.days + REFRESH_AUTHORIZED_MARGIN_DAYS
     report.authorizedMaxDays = authorizedMaxDays
     report.ceilingSource = ceiling.source
-    const list = await listRefreshCandidates(deps.pool, actor.schemaName, actor.institutionId,
+    const list = await listRefreshCandidates(deps.pool, actor.schemaName, scope,
       opts.minMinutes ?? REFRESH_MIN_MINUTES, IN_FLIGHT_MINUTES, opts.limit ?? REFRESH_MAX_PER_RUN,
       opts.interfaces ? { authorizedMaxDays, interfaces: opts.interfaces, liveOnlyInterfaces: opts.liveOnlyInterfaces ?? [] } : { authorizedMaxDays })
     for (const tx of list) {
@@ -1007,7 +1023,7 @@ export async function refreshOpenServiceTransmissions(
       lease = renewed
       try {
         report.checked += 1
-        const r = await refreshServiceTransmission(deps, actor, tx.invoiceId, 'Q', { attempt: tx.attempt, fromRun: true })
+        const r = await refreshServiceTransmission(deps, actor, refOfTx(tx), 'Q', { attempt: tx.attempt, fromRun: true })
         if (r.changed) report.changed += 1
       } catch (err) {
         const busy = err instanceof HttpError ? null : contentionToHttpError(err)
@@ -1028,7 +1044,7 @@ export async function refreshOpenServiceTransmissions(
         // falha PERSISTENTE também conta como "tentamos olhar" — senão monopoliza o rodízio
         if (isPersistentRefreshFailure(err)) {
           logAmbiguousFiscal('rodizio', { institutionId: actor.institutionId, invoiceId: tx.invoiceId, attempt: tx.attempt, lastKind: tx.lastKind ?? null }, err)   // D-F87
-          try { await touchQueriedAt(deps.pool, actor.institutionId, tx.invoiceId, tx.attempt) }
+          try { await touchQueriedAt(deps.pool, refOfTx(tx), tx.attempt) }
           catch (touchErr) { logger.warn('Consulta ativa: não marcou last_queried_at', { institutionId: actor.institutionId, invoiceId: tx.invoiceId, err: errMsg(touchErr) }) }
         }
       }
@@ -1060,11 +1076,13 @@ export interface ServiceFiscalView {
   danfseAvailable:    boolean
 }
 
-export async function getServiceFiscalView(deps: NfseDeps, actor: Actor, invoiceId: number): Promise<ServiceFiscalView> {
+export async function getServiceFiscalView(deps: NfseDeps, actor: Actor, ref: InvoiceRef): Promise<ServiceFiscalView> {
   const { schemaName: s, institutionId } = actor
-  const life = await erp.invoiceLife(deps.pool, s, webInvoice(institutionId, invoiceId))
+  ref = refOf(actor, ref)                                     // conferida e COPIADA uma vez (NE1A2-12)
+  const { invoiceId } = ref
+  const life = await erp.invoiceLife(deps.pool, s, ref)
   if (!life) throw new HttpError(404, `Nota ${invoiceId} não encontrada`, undefined, ErrorCodes.INVOICE_NOT_FOUND)
-  const { transmissions, events } = await listLifeTransmissions(deps.pool, institutionId, invoiceId, life.lifeEvent)
+  const { transmissions, events } = await listLifeTransmissions(deps.pool, ref, life.lifeEvent)
   const current = currentOf(transmissions)          // D-N26 — a MESMA regra do núcleo (D-F33)
   const zone = await erp.institutionZone(deps.pool, s, institutionId)
   let xmlAvailable = false
@@ -1108,10 +1126,12 @@ async function substituteKeyOf(deps: NfseDeps, institutionId: number, tx: Transm
 }
 
 /** XML da NFS-e autorizada (ou cancelada — o documento existiu); 404 se não há. */
-export async function readNfseXml(deps: NfseDeps, actor: Actor, invoiceId: number): Promise<{ accessKey: string; xml: string; cancelled: boolean }> {
+export async function readNfseXml(deps: NfseDeps, actor: Actor, ref: InvoiceRef): Promise<{ accessKey: string; xml: string; cancelled: boolean }> {
   const { schemaName: s, institutionId } = actor
-  const life = await erp.invoiceLife(deps.pool, s, webInvoice(institutionId, invoiceId))
-  const { transmissions } = await listLifeTransmissions(deps.pool, institutionId, invoiceId, life?.lifeEvent ?? null)
+  ref = refOf(actor, ref)                                     // conferida e COPIADA uma vez (NE1A2-12)
+  const { invoiceId } = ref
+  const life = await erp.invoiceLife(deps.pool, s, ref)
+  const { transmissions } = await listLifeTransmissions(deps.pool, ref, life?.lifeEvent ?? null)
   const withKey = [...transmissions].reverse().find(t => t.accessKey) ?? null
   if (!withKey?.accessKey) throw new HttpError(404, `Nota ${invoiceId} sem NFS-e autorizada no fisco`, undefined, ErrorCodes.FISCAL_NFSE_NOT_FOUND)
   const zone = life ? await erp.institutionZone(deps.pool, s, institutionId) : DEFAULT_TIME_ZONE
@@ -1121,8 +1141,8 @@ export async function readNfseXml(deps: NfseDeps, actor: Actor, invoiceId: numbe
   return { accessKey: withKey.accessKey, xml: deps.storage.read(file), cancelled: fiscalStateOf(withKey) === 'cancelled' }
 }
 
-/** Pendentes do lote, PAGINADOS (envelope da casa); [interfaces] = ramos visíveis a quem pede (null = todos). */
-export async function listPending(deps: NfseDeps, actor: Actor, page: { page: number; pageSize: number }, interfaces: string[] | null) {
-  const { rows, total } = await listPendingServiceInvoices(deps.pool, actor.schemaName, actor.institutionId, deps.fiscalDb, page, interfaces)
+/** Pendentes do lote, PAGINADOS (envelope da casa); [interfaces] = ramos visíveis a quem pede (null = todos); [terminal] = o da borda. */
+export async function listPending(deps: NfseDeps, actor: Actor, terminal: number, page: { page: number; pageSize: number }, interfaces: string[] | null) {
+  const { rows, total } = await listPendingServiceInvoices(deps.pool, actor.schemaName, scopeOf(actor, terminal), deps.fiscalDb, page, interfaces)
   return { data: rows, page: page.page, pageSize: page.pageSize, total }
 }

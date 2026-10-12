@@ -279,17 +279,41 @@ describe('adaptador ADN — transmit (POST /nfse)', () => {
     await expect(adn.transmit(ctx, '<DPS/>')).rejects.toMatchObject({ statusCode: 503, code: 'FISCAL_AUTHORITY_UNAVAILABLE' })
   })
 
-  it('handshake mTLS recusado (EPROTO / CERT_HAS_EXPIRED / "SSL routines") e 401/403 → 409 FISCAL_AUTHORITY_AUTH_FAILED', async () => {
+  it('handshake mTLS recusado (EPROTO / "SSL routines" sem código) e 401/403 → 409 FISCAL_AUTHORITY_AUTH_FAILED', async () => {
     mockHttp.mockRejectedValueOnce(Object.assign(new Error('write EPROTO'), { code: 'EPROTO' }))
     await expect(adn.transmit(ctx, '<DPS/>')).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_AUTHORITY_AUTH_FAILED' })
-    mockHttp.mockRejectedValueOnce(Object.assign(new Error('certificate has expired'), { code: 'CERT_HAS_EXPIRED' }))
-    await expect(adn.transmit(ctx, '<DPS/>')).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_AUTHORITY_AUTH_FAILED' })
+    // [DECIDIDO — D-NE57, parte 2 da NE-1a] `CERT_HAS_EXPIRED` é a verificação do certificado do SERVIDOR (código do Node/OpenSSL) →
+    // FISCAL_AUTHORITY_CHAIN_UNTRUSTED (abaixo); era AUTH_FAILED ("confira o A1"). A mensagem SEM código segue credencial (o código decide)
     mockHttp.mockRejectedValueOnce(new Error('error:0A000086:SSL routines::certificate verify failed'))
     await expect(adn.transmit(ctx, '<DPS/>')).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_AUTHORITY_AUTH_FAILED' })
     mockHttp.mockResolvedValueOnce({ status: 403, headers: {}, text: '{"mensagem":"certificado não autorizado"}' })
     await expect(adn.transmit(ctx, '<DPS/>')).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_AUTHORITY_AUTH_FAILED', authorityStatus: 403, message: expect.stringMatching(/certificado não autorizado/) })
     mockHttp.mockResolvedValueOnce({ status: 401, headers: {}, text: '' })
     await expect(adn.transmit(ctx, '<DPS/>')).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_AUTHORITY_AUTH_FAILED' })
+  })
+
+  it('[DECIDIDO — D-NE57] cadeia do SERVIDOR do fisco não confiável (código de verificação X.509 do Node) → 409 FISCAL_AUTHORITY_CHAIN_UNTRUSTED, mensagem que NÃO manda conferir/renovar o A1; depois do aperto de mão segue AMBÍGUO (503, Q-ADV1a); a mesma frase SEM código segue credencial', async () => {
+    for (const code of ['CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'SELF_SIGNED_CERT_IN_CHAIN', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'CERT_NOT_YET_VALID', 'ERR_TLS_CERT_ALTNAME_INVALID']) {
+      mockHttp.mockRejectedValueOnce(Object.assign(new Error('certificate verify failed'), { code }))
+      const err: any = await adn.transmit(ctx, '<DPS/>').catch(e => e)
+      expect([code, err.statusCode, err.code, err.authorityStatus]).toEqual([code, 409, 'FISCAL_AUTHORITY_CHAIN_UNTRUSTED', 0])
+      expect(err.message).toMatch(/servidor do fisco/)
+      expect(err.message).not.toMatch(/confira o A1|renove|envie o \.pfx/i)
+    }
+    mockHttp.mockRejectedValueOnce(Object.assign(new Error('certificate has expired'), { code: 'CERT_HAS_EXPIRED', afterHandshake: true }))
+    await expect(adn.transmit(ctx, '<DPS/>')).rejects.toMatchObject({ statusCode: 503, code: 'FISCAL_AUTHORITY_UNAVAILABLE' })
+    mockHttp.mockRejectedValueOnce(new Error('certificate has expired'))
+    await expect(adn.transmit(ctx, '<DPS/>')).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_AUTHORITY_AUTH_FAILED' })
+  })
+
+  it('[D-NE57 — conhecimento negativo] o adaptador do ADN NUNCA passa `ca` ao transporte (no Node, `ca` SUBSTITUI a loja padrão — o servidor do ADN deixaria de ser verificado)', async () => {
+    mockHttp.mockClear()
+    mockHttp.mockRejectedValueOnce(new Error('timeout'))
+    await adn.transmit(ctx, '<DPS/>').catch(() => undefined)
+    mockHttp.mockResolvedValueOnce({ status: 404, headers: {}, text: '' })
+    await adn.queryNfse(ctx, CHAVE).catch(() => undefined)
+    expect(mockHttp.mock.calls.length).toBeGreaterThanOrEqual(2)
+    for (const [call] of mockHttp.mock.calls) expect(Object.prototype.hasOwnProperty.call(call, 'ca')).toBe(false)
   })
 
   it('2xx sem XML legível (HTML, JSON sem campo gzip, gzip corrompido) → 502 FISCAL_AUTHORITY_UNKNOWN_RESPONSE — nunca inventa autorização', async () => {

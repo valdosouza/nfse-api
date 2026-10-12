@@ -115,6 +115,7 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 import { transport, HttpsCall } from 'fiscal-api'
 import { adnAdapter } from '../authority/adn'
+import { webRef } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
 
 const realTransport = transport.request
 const mockHttp = jest.fn()
@@ -151,7 +152,7 @@ function sefin(o: { nfse?: () => any; typed?: (code: string) => any } = {}) {
 }
 const ctxH = { environment: 'H' as const, cert: Buffer.from('CERT'), key: Buffer.from('KEY') }
 const realDeps = (): NfseDeps => ({ ...deps, adapter: adnAdapter as any })
-const insertedEvents = () => (repo.insertTransmissionEvent as jest.Mock).mock.calls.map((c: any[]) => c[5])
+const insertedEvents = () => (repo.insertTransmissionEvent as jest.Mock).mock.calls.map((c: any[]) => c[3])
 const fiscoCalls = () => mockHttp.mock.calls.filter((c: any[]) => !/convenio/.test(c[0].url)).length
 
 // ---------------------------------------------------------------------------
@@ -376,7 +377,7 @@ describe('ACHADO R13-03 (LOW) — D-F69 no adaptador da nfse-api: o 200 tipado d
   it('[CORRIGIDO — D-F84] [LOW R13-03] composição: a consulta com essa resposta NÃO devolve localCancelPending=true (o app aplicaria o C local sem humano)', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     sefin({ typed: code => (code === '101101' ? both() : undefined) })
-    const r = await settle(refreshServiceTransmission(realDeps(), A, INVOICE, 'Q'))
+    const r = await settle(refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q'))
     expect(r?.localCancelPending === true).toBe(false)           // hoje: true
   })
 })
@@ -387,7 +388,7 @@ describe('ACHADO R13-04 (LOW) — D-F76 na nfse-api: `chSubstituta` igual à PR�
     ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [current], events: [] })
     fs.rmSync(path.join(storageRoot, CNPJ), { recursive: true, force: true })
     deps.storage.save(CNPJ, `${KEY}-evt101101.xml`, substEventXml(KEY), new Date('2026-10-10T21:43:04Z'), 'H', 'America/Sao_Paulo')
-    const v = await getServiceFiscalView(deps, A, INVOICE)
+    const v = await getServiceFiscalView(deps, A, webRef(A, INVOICE))
     expect(v.substitution?.substituteAccessKey).toBeNull()       // hoje: a própria KEY
   })
   it('D-F85 (= Q-F91): chSubstituta de OUTRO emitente (posições 9–23 diferentes) → null; do mesmo emitente → exibida', async () => {
@@ -397,7 +398,7 @@ describe('ACHADO R13-04 (LOW) — D-F76 na nfse-api: `chSubstituta` igual à PR�
     for (const [key, expected] of [[otherIssuer, null], [SUBST_KEY, SUBST_KEY]] as const) {
       fs.rmSync(path.join(storageRoot, CNPJ), { recursive: true, force: true })
       deps.storage.save(CNPJ, `${KEY}-evt101101.xml`, substEventXml(key), new Date('2026-10-10T21:43:04Z'), 'H', 'America/Sao_Paulo')
-      expect((await getServiceFiscalView(deps, A, INVOICE)).substitution?.substituteAccessKey).toBe(expected)
+      expect((await getServiceFiscalView(deps, A, webRef(A, INVOICE))).substitution?.substituteAccessKey).toBe(expected)
     }
   })
 })
@@ -407,7 +408,7 @@ describe('ACHADO R13-05 (LOW) — D-F71 na nfse-api: o caminho "NFS-e com <e1011
   it('[CORRIGIDO durante o gate — L6] [LOW R13-05] consulta → a voz C gravada leva authorityCode 101101', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     sefin({ nfse: () => ok({ nfseXmlGZipB64: gz(withBlock) }) })
-    await refreshServiceTransmission(realDeps(), A, INVOICE, 'Q')
+    await refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q')
     expect(insertedEvents().find(e => e?.kind === 'C')?.authorityCode).toBe('101101')   // hoje: null
   })
 })
@@ -420,28 +421,28 @@ describe('ACHADO R13-06 (LOW, delta NOVO durante o gate — D-F78, 21:33) — "c
   it('[CORRIGIDO] [LOW R13-06] C 105102 + XML do evento ausente + fisco fora (503) → a consulta devolve a voz C (unchanged, localCancelPending=false), nunca 503', async () => {
     finalSubstitution()
     sefin({ nfse: () => ({ status: 503, headers: {}, text: '' }) })
-    const r = await settle(refreshServiceTransmission(realDeps(), A, INVOICE, 'Q'))
+    const r = await settle(refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q'))
     expect(r).toMatchObject({ kind: 'C', changed: false, localCancelPending: false })   // hoje: AuthorityHttpError 503
   })
   it('[CORRIGIDO] [LOW R13-06] C 105102 + XML ausente + A1 vencido no cofre → a consulta devolve a voz C, nunca 409 FISCAL_CERT_EXPIRED', async () => {
     finalSubstitution()
     ;(fiscal.openIssuer as jest.Mock).mockRejectedValue(new fiscal.HttpError(409, 'A1 expirou', undefined, 'FISCAL_CERT_EXPIRED'))
-    const r = await settle(refreshServiceTransmission(realDeps(), A, INVOICE, 'Q'))
+    const r = await settle(refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q'))
     expect(r).toMatchObject({ kind: 'C', changed: false })                              // hoje: HttpError 409
   })
   it('resistiu [D-F78]: com o fisco no ar, a releitura arquiva o evento e a tela passa a mostrar a chave da substituta; a voz não muda', async () => {
     finalSubstitution()
     sefin({ typed: code => (code === '105102' ? typedOk(typedItem(arquivo2(substEventXml(SUBST_KEY)), '105102')) : undefined) })
-    const r = await refreshServiceTransmission(realDeps(), A, INVOICE, 'Q')
+    const r = await refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q')
     expect(r).toMatchObject({ kind: 'C', changed: false, localCancelPending: false })
     expect(insertedEvents()).toEqual([])
     ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [tx({ lastKind: 'C', lastEvent: 2, lastCode: '105102' })], events: [] })
-    expect((await getServiceFiscalView(deps, A, INVOICE)).substitution).toEqual({ substituteAccessKey: SUBST_KEY })
+    expect((await getServiceFiscalView(deps, A, webRef(A, INVOICE))).substitution).toEqual({ substituteAccessKey: SUBST_KEY })
   })
   it('resistiu [D-F78]: a releitura que traz um evento de OUTRO tipo (101101) para a voz 105102 NÃO arquiva (a marca não se contradiz no arquivo)', async () => {
     finalSubstitution()
     sefin({ typed: code => (code === '101101' ? typedOk(typedItem(arquivo2(generatedEventXml({ code: '101101' })))) : undefined) })
-    await refreshServiceTransmission(realDeps(), A, INVOICE, 'Q')
+    await refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q')
     expect(deps.storage.find(CNPJ, `${KEY}-evt101101.xml`, ['2026-10-10 21:43:04'], 'H', 'America/Sao_Paulo')).toBeNull()
   })
 })
@@ -498,16 +499,16 @@ describe('RESISTIU — D-F68: a substituição nunca manda o app aplicar o C loc
     fs.rmSync(path.join(storageRoot, CNPJ), { recursive: true, force: true })
     deps.storage.save(CNPJ, `${KEY}-evt101101.xml`, substEventXml(SUBST_KEY), new Date('2026-10-10T21:43:04Z'), 'H', 'America/Sao_Paulo')
     sefin()
-    expect(await refreshServiceTransmission(realDeps(), A, INVOICE, 'Q')).toMatchObject({ kind: 'C', changed: false, localCancelPending: false })
+    expect(await refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q')).toMatchObject({ kind: 'C', changed: false, localCancelPending: false })
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'C', lastEvent: 2, lastCode: '101101' }))
-    expect(await refreshServiceTransmission(realDeps(), A, INVOICE, 'Q')).toMatchObject({ kind: 'C', localCancelPending: true })
+    expect(await refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q')).toMatchObject({ kind: 'C', localCancelPending: true })
     expect(fiscoCalls()).toBe(0)
   })
   it('resistiu: voz C já gravada (corrida de duas consultas) → a 2ª devolve o CÓDIGO GRAVADO (105102) e não insere outra voz', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     ;(repo.findTransmissionEventByKind as jest.Mock).mockResolvedValue({ attempt: 1, event: 2, kind: 'C', authorityCode: '105102' })
     sefin({ typed: code => (code === '101101' ? typedOk(typedItem(arquivo2(generatedEventXml({ code: '101101' })))) : undefined) })
-    const r = await refreshServiceTransmission(realDeps(), A, INVOICE, 'Q')
+    const r = await refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q')
     expect(r).toMatchObject({ kind: 'C', localCancelPending: false })
     expect(insertedEvents()).toEqual([])
   })
@@ -515,7 +516,7 @@ describe('RESISTIU — D-F68: a substituição nunca manda o app aplicar o C loc
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'cancelled', nfseXml: NFSE_XML, dhProc: null,
       cancelled: { dhEvento: '2026-09-28T10:00:00-03:00', motive: 'x', eventCode: '105103' } })
-    await refreshServiceTransmission(deps, A, INVOICE, 'Q')
+    await refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q')
     expect(insertedEvents().find(e => e?.kind === 'C')).toMatchObject({ authorityCode: null })
   })
 })
@@ -529,7 +530,7 @@ describe('RESISTIU — D-F76 na nfse-api: chSubstituta hostil não vira chave', 
     ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [current], events: [] })
     fs.rmSync(path.join(storageRoot, CNPJ), { recursive: true, force: true })
     deps.storage.save(CNPJ, `${KEY}-evt101101.xml`, substEventXml(hostile), new Date('2026-10-10T21:43:04Z'), 'H', 'America/Sao_Paulo')
-    const v = await getServiceFiscalView(deps, A, INVOICE)
+    const v = await getServiceFiscalView(deps, A, webRef(A, INVOICE))
     expect(v).toMatchObject({ localCancelPending: false, substitution: { substituteAccessKey: null } })
   })
 })

@@ -43,8 +43,10 @@ import {
   transmitServiceInvoice, refreshServiceTransmission, cancelServiceInvoiceAtAuthority, refreshOpenServiceTransmissions,
   resetMunicipalTermsCache,
 } from '../nfse/transmission'
-import { countLiveTransmissions } from '../nfse/repository'
+// parte 2 da NE-1a (D-NE9): as vivas são contadas pelo EMITTER do núcleo (leituras PUBLICADAS de todas as famílias)
+const countLiveTransmissions = (q: any, inst: number, environment?: 'H' | 'P') => fiscal.countLiveTransmissions(q, inst, { branches: 'all', environment })
 import { saveIssuer } from '../modules/emitter/emitter.service'
+import { refOf, webRef, WEB } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
 
 // mesma normalização EM MEMÓRIA das rodadas 1–5: o ramo congelado das notas do dev tem cTribMun "0102" (anterior à D-N26b)
 jest.mock('../facts/service-facts', () => {
@@ -284,7 +286,7 @@ d('GATE ADVERSARIAL r6 — re-prova final do delta do retrabalho 2 (cópia desca
       if (busy.has(id)) continue
       if (!X) {
         try {
-          const h = await svc.readServiceInvoice(ctx.pool, SCHEMA, INST, id)
+          const h = await svc.readServiceInvoice(ctx.pool, SCHEMA, refOf(INST, id))
           await svc.buildDpsBase(ctx.pool, SCHEMA, INST, h, 'H')
           X = id; continue
         } catch { /* cadastro incompleto — serve só de alvo sintético */ }
@@ -330,7 +332,7 @@ d('GATE ADVERSARIAL r6 — re-prova final do delta do retrabalho 2 (cópia desca
     const ctl: any = {}
     it('controle: o K JÁ gravado (pedido ambíguo) ANTES do DELETE → 409 FISCAL_ISSUER_HAS_LIVE_TRANSMISSIONS e o A1 fica', async () => {
       await purge([Z]); await seedAuthorized(Z, 5)
-      ctl.cancel = await cancelServiceInvoiceAtAuthority(ctx, ACTOR, Z, reason).then(() => 'ok', (e: any) => [e.statusCode, e.code])
+      ctl.cancel = await cancelServiceInvoiceAtAuthority(ctx, ACTOR, webRef(ACTOR, Z), reason).then(() => 'ok', (e: any) => [e.statusCode, e.code])
       ctl.kinds = await kindsOf(Z)
       const r = await request(app).delete('/v1/emitter/certificate').set(bearer(tok()))
       ctl.delete = [r.status, r.body.code]
@@ -357,7 +359,7 @@ d('GATE ADVERSARIAL r6 — re-prova final do delta do retrabalho 2 (cópia desca
         await blocker.query(`SELECT tb_institution_id FROM tb_establishment_certificate WHERE tb_institution_id = ? FOR UPDATE`, [INST])
         const pDel = request(app).delete('/v1/emitter/certificate').set(bearer(tok())).then(r => r)
         race.deleteBlocked = await waitBlocked(Number(cid), [/UPDATE tb_establishment_certificate/i])
-        const pCancel = cancelServiceInvoiceAtAuthority(ctx, ACTOR, Z, reason).then(() => 'ok', (e: any) => [e.statusCode ?? e.errno, e.code])
+        const pCancel = cancelServiceInvoiceAtAuthority(ctx, ACTOR, webRef(ACTOR, Z), reason).then(() => 'ok', (e: any) => [e.statusCode ?? e.errno, e.code])
         race.cancelBlocked = await waitBlocked(Number(cid), [/FROM tb_establishment_issuer/i, /FOR UPDATE/i])
         race.kindsWhileBlocked = await kindsOf(Z)
         await blocker.rollback()
@@ -371,7 +373,7 @@ d('GATE ADVERSARIAL r6 — re-prova final do delta do retrabalho 2 (cópia desca
       }
       race.cert = await certOfCopy()
       race.live = await countLiveTransmissions(ctx.pool, INST)
-      try { await refreshServiceTransmission(ctx, ACTOR, Z); race.refresh = 'ok' } catch (e: any) { race.refresh = [e.statusCode, e.code] }
+      try { await refreshServiceTransmission(ctx, ACTOR, webRef(ACTOR, Z)); race.refresh = 'ok' } catch (e: any) { race.refresh = [e.statusCode, e.code] }
       race.events = fisco.calls.event
       // eslint-disable-next-line no-console
       console.log('[adv-r6] DELETE do A1 × reserva K do cancelamento', JSON.stringify(race))
@@ -469,10 +471,10 @@ d('GATE ADVERSARIAL r6 — re-prova final do delta do retrabalho 2 (cópia desca
         await w(`UPDATE tb_invoice_service_transmission SET last_queried_at = NULL WHERE tb_institution_id = ? AND tb_invoice_id = ?`, [INST, Z])
         await w(`UPDATE tb_establishment_issuer SET refresh_lease_until = NULL WHERE tb_institution_id = ?`, [INST])
         const res = await Promise.all([
-          transmitServiceInvoice(ctx, ACTOR, X).then(() => 'ok', (e: any) => [e.statusCode ?? e.errno, e.code]),
+          transmitServiceInvoice(ctx, ACTOR, webRef(ACTOR, X)).then(() => 'ok', (e: any) => [e.statusCode ?? e.errno, e.code]),
           storeA1(pfx),
           saveIssuer(ctx, INST_PAYLOAD, 'SE', { environment: 'H', serie: '900' }).then(() => 'ok', (e: any) => [e.statusCode ?? e.errno, e.code]),
-          refreshOpenServiceTransmissions(ctx, ACTOR, { budgetMs: 2000 }).then(r => ({ checked: r.checked, skipped: r.skipped, errors: r.errors.map(x => x.code) }),
+          refreshOpenServiceTransmissions(ctx, ACTOR, { terminal: WEB, budgetMs: 2000 }).then(r => ({ checked: r.checked, skipped: r.skipped, errors: r.errors.map(x => x.code) }),
             (e: any) => [e.statusCode ?? e.errno, e.code]),
         ])
         rounds.push(res)

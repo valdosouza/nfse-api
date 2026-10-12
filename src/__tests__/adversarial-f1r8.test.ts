@@ -27,6 +27,7 @@ import { FsFiscalStorage, MasterKeyRing, ProductTokenVerifier } from 'fiscal-api
 import { cancelServiceInvoiceAtAuthority, NfseDeps } from '../nfse/transmission'
 import { createApp } from '../app'
 import type { AppContext } from '../context'
+import { webRef, WEB, webScope } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
 
 jest.mock('dotenv/config', () => ({}))
 jest.mock('fiscal-api', () => {
@@ -95,7 +96,7 @@ describe('[MEDIUM — r8-cancel-idem] a decisão do cancelamento abre o A1 ANTES
     repoM.findTransmissionEventByKind.mockResolvedValue({ attempt: 1, event: 3, kind: 'C' })
     repoM.insertTransmissionEvent.mockResolvedValue(9)
   })
-  const run = () => cancelServiceInvoiceAtAuthority(deps, ACTOR, INVOICE, 'cancelamento adversarial r8').then(r => r, (e: any) => [e.statusCode, e.code])
+  const run = () => cancelServiceInvoiceAtAuthority(deps, ACTOR, webRef(ACTOR, INVOICE), 'cancelamento adversarial r8').then(r => r, (e: any) => [e.statusCode, e.code])
 
   it('cenário: com o emissor ABRINDO, o retry depois da voz C é idempotente (200 atAuthority=false → o app segue ao setes-api)', async () => {
     repoM.latestTransmission.mockResolvedValue(tx({ lastKind: 'C' }))
@@ -165,7 +166,7 @@ describe('D-F46 — ataques à borda: ramo não contratado, admin, lista vazia, 
     const r = await request(app).post('/v1/nfse/refresh').set('Authorization', `Bearer ${token()}`).set('Content-Type', 'application/json').send(raw)
     expect(r.status).toBe(200)
     expect(spies.refreshOpenServiceTransmissions).toHaveBeenCalledWith(expect.anything(), expect.anything(),
-      { minMinutes: 5, limit: undefined, interfaces: ['service-orders'], liveOnlyInterfaces: ['order-returns'] })   // D-F47: o cortado só com viva
+      { terminal: WEB, minMinutes: 5, limit: undefined, interfaces: ['service-orders'], liveOnlyInterfaces: ['order-returns'] })   // D-F47: o cortado só com viva
     for (const body of [[], { limit: 51 }, { minMinutes: 0 }, { minMinutes: '5' }]) {
       const b = await request(app).post('/v1/nfse/refresh').set('Authorization', `Bearer ${token()}`).send(body as any)
       expect([JSON.stringify(body), b.status, b.body.code]).toEqual([JSON.stringify(body), 400, 'VALIDATION_FAILED'])
@@ -178,11 +179,11 @@ describe('D-F46 — ataques à borda: ramo não contratado, admin, lista vazia, 
     contracted('order-returns')
     expect((await request(app).post('/v1/nfse/refresh').set(admin).send({})).status).toBe(200)
     expect(spies.refreshOpenServiceTransmissions).toHaveBeenLastCalledWith(expect.anything(), expect.anything(),
-      expect.objectContaining({ interfaces: ['order-returns'], liveOnlyInterfaces: ['service-orders', 'orders'] }))
+      expect.objectContaining({ terminal: WEB, interfaces: ['order-returns'], liveOnlyInterfaces: ['service-orders', 'orders'] }))
     contracted()
     expect((await request(app).post('/v1/nfse/refresh').set(admin).send({})).status).toBe(200)
     expect(spies.refreshOpenServiceTransmissions).toHaveBeenLastCalledWith(expect.anything(), expect.anything(),
-      expect.objectContaining({ interfaces: [], liveOnlyInterfaces: ['service-orders', 'orders', 'order-returns'] }))
+      expect.objectContaining({ terminal: WEB, interfaces: [], liveOnlyInterfaces: ['service-orders', 'orders', 'order-returns'] }))
     spies.refreshOpenServiceTransmissions.mockClear()
     const r = await request(app).post('/v1/nfse/refresh').set('Authorization', `Bearer ${token()}`).send({})
     expect([r.status, r.body.code]).toEqual([403, 'INTERFACE_NOT_ALLOWED'])
@@ -233,7 +234,7 @@ describe('D-F46 — ataques à borda: ramo não contratado, admin, lista vazia, 
     expect(await actualFiscal.erp.orderInterface(q([{ k: 'service-orders' }]), 'setes_setes', ref)).toBe('service-orders')
     const calls: any[] = []
     await (jest.requireActual('../nfse/repository') as typeof repo).listRefreshCandidates(
-      { query: async (sql: string, p: any[]) => { calls.push([sql, p]); return [[]] } } as any, 'setes_setes', 1, 5, 10, 8, { interfaces: ['orders'] })
+      { query: async (sql: string, p: any[]) => { calls.push([sql, p]); return [[]] } } as any, 'setes_setes', webScope(1), 5, 10, 8, { interfaces: ['orders'] })
     expect(calls[0][0]).toMatch(/COALESCE\(oi\.interface_key, 'orders'\) IN \(\?\)/)
     expect(calls[0][1]).toContainEqual(['orders'])
   })
@@ -404,7 +405,7 @@ describe('scripts: migrate:setes --cutover / re-sincronia (D-F42/D-F44)', () => 
 
   it('cenário r8-resync-55: a institution fica TRAVADA (cerca = réplica em qualquer linha) e o `--cutover` não tem saída ("nada a virar")', async () => {
     const q = { query: jest.fn(async (sql: string, p: any[]) => strandedDb(sql, p) ?? [[]]) }
-    expect(await actualFiscal.emissionStillInErp(q, 'setes_y', 2)).toBe(true)
+    expect(await actualFiscal.anyEmissionStillInErp(q, 'setes_y', 2)).toBe(true)                 // o grão do estabelecimento (D-NE10)
     const r = await runScript(['--cutover', '2', '--confirmo-setes-api-parado', '--vai'], strandedDb)
     expect(r.exitCode).toBe(1)
     expect(r.errors.join(' ')).toMatch(/não tem habilitação SE — nada a virar/)

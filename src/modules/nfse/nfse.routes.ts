@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { route, sendOk, institutionOf, InstitutionPayload, erp } from 'fiscal-api'
+import { route, sendOk, institutionOf, InstitutionPayload, InvoiceRef, erp, invoiceRef, SERVICE_ISSUER_MODEL, WEB_TERMINAL } from 'fiscal-api'
 import type { AppContext } from '../../context'
 import type { Actor } from '../../nfse/transmission'
 import * as tx from '../../nfse/transmission'
@@ -22,6 +22,11 @@ const BRANCH_INTERFACES = ['service-orders', 'orders']
  */
 const PASS_INTERFACES = ['service-orders', 'orders', 'order-returns'] as const
 const actorOf = (inst: InstitutionPayload): Actor => ({ schemaName: inst.schemaName, institutionId: inst.institutionId, userId: inst.userId })
+/**
+ * NE-1a parte 2 (D-NE12/D-NE59): a BORDA monta a referência INTEIRA da nota — o id da rota + o estabelecimento do token + o terminal das
+ * notas da web (`WEB_TERMINAL` só aqui, na borda HTTP); daqui para dentro a nota viaja inteira (guardas, composição, SQL da família).
+ */
+const webRefOf = (inst: InstitutionPayload, raw: string): InvoiceRef => invoiceRef(inst.institutionId, parseInvoiceId(raw), WEB_TERMINAL)
 
 export function nfseRoutes(ctx: AppContext): Router {
   const router = Router()
@@ -31,62 +36,62 @@ export function nfseRoutes(ctx: AppContext): Router {
     const page = parseWith(pendingQueryDto, req.query)
     const interfaces = await visibleInterfaces(ctx, inst, BRANCH_INTERFACES)
     // envelope paginado da casa: { ok, data, page, pageSize, total }
-    res.status(200).json({ ok: true, ...(await tx.listPending(ctx, actorOf(inst), page, interfaces)) })
+    res.status(200).json({ ok: true, ...(await tx.listPending(ctx, actorOf(inst), WEB_TERMINAL, page, interfaces)) })
   }))
 
   router.get('/invoices/:invoiceId', route('GET /v1/nfse/invoices/:invoiceId', async (req, res) => {
     const inst = institutionOf(req)
-    const invoiceId = parseInvoiceId(req.params.invoiceId)
-    await requireBranchInterface(ctx, inst, invoiceId)
-    sendOk(res, await tx.getServiceFiscalView(ctx, actorOf(inst), invoiceId))
+    const ref = webRefOf(inst, req.params.invoiceId)
+    await requireBranchInterface(ctx, inst, ref)
+    sendOk(res, await tx.getServiceFiscalView(ctx, actorOf(inst), ref))
   }))
 
   router.post('/invoices/:invoiceId/transmit', route('POST /v1/nfse/invoices/:invoiceId/transmit', async (req, res) => {
     const inst = institutionOf(req)
-    const invoiceId = parseInvoiceId(req.params.invoiceId)
-    await requireCutover(ctx, inst)
-    await requireBranchPrivilege(ctx, inst, invoiceId, erp.PRIVILEGE_TRANSMITIR)
-    sendOk(res, await tx.transmitServiceInvoice(ctx, actorOf(inst), invoiceId), 201)
+    const ref = webRefOf(inst, req.params.invoiceId)
+    await requireCutover(ctx, inst, SERVICE_ISSUER_MODEL)
+    await requireBranchPrivilege(ctx, inst, ref, erp.PRIVILEGE_TRANSMITIR)
+    sendOk(res, await tx.transmitServiceInvoice(ctx, actorOf(inst), ref), 201)
   }))
 
   router.post('/invoices/:invoiceId/refresh', route('POST /v1/nfse/invoices/:invoiceId/refresh', async (req, res) => {
     const inst = institutionOf(req)
-    const invoiceId = parseInvoiceId(req.params.invoiceId)
-    await requireCutover(ctx, inst)
-    await requireBranchPrivilege(ctx, inst, invoiceId, erp.PRIVILEGE_TRANSMITIR)
-    sendOk(res, await tx.refreshServiceTransmission(ctx, actorOf(inst), invoiceId, 'Q', { origin: 'consulta' }))   // D-F95
+    const ref = webRefOf(inst, req.params.invoiceId)
+    await requireCutover(ctx, inst, SERVICE_ISSUER_MODEL)
+    await requireBranchPrivilege(ctx, inst, ref, erp.PRIVILEGE_TRANSMITIR)
+    sendOk(res, await tx.refreshServiceTransmission(ctx, actorOf(inst), ref, 'Q', { origin: 'consulta' }))   // D-F95
   }))
 
   router.post('/invoices/:invoiceId/reconfirm', route('POST /v1/nfse/invoices/:invoiceId/reconfirm', async (req, res) => {
     const inst = institutionOf(req)
-    const invoiceId = parseInvoiceId(req.params.invoiceId)
-    await requireCutover(ctx, inst)
-    await requireBranchPrivilege(ctx, inst, invoiceId, erp.PRIVILEGE_CANCELAR)
-    sendOk(res, await tx.reconfirmBeforeLocalCancel(ctx, actorOf(inst), invoiceId))
+    const ref = webRefOf(inst, req.params.invoiceId)
+    await requireCutover(ctx, inst, SERVICE_ISSUER_MODEL)
+    await requireBranchPrivilege(ctx, inst, ref, erp.PRIVILEGE_CANCELAR)
+    sendOk(res, await tx.reconfirmBeforeLocalCancel(ctx, actorOf(inst), ref))
   }))
 
   router.post('/invoices/:invoiceId/cancel', route('POST /v1/nfse/invoices/:invoiceId/cancel', async (req, res) => {
     const inst = institutionOf(req)
-    const invoiceId = parseInvoiceId(req.params.invoiceId)
-    await requireCutover(ctx, inst)
-    await requireBranchPrivilege(ctx, inst, invoiceId, erp.PRIVILEGE_CANCELAR)
+    const ref = webRefOf(inst, req.params.invoiceId)
+    await requireCutover(ctx, inst, SERVICE_ISSUER_MODEL)
+    await requireBranchPrivilege(ctx, inst, ref, erp.PRIVILEGE_CANCELAR)
     const body = parseWith(cancelDto, req.body)
-    sendOk(res, await tx.cancelServiceInvoiceAtAuthority(ctx, actorOf(inst), invoiceId, body.reason))
+    sendOk(res, await tx.cancelServiceInvoiceAtAuthority(ctx, actorOf(inst), ref, body.reason))
   }))
 
   router.get('/invoices/:invoiceId/xml', route('GET /v1/nfse/invoices/:invoiceId/xml', async (req, res) => {
     const inst = institutionOf(req)
-    const invoiceId = parseInvoiceId(req.params.invoiceId)
-    await requireBranchInterface(ctx, inst, invoiceId)
-    const { accessKey, xml } = await tx.readNfseXml(ctx, actorOf(inst), invoiceId)
+    const ref = webRefOf(inst, req.params.invoiceId)
+    await requireBranchInterface(ctx, inst, ref)
+    const { accessKey, xml } = await tx.readNfseXml(ctx, actorOf(inst), ref)
     sendOk(res, { accessKey, xml })
   }))
 
   router.get('/invoices/:invoiceId/danfse', route('GET /v1/nfse/invoices/:invoiceId/danfse', async (req, res) => {
     const inst = institutionOf(req)
-    const invoiceId = parseInvoiceId(req.params.invoiceId)
-    await requireBranchInterface(ctx, inst, invoiceId)
-    const { accessKey, xml, cancelled } = await tx.readNfseXml(ctx, actorOf(inst), invoiceId)
+    const ref = webRefOf(inst, req.params.invoiceId)
+    await requireBranchInterface(ctx, inst, ref)
+    const { accessKey, xml, cancelled } = await tx.readNfseXml(ctx, actorOf(inst), ref)
     const { name, municipality } = await emitterDisplay(ctx.pool, inst.institutionId)
     const pdf = await renderDanfse(xml, { issuerName: name, municipality, cancelled })
     sendOk(res, { accessKey, pdfBase64: pdf.toString('base64') })
@@ -94,10 +99,10 @@ export function nfseRoutes(ctx: AppContext): Router {
 
   router.post('/refresh', route('POST /v1/nfse/refresh', async (req, res) => {
     const inst = institutionOf(req)
-    await requireCutover(ctx, inst)
+    await requireCutover(ctx, inst, SERVICE_ISSUER_MODEL)
     const scope = await passScope(ctx, inst, PASS_INTERFACES, erp.PRIVILEGE_TRANSMITIR)       // D-F46/D-F47
     const body = parseWith(refreshPassDto, req.body)
-    sendOk(res, await tx.refreshOpenServiceTransmissions(ctx, actorOf(inst), { minMinutes: body.minMinutes, limit: body.limit, ...scope }))
+    sendOk(res, await tx.refreshOpenServiceTransmissions(ctx, actorOf(inst), { terminal: WEB_TERMINAL, minMinutes: body.minMinutes, limit: body.limit, ...scope }))
   }))
 
   return router

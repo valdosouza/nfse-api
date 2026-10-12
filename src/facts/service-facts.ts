@@ -1,5 +1,6 @@
 import {
-  HttpError, FieldError, ErrorCodes, Queryable, assertSchema, erp, nowIsoIn,
+  HttpError, FieldError, ErrorCodes, Queryable, assertSchema, erp, nowIsoIn, InvoiceRef, InvoiceScope,
+  LIVE_VOICE_KINDS, AUTHORIZED_KINDS, sqlKindList,
 } from 'fiscal-api'
 import type { DpsInput, DpsToma, DpsTotTrib, AuthorityEnvironment } from '../authority/types'
 
@@ -59,8 +60,9 @@ export interface ServiceInvoiceHeader {
  * Nota emitida POR ESTE estabelecimento, viva, com o ramo de serviço. Sem ramo → 422
  * INVOICE_SERVICE_BRANCH_MISSING. Leitura fora de transação (a reserva confere de novo sob a trava).
  */
-export async function readServiceInvoice(q: Queryable, schemaName: string, institutionId: number, invoiceId: number): Promise<ServiceInvoiceHeader> {
+export async function readServiceInvoice(q: Queryable, schemaName: string, ref: InvoiceRef): Promise<ServiceInvoiceHeader> {
   const s = assertSchema(schemaName)
+  const { invoiceId } = ref
   const [rows] = await q.query(
     `SELECT i.id, i.number, i.serie, i.model, i.value, DATE_FORMAT(i.dt_emission, '%Y-%m-%d') AS dtEmission,
             i.tb_entity_id AS entityId, i.status,
@@ -75,8 +77,8 @@ export async function readServiceInvoice(q: Queryable, schemaName: string, insti
          ON l.tb_institution_id = i.tb_institution_id AND l.tb_invoice_id = i.id AND l.terminal = i.terminal
        LEFT JOIN \`${s}\`.tb_invoice_service sv
          ON sv.id = i.id AND sv.tb_institution_id = i.tb_institution_id AND sv.terminal = i.terminal AND sv.deleted = 'N'
-      WHERE i.id = ? AND i.tb_institution_id = ? AND i.terminal = 0 AND i.deleted = 'N' AND i.issuer = i.tb_institution_id`,
-    [invoiceId, institutionId])
+      WHERE i.id = ? AND i.tb_institution_id = ? AND i.terminal = ? AND i.deleted = 'N' AND i.issuer = i.tb_institution_id`,
+    [ref.invoiceId, ref.institutionId, ref.terminal])
   const r = rows[0]
   if (!r) throw new HttpError(404, `Nota ${invoiceId} emitida por este estabelecimento não encontrada`, undefined, ErrorCodes.INVOICE_NOT_FOUND)
   if (r.branchId == null) {
@@ -101,13 +103,13 @@ export async function readServiceInvoice(q: Queryable, schemaName: string, insti
 }
 
 /** updated_at do ramo — relido DENTRO da transação da reserva, depois da trava da nota (MEDIUM-3). */
-export async function branchUpdatedAt(q: Queryable, schemaName: string, institutionId: number, invoiceId: number): Promise<string | null> {
+export async function branchUpdatedAt(q: Queryable, schemaName: string, ref: InvoiceRef): Promise<string | null> {
   const s = assertSchema(schemaName)
   const [rows] = await q.query(
     `SELECT DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s') AS updatedAt FROM \`${s}\`.tb_invoice_service
-      WHERE id = ? AND tb_institution_id = ? AND terminal = 0 AND deleted = 'N'`,
-    [invoiceId, institutionId])
-  if (!rows[0]) throw new HttpError(422, `Nota ${invoiceId} não tem ramo de serviço`, undefined, ErrorCodes.INVOICE_SERVICE_BRANCH_MISSING)
+      WHERE id = ? AND tb_institution_id = ? AND terminal = ? AND deleted = 'N'`,
+    [ref.invoiceId, ref.institutionId, ref.terminal])
+  if (!rows[0]) throw new HttpError(422, `Nota ${ref.invoiceId} não tem ramo de serviço`, undefined, ErrorCodes.INVOICE_SERVICE_BRANCH_MISSING)
   return rows[0].updatedAt ?? null
 }
 
@@ -309,12 +311,15 @@ export async function buildDpsBase(
  * setes-api — D-F28) e nota sincronizada da origem. [interfaces] = ramos que quem pede pode ver (null = todos).
  */
 export async function listPendingServiceInvoices(
-  q: Queryable, schemaName: string, institutionId: number, fiscalDb: string,
+  q: Queryable, schemaName: string, scope: InvoiceScope, fiscalDb: string,
   page: { page: number; pageSize: number }, interfaces: string[] | null,
 ): Promise<{ rows: { invoiceId: number; number: string; dtEmission: string; interfaceKey: string }[]; total: number }> {
   const s = assertSchema(schemaName)
   if (!/^[a-z0-9_]+$/.test(fiscalDb)) throw new Error(`Banco fiscal inválido: ${fiscalDb}`)
   if (interfaces && interfaces.length === 0) return { rows: [], total: 0 }
+  // D-NE69 (= Q-NE69 (a)): "já tem tentativa que barra o lote" = viva com voz (CLASSE — S/K/P) · autorizada (CLASSE — A/N) · a voz C (UM
+  // fato: o C local é do setes-api — D-F28) · em voo sem voz ('-'); fora ficam R/F (e D, que a NFS-e não produz)
+  const BLOCKING = `${sqlKindList([...LIVE_VOICE_KINDS, ...AUTHORIZED_KINDS, 'C'])},'-'`
   const from = `
        FROM \`${s}\`.tb_invoice i
        JOIN \`${s}\`.tb_invoice_service sv
@@ -323,17 +328,17 @@ export async function listPendingServiceInvoices(
          ON l.tb_institution_id = i.tb_institution_id AND l.tb_invoice_id = i.id AND l.terminal = i.terminal
        LEFT JOIN \`${s}\`.vw_order_interface oi
          ON oi.tb_institution_id = i.tb_institution_id AND oi.tb_order_id = i.id AND oi.terminal = i.terminal
-      WHERE i.tb_institution_id = ? AND i.terminal = 0 AND i.deleted = 'N' AND i.issuer = i.tb_institution_id
+      WHERE i.tb_institution_id = ? AND i.terminal = ? AND i.deleted = 'N' AND i.issuer = i.tb_institution_id
         AND l.last_kind = 'E'
         ${interfaces ? `AND COALESCE(oi.interface_key, 'orders') IN (?)` : ''}
         AND NOT EXISTS (
           SELECT 1 FROM \`${fiscalDb}\`.vw_invoice_service_transmission t
            WHERE t.tb_institution_id = ? AND t.tb_invoice_id = i.id AND t.terminal = i.terminal
              AND t.life_event = l.life_event
-             AND COALESCE(t.last_kind, '-') IN ('A','N','S','K','C','-'))`
+             AND COALESCE(t.last_kind, '-') IN (${BLOCKING}))`
   // a institution entra também como CONSTANTE no NOT EXISTS: o otimizador o materializa (exists_to_in) e, sem a
   // constante, a materialização varria o histórico de TODAS as institutions (gate adversarial R4 — D-F40)
-  const params: unknown[] = interfaces ? [institutionId, interfaces, institutionId] : [institutionId, institutionId]
+  const params: unknown[] = [scope.institutionId, scope.terminal, ...(interfaces ? [interfaces] : []), scope.institutionId]
   const [cnt] = await q.query(`SELECT COUNT(*) AS n ${from}`, params)
   const [rows] = await q.query(
     `SELECT i.id AS invoiceId, i.number, DATE_FORMAT(i.dt_emission, '%Y-%m-%d') AS dtEmission,

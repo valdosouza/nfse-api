@@ -30,6 +30,7 @@ import {
   transmitServiceInvoice, refreshServiceTransmission, cancelServiceInvoiceAtAuthority, refreshOpenServiceTransmissions, resetMunicipalTermsCache,
 } from '../nfse/transmission'
 import { listRefreshCandidates } from '../nfse/repository'
+import { webScope, refOf, WEB, webRef } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
 
 // mesma normalização EM MEMÓRIA das rodadas 1–3: o ramo congelado das notas do dev tem cTribMun "0102" (anterior à D-N26b)
 jest.mock('../facts/service-facts', () => {
@@ -169,7 +170,7 @@ async function seedAuthorized(inv: number, daysAgo: number): Promise<{ key: stri
 }
 const kindsOf = async (inv: number) => (await q(`SELECT kind FROM tb_invoice_service_transmission_event WHERE tb_institution_id = ? AND tb_invoice_id = ? ORDER BY attempt, event`, [INST, inv])).map(r => String(r.kind))
 const candidateIds = async (maxDays: number) =>
-  (await listRefreshCandidates(ctx.pool, SCHEMA, INST, 5, 10, 50, { authorizedMaxDays: maxDays })).map(t => t.invoiceId)
+  (await listRefreshCandidates(ctx.pool, SCHEMA, webScope(INST), 5, 10, 50, { authorizedMaxDays: maxDays })).map(t => t.invoiceId)
 
 // usuário do setes-api (cria/apaga o banco descartável; SELECT no ERP) — lido do .env SEM tocar o process.env
 let setesUser = '', setesPass = ''
@@ -221,7 +222,7 @@ d('GATE ADVERSARIAL — delta da Rodada 4 (D-F36…D-F40) — banco real (répli
       const id = Number(r.id)
       if (busy.has(id)) continue
       try {
-        const h = await svc.readServiceInvoice(ctx.pool, SCHEMA, INST, id)
+        const h = await svc.readServiceInvoice(ctx.pool, SCHEMA, refOf(INST, id))
         await svc.buildDpsBase(ctx.pool, SCHEMA, INST, h, 'H')
         fresh.push(id)
       } catch { /* cadastro incompleto — não serve de alvo */ }
@@ -298,9 +299,9 @@ d('GATE ADVERSARIAL — delta da Rodada 4 (D-F36…D-F40) — banco real (répli
 
     it('composição direta: transmitir, consultar, cunhar nDPS e tomar o aluguel RECUSAM a réplica NO NÚCLEO — nada ao fisco, nada gravado', async () => {
       const s0 = await fiscalSums()
-      await expect(transmitServiceInvoice(ctx, ACTOR, X)).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_CUTOVER_PENDING' })
-      await expect(refreshServiceTransmission(ctx, ACTOR, 8005)).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_CUTOVER_PENDING' })
-      await expect(refreshServiceTransmission(ctx, ACTOR, RECENT)).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_CUTOVER_PENDING' })
+      await expect(transmitServiceInvoice(ctx, ACTOR, webRef(ACTOR, X))).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_CUTOVER_PENDING' })
+      await expect(refreshServiceTransmission(ctx, ACTOR, webRef(ACTOR, 8005))).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_CUTOVER_PENDING' })
+      await expect(refreshServiceTransmission(ctx, ACTOR, webRef(ACTOR, RECENT))).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_CUTOVER_PENDING' })
       await expect(fiscal.withTransaction(ctx.pool, 'adv-r4 nDPS na réplica', {}, conn => fiscal.nextDpsNumber(conn, INST)))
         .rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_CUTOVER_PENDING' })
       expect(await fiscal.acquireRefreshLease(ctx.pool, INST, 'SE', 60)).toBeNull()
@@ -311,7 +312,7 @@ d('GATE ADVERSARIAL — delta da Rodada 4 (D-F36…D-F40) — banco real (répli
     const lease: { result?: any; err?: any } = {}
     it('cenário: passada do rodízio chamada DIRETO na réplica — nada consultado, aluguel não tomado, nada gravado', async () => {
       const s0 = await fiscalSums()
-      try { lease.result = await refreshOpenServiceTransmissions(ctx, ACTOR) } catch (err) { lease.err = err }
+      try { lease.result = await refreshOpenServiceTransmissions(ctx, ACTOR, { terminal: WEB }) } catch (err) { lease.err = err }
       // eslint-disable-next-line no-console
       console.log('[adv-r4] rodízio direto na réplica →', JSON.stringify(lease.result ?? { status: lease.err?.statusCode, code: lease.err?.code }))
       expect(fisco.calls).toEqual({ transmit: 0, query: 0, dps: 0, event: 0, terms: 0 })
@@ -325,7 +326,7 @@ d('GATE ADVERSARIAL — delta da Rodada 4 (D-F36…D-F40) — banco real (répli
     it('cenário: cancelar NO FISCO direto a NFS-e (sintética, autorizada) da réplica → 409 FISCAL_CUTOVER_PENDING e nada vai ao fisco', async () => {
       expect(syn.key).toHaveLength(50)
       cancel.kindsBefore = await kindsOf(RECENT)
-      try { await cancelServiceInvoiceAtAuthority(ctx, ACTOR, RECENT, 'cancelamento adversarial r4 na réplica') } catch (err: any) { cancel.status = err.statusCode; cancel.code = err.code }
+      try { await cancelServiceInvoiceAtAuthority(ctx, ACTOR, webRef(ACTOR, RECENT), 'cancelamento adversarial r4 na réplica') } catch (err: any) { cancel.status = err.statusCode; cancel.code = err.code }
       cancel.kindsAfter = await kindsOf(RECENT)
       // eslint-disable-next-line no-console
       console.log('[adv-r4] cancelamento direto na réplica', JSON.stringify(cancel))
@@ -377,7 +378,7 @@ d('GATE ADVERSARIAL — delta da Rodada 4 (D-F36…D-F40) — banco real (répli
       huge.sqlNull = (await q(`SELECT DATE_SUB(NOW(), INTERVAL ? DAY) IS NULL AS n`, [20_261_261]))[0].n === 1
       const control90 = await candidateIds(90)                    // antes da passada (ela marca last_queried_at)
       fisco.termsCancelDays = 20_261_231
-      huge.pass = await refreshOpenServiceTransmissions(ctx, ACTOR, { budgetMs: 5000 })
+      huge.pass = await refreshOpenServiceTransmissions(ctx, ACTOR, { terminal: WEB, budgetMs: 5000 })
       // eslint-disable-next-line no-console
       console.log('[adv-r4] teto absurdo', JSON.stringify(huge), '| controle teto 90', control90.join(','))
       expect(huge.sqlNull).toBe(true)
@@ -394,7 +395,7 @@ d('GATE ADVERSARIAL — delta da Rodada 4 (D-F36…D-F40) — banco real (répli
       expect(await candidateIds(90)).toContain(RECENT)
       fisco.termsDelayMs = 1500
       const t0 = Date.now()
-      slow.pass = await refreshOpenServiceTransmissions(ctx, ACTOR, { budgetMs: 1000 })
+      slow.pass = await refreshOpenServiceTransmissions(ctx, ACTOR, { terminal: WEB, budgetMs: 1000 })
       slow.ms = Date.now() - t0
       slow.leaseAfter = (await q(`SELECT refresh_lease_until AS u FROM tb_establishment_issuer WHERE tb_institution_id = ? AND model = 'SE'`, [INST]))[0].u ?? null
       // eslint-disable-next-line no-console
@@ -407,7 +408,7 @@ d('GATE ADVERSARIAL — delta da Rodada 4 (D-F36…D-F40) — banco real (répli
     })
 
     it('controle: com o convênio rápido a MESMA passada consulta a autorizada de 5 dias (o que trava é o PAM, não o rodízio)', async () => {
-      const r = await refreshOpenServiceTransmissions(ctx, ACTOR, { budgetMs: 5000 })
+      const r = await refreshOpenServiceTransmissions(ctx, ACTOR, { terminal: WEB, budgetMs: 5000 })
       expect(r).toMatchObject({ checked: 1, skipped: false, stoppedEarly: false })
       expect(fisco.calls.query).toBe(1)
     })
@@ -685,7 +686,7 @@ d('GATE ADVERSARIAL — delta da Rodada 4 (D-F36…D-F40) — banco real (répli
 
 async function listPendingServiceInvoicesReal(q: any): Promise<void> {
   const { listPendingServiceInvoices } = jest.requireActual('../facts/service-facts')
-  await listPendingServiceInvoices(q, SCHEMA, INST, 'fiscal_api', { page: 1, pageSize: 25 }, ['service-orders', 'orders'])
+  await listPendingServiceInvoices(q, SCHEMA, webScope(INST), 'fiscal_api', { page: 1, pageSize: 25 }, ['service-orders', 'orders'])
 }
 
 // sanity para o describe.skip não deixar o arquivo "vazio" quando NFSE_ADV_LIVE não está ligado

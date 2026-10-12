@@ -2,9 +2,11 @@
  * A peça da CERCA da D-F102 (`voice-kind-fence.ts`) — D-F105 (= Q-F111 (a), Valdo 2026-10-11): a cerca é da FAMÍLIA NFS-e.
  * No núcleo (onde a NE-1a põe a máquina comum) só conta o SQL na tabela da voz da NFS-e; o `kind: 'S'` de lá é da NF-e (S legítimo).
  */
-import { tsProducesS, sqlFileProducesS, voiceSProducers, writerCallFlags, voiceWriterViolations } from './voice-kind-fence'
+import fs from 'fs'
+import path from 'path'
+import { tsProducesS, sqlFileProducesS, voiceSProducers, writerCallFlags, voiceWriterViolations, lockFlags, walkTs, WORKSPACE } from './voice-kind-fence'
 
-const writer = (kind: string) => `await insertTransmissionEvent(conn, i, n, a, u, { kind: ${kind}, source: 'P' })`
+const writer = (kind: string) => `await insertTransmissionEvent(itx, a, u, { kind: ${kind}, source: 'P' })`
 
 describe('voice-kind-fence — a cerca da voz S da família NFS-e (D-F102/D-F105)', () => {
   it('pega o literal S ao lado de `kind` em qualquer grafia (fora do núcleo)', () => {
@@ -40,21 +42,75 @@ describe('voice-kind-fence — a cerca da voz S da família NFS-e (D-F102/D-F105
   })
   it('gate R22 — a cerca de chamada pega o que escapava (spread posterior, namespace/alias/cast, mutação do OUTCOME_KIND, SQL cru com placeholder)', () => {
     for (const src of [
-      `insertTransmissionEvent(conn, 1, 1, 1, null, { kind: 'F', source: 'P', ...extra })`,
-      `repo.insertTransmissionEvent(conn, 1, 1, 1, null, { kind: WIDE as ServiceVoiceWriteKind, source: 'P' })`,
+      `insertTransmissionEvent(itx, 1, null, { kind: 'F', source: 'P', ...extra })`,
+      `repo.insertTransmissionEvent(itx, 1, null, { kind: WIDE as ServiceVoiceWriteKind, source: 'P' })`,
       `import { insertTransmissionEvent as put } from '../nfse/repository'
-put(conn, 1, 1, 1, null, { kind: k, source: 'P' })`,
-      `put(conn, 1, 1, 1, null, { kind: WIDE, source: 'P' } as any)`,
-      `;(insertTransmissionEvent as (...a: any[]) => Promise<number>)(conn, 1, 1, 1, null, { kind: WIDE, source: 'P' })`,
+put(itx, 1, null, { kind: k, source: 'P' })`,
+      `put(itx, 1, null, { kind: WIDE, source: 'P' } as any)`,
+      `;(insertTransmissionEvent as (...a: any[]) => Promise<number>)(itx, 1, null, { kind: WIDE, source: 'P' })`,
       `Object.assign(OUTCOME_KIND, { local: 'S' })`, `Reflect.set(OUTCOME_KIND, 'auth_failed', 'S')`, `delete (OUTCOME_KIND as any).local`,
       "conn.query('INSERT INTO tb_invoice_service_transmission_event (kind, source) VALUES (?, ?)', ['S', 'P'])",
       "const VOICE = 'tb_invoice_service_transmission_event'\n" + "conn.query(`UPDATE ${VOICE} SET message = ? WHERE attempt = ?`, [m, a])",
     ]) expect([src, writerCallFlags(src)]).toEqual([src, true])
   })
   it('gate R22 — o legítimo passa: literal da família, `OUTCOME_KIND[…]`, e o SQL do escritor AUTORIZADO; leitura não é escrita', () => {
-    expect(writerCallFlags(`insertTransmissionEvent(conn, 1, 1, 1, null, { kind: 'A', source: 'P', message: m })`)).toBe(false)
-    expect(writerCallFlags(`insertTransmissionEvent(conn, 1, 1, 1, null, { kind: OUTCOME_KIND[cls], source: 'P' })`)).toBe(false)
+    expect(writerCallFlags(`insertTransmissionEvent(itx, 1, null, { kind: 'A', source: 'P', message: m })`)).toBe(false)
+    expect(writerCallFlags(`insertTransmissionEvent(itx, 1, null, { kind: OUTCOME_KIND[cls], source: 'P' })`)).toBe(false)
     expect(writerCallFlags("conn.query('INSERT INTO tb_invoice_service_transmission_event (kind) VALUES (?)', [e.kind])", { allowSqlWriter: true })).toBe(false)
     expect(writerCallFlags("conn.query('SELECT kind FROM tb_invoice_service_transmission_event WHERE attempt = ?', [a])")).toBe(false)
+  })
+  it('NE-1a parte 2 — escrita na voz = a voz é o ALVO (INSERT/REPLACE com ou sem schema, lista de tabelas do UPDATE antes do SET, DELETE antes do WHERE); a voz LIDA no subselect de outra escrita não é escrita na voz', () => {
+    const flags = (sql: string) => writerCallFlags(`conn.query('${sql}', [])`)
+    // o schema por SUBSTITUIÇÃO (a forma do setes-api): o template vira `?`.tabela
+    expect(writerCallFlags('conn.query(`INSERT INTO \\`${db}\\`.tb_invoice_service_transmission_event (kind) VALUES (?)`, [k])')).toBe(true)
+    for (const sql of [
+      'INSERT INTO tb_invoice_service_transmission_event (kind) VALUES (?)',
+      'REPLACE tb_invoice_service_transmission_event (kind) VALUES (?)',
+      'UPDATE tb_invoice_service_transmission_event SET message = ? WHERE attempt = ?',
+      'UPDATE tb_invoice_service_transmission t JOIN tb_invoice_service_transmission_event e ON e.attempt = t.attempt SET e.message = ?',
+      'DELETE FROM tb_invoice_service_transmission_event WHERE attempt = ?',
+      'DELETE e FROM tb_invoice_service_transmission t JOIN tb_invoice_service_transmission_event e ON e.attempt = t.attempt WHERE t.attempt = ?',
+    ]) expect([sql, flags(sql)]).toEqual([sql, true])
+    for (const sql of [
+      // o `recordNfseNotGenerated` (D-F90): grava a TENTATIVA conferindo a última voz num subselect
+      'UPDATE tb_invoice_service_transmission t SET t.nfse_not_generated_at = NOW() WHERE t.attempt = ? AND (SELECT COALESCE(MAX(e.event), 0) FROM tb_invoice_service_transmission_event e WHERE e.attempt = t.attempt) = ?',
+      'INSERT INTO tb_x (n) SELECT COUNT(*) FROM tb_invoice_service_transmission_event',
+      'UPDATE tb_invoice_service_transmission SET message = ? WHERE attempt = ?',
+    ]) expect([sql, flags(sql)]).toEqual([sql, false])
+  })
+  it('NE-1a parte 2 (passo 5) — o ESCRITOR como VALOR só vai às políticas do núcleo (1º argumento de reserva/liberação; propriedade das portas do `recordVoiceOnce`); embrulho, guarda, retorno ou outra posição = violação', () => {
+    for (const src of [
+      'wrap(insertTransmissionEvent)', 'const w = { f: insertTransmissionEvent }', 'const f = () => insertTransmissionEvent', 'arr.push(insertTransmissionEvent)',
+      'other({ insertTransmissionEvent, hasTransmissionEvent }, itx, 1, null, e)', 'recordVoiceOnce(x, { insertTransmissionEvent })',
+      'reserveCancelRequest(itx, insertTransmissionEvent)', 'const g = insertTransmissionEvent as any',
+      "import { insertTransmissionEvent as put } from '../nfse/repository'\nwrap(put)",
+    ]) expect([src, writerCallFlags(src)]).toEqual([src, true])
+    for (const src of [
+      'await reserveCancelRequest(insertTransmissionEvent, itx, tx.attempt, userId)',
+      'await releaseCancelRequest(insertTransmissionEvent, itx, tx.attempt, userId, message, cur)',
+      "await recordVoiceOnce({ insertTransmissionEvent, hasTransmissionEvent }, itx, 1, null, { kind: 'A', source: 'P', dh })",
+      "export { insertTransmissionEvent } from './repository'", 'export const insertTransmissionEvent = SERVICE_VOICE_FAMILY.insertTransmissionEvent',
+    ]) expect([src, writerCallFlags(src)]).toEqual([src, false])
+  })
+  it('NE-1a parte 2 (D-F108) — um 2º DESCRITOR de família fora do autorizado (`defineVoiceFamily` por qualquer grafia) é violação: furaria a lista de escrita da NFS-e sem SQL nenhum', () => {
+    for (const src of [
+      "export const F = defineVoiceFamily({ reading: SERVICE_VOICE_READING, eventTable: 'tb_invoice_service_transmission_event', writeKinds: ['S'] })",
+      "import { defineVoiceFamily as def } from 'fiscal-api'\nexport const F = def({ reading: R, eventTable: T, writeKinds: K })",
+      "import * as core from 'fiscal-api'\nexport const F = core.defineVoiceFamily({ reading: R, eventTable: T, writeKinds: K })",
+    ]) expect([src, writerCallFlags(src)]).toEqual([src, true])
+    const legit = "export const SERVICE_VOICE_FAMILY = defineVoiceFamily({ reading: SERVICE_VOICE_READING, eventTable: 'tb_invoice_service_transmission_event', writeKinds: SERVICE_VOICE_WRITE_KINDS })"
+    expect(writerCallFlags(legit, { allowFamilyDescriptor: true })).toBe(false)
+  })
+  it('D-NE80 (gates da parte 2) — a TRAVA do `withInvoiceTx` numa família é só `erp.lockInvoice`: outro "travante", atalho ou opções espalhadas = violação; o código REAL (nfse-api src + scripts, nfe-api) está limpo', () => {
+    for (const src of [
+      "withLockedInvoice(pool, actor, ref, { label, lock: async () => LOCKED }, fn)",
+      "withInvoiceTx(pool, who, ref, { label, lock: myLock }, fn)",
+      "const lock = erp.lockInvoice\nwithInvoiceTx(pool, who, ref, { label, lock }, fn)",
+      "withInvoiceTx(pool, who, ref, { label, ...opts }, fn)",
+    ]) expect([src, lockFlags(src)]).toEqual([src, true])
+    expect(lockFlags("withLockedInvoice(deps.pool, actor, refOf(actor, ref), { label, requireAlive: opts.requireAlive, lock: erp.lockInvoice }, fn)")).toBe(false)
+    const files = [...walkTs(path.join(WORKSPACE, 'nfse-api', 'src')), ...walkTs(path.join(WORKSPACE, 'nfse-api', 'scripts')), ...walkTs(path.join(WORKSPACE, 'nfe-api', 'src'))]
+    expect(files.length).toBeGreaterThan(20)
+    expect(files.filter(f => lockFlags(fs.readFileSync(f, 'utf8'))).map(f => path.relative(WORKSPACE, f))).toEqual([])
   })
 })

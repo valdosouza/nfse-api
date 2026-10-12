@@ -1,6 +1,5 @@
-import { HttpError, ErrorCodes, InstitutionPayload, isAdmin, erp, emissionStillInErp } from 'fiscal-api'
+import { HttpError, ErrorCodes, InstitutionPayload, isAdmin, erp, emissionStillInErp, anyEmissionStillInErp, IssuerModel, InvoiceRef } from 'fiscal-api'
 import type { AppContext } from '../context'
-import { webInvoice } from '../nfse/transmission'
 
 /**
  * Autorização de AÇÃO na porta fiscal (D-F13): a REGRA é do ERP (privilégio TRANSMITIR/CANCELAR na
@@ -10,8 +9,8 @@ import { webInvoice } from '../nfse/transmission'
  * não contratada. Leituras e ações exigem a interface do ramo CONTRATADA (Q-N32).
  */
 
-export async function requireBranchPrivilege(ctx: AppContext, inst: InstitutionPayload, invoiceId: number, privilegeId: number): Promise<void> {
-  const key = await erp.orderInterface(ctx.pool, inst.schemaName, webInvoice(inst.institutionId, invoiceId))
+export async function requireBranchPrivilege(ctx: AppContext, inst: InstitutionPayload, ref: InvoiceRef, privilegeId: number): Promise<void> {
+  const key = await erp.orderInterface(ctx.pool, inst.schemaName, ref)
   // licença (D-F14/D-F37) nas AÇÕES, para todos: privilégio (ou admin) em ramo NÃO contratado não emite
   if (!(await erp.institutionHasInterface(ctx.pool, inst.schemaName, inst.institutionId, key))) {
     throw new HttpError(403, `Interface ${key} não contratada para este estabelecimento`, undefined, ErrorCodes.INTERFACE_NOT_ALLOWED)
@@ -23,11 +22,16 @@ export async function requireBranchPrivilege(ctx: AppContext, inst: InstitutionP
 }
 
 /**
- * CERCA DA VIRADA (D-F18/D-F39): estabelecimento ainda emitido pelo ERP → a nfse-api só lê. FALHA ANTECIPADA na
- * borda (antes de ler o ERP); a garantia é do núcleo — `openIssuer`, `nextDpsNumber` e o aluguel recusam a réplica.
+ * CERCA DA VIRADA (D-F18/D-F39): emissão ainda feita pelo ERP → a nfse-api só lê. FALHA ANTECIPADA na borda (antes de ler o
+ * ERP); a garantia é do núcleo — `openIssuer`, `nextDpsNumber`, o aluguel e as guardas de escrita recusam a réplica.
+ * [grain] (D-NE10 (a) — parte 2 da NE-1a): o MODELO de quem age no fisco ou na habilitação (a nfse-api = SE) × o ESTABELECIMENTO
+ * para o A1 (UM por estabelecimento — "a escrita do A1 segue barrada enquanto houver réplica" em qualquer linha).
  */
-export async function requireCutover(ctx: AppContext, inst: InstitutionPayload): Promise<void> {
-  if (await emissionStillInErp(ctx.pool, inst.schemaName, inst.institutionId)) {
+export async function requireCutover(ctx: AppContext, inst: InstitutionPayload, grain: IssuerModel | 'establishment'): Promise<void> {
+  const stillInErp = grain === 'establishment'
+    ? await anyEmissionStillInErp(ctx.pool, inst.schemaName, inst.institutionId)
+    : await emissionStillInErp(ctx.pool, inst.schemaName, inst.institutionId, grain)
+  if (stillInErp) {
     throw new HttpError(409, 'A emissão fiscal desta empresa ainda é feita pelo ERP — esta API só consulta até a virada',
       undefined, ErrorCodes.FISCAL_CUTOVER_PENDING)
   }
@@ -65,8 +69,8 @@ export async function passScope(ctx: AppContext, inst: InstitutionPayload, keys:
   throw new HttpError(403, 'Privilégio necessário para esta ação', undefined, ErrorCodes.PRIVILEGE_REQUIRED)
 }
 
-export async function requireBranchInterface(ctx: AppContext, inst: InstitutionPayload, invoiceId: number): Promise<void> {
-  const key = await erp.orderInterface(ctx.pool, inst.schemaName, webInvoice(inst.institutionId, invoiceId))
+export async function requireBranchInterface(ctx: AppContext, inst: InstitutionPayload, ref: InvoiceRef): Promise<void> {
+  const key = await erp.orderInterface(ctx.pool, inst.schemaName, ref)
   if (!(await erp.institutionHasInterface(ctx.pool, inst.schemaName, inst.institutionId, key))) {
     throw new HttpError(403, `Interface ${key} não contratada para este estabelecimento`, undefined, ErrorCodes.INTERFACE_NOT_ALLOWED)
   }

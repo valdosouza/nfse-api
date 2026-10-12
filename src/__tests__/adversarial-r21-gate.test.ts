@@ -102,8 +102,8 @@ beforeEach(() => {
   locked = { alive: true, lifeEvent: 1, lastEvent: 1, lastKind: 'E' }
   pool.query.mockImplementation(async (sql: string, params: any[] = []) => {
     if (/nfse_not_generated_at = NOW\(\)/.test(sql)) {
-      const ok = Number(params[3]) === maxEvent
-      if (ok) stamps.push({ attempt: Number(params[2]), seen: Number(params[3]) })
+      const ok = Number(params[4]) === maxEvent
+      if (ok) stamps.push({ attempt: Number(params[3]), seen: Number(params[4]) })
       return [{ affectedRows: ok ? 1 : 0 }]
     }
     return /GET_LOCK/.test(sql) ? [[{ ok: 1 }]] : [[]]
@@ -139,6 +139,7 @@ beforeEach(() => {
 import { transport, HttpsCall } from 'fiscal-api'
 import { adnAdapter } from '../authority/adn'
 import { isInterruptedInFlight, IN_FLIGHT_MINUTES } from '../nfse/transmission'
+import { webRef, refOf, itxOf } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
 
 const realTransport = transport.request
 const mockHttp = jest.fn()
@@ -186,7 +187,7 @@ function lifeScenario(sib: any) {
 }
 /** O predicado EXATO da asserção do teste de conhecimento negativo do R20-01 (nfse r20:284). */
 const r20NegativeHolds = () => !(repo.insertTransmissionEvent as jest.Mock).mock.calls.some(c =>
-  c[1] === 1 && c[2] === INVOICE && c[3] === 2 && c[4] === A.userId && c[5]?.kind === 'F')
+  c[0].ref.institutionId === 1 && c[0].ref.invoiceId === INVOICE && c[1] === 2 && c[2] === A.userId && c[3]?.kind === 'F')
 
 // ===========================================================================
 // A réplica da CERCA da D-F102 (texto conferido contra o r20)
@@ -330,14 +331,14 @@ describe('ATAQUE 1 — ESCAPE da cerca da D-F102: a promessa é "a cerca quebra 
     // `repo.insertTransmissionEvent` voltar a aceitar S/P/D ou o vocabulário comum, o `@ts-expect-error` sem erro QUEBRA a compilação
     const neverRun = async (conn: fiscal.PoolConnection) => {
       // @ts-expect-error — D-F106: o escritor REAL recusa S
-      await repo.insertTransmissionEvent(conn, 1, 1, 1, null, { kind: 'S', source: 'P' })
+      await repo.insertTransmissionEvent(itxOf(conn, 1, 1), 1, null, { kind: 'S', source: 'P' })
       // @ts-expect-error — D-F106: P (NF-e, em processamento) não é da família NFS-e
-      await repo.insertTransmissionEvent(conn, 1, 1, 1, null, { kind: 'P', source: 'Q' })
+      await repo.insertTransmissionEvent(itxOf(conn, 1, 1), 1, null, { kind: 'P', source: 'Q' })
       // @ts-expect-error — D-F106: D (NF-e, denegada) não é da família NFS-e
-      await repo.insertTransmissionEvent(conn, 1, 1, 1, null, { kind: 'D', source: 'Q' })
+      await repo.insertTransmissionEvent(itxOf(conn, 1, 1), 1, null, { kind: 'D', source: 'Q' })
       // @ts-expect-error — D-F106: o vocabulário COMUM não cabe no do escritor
-      await repo.insertTransmissionEvent(conn, 1, 1, 1, null, { kind: SENT, source: 'P' })
-      await repo.insertTransmissionEvent(conn, 1, 1, 1, null, { kind: 'F', source: 'P' })        // a família segue aceita
+      await repo.insertTransmissionEvent(itxOf(conn, 1, 1), 1, null, { kind: SENT, source: 'P' })
+      await repo.insertTransmissionEvent(itxOf(conn, 1, 1), 1, null, { kind: 'F', source: 'P' })        // a família segue aceita
     }
     expect(typeof neverRun).toBe('function')
   })
@@ -392,13 +393,17 @@ describe('ATAQUE 1 — ESCAPE da cerca da D-F102: a promessa é "a cerca quebra 
 // ===========================================================================
 
 describe('ATAQUE 2 — os escritores de HOJE: nenhum grava S nem kind fora do domínio', () => {
-  /** Todo `insertTransmissionEvent(…)` com o objeto da voz: o valor de `kind` tem de ser literal do domínio ou `OUTCOME_KIND[…]`. */
+  /** Todo `insertTransmissionEvent(…)` com o objeto da voz: o valor de `kind` tem de ser literal do domínio ou `OUTCOME_KIND[…]`. NE-1a parte 2
+   *  (passo 5): as escritas pelas POLÍTICAS do núcleo contam igual — `recordVoiceOnce(portas, …, {kind…})` pelo objeto, e
+   *  `reserveCancelRequest`/`releaseCancelRequest` com o K/N FIXOS na peça (`fiscal-api/src/voice/policy.ts`, conferida no teste). */
   function writerCalls(code: string): { kindText: string; ok: boolean }[] {
     const sf = ts.createSourceFile('x.ts', code, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
     const out: { kindText: string; ok: boolean }[] = []
     const visit = (n: ts.Node): void => {
-      if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === 'insertTransmissionEvent') {
-        const obj = n.arguments.find(ts.isObjectLiteralExpression)
+      if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && /^(?:reserveCancelRequest|releaseCancelRequest)$/.test(n.expression.text)) {
+        out.push({ kindText: n.expression.text === 'reserveCancelRequest' ? "kind: 'K' (núcleo)" : "kind: 'N' (núcleo)", ok: true })
+      } else if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && /^(?:insertTransmissionEvent|recordVoiceOnce|recordKindOnce)$/.test(n.expression.text)) {
+        const obj = [...n.arguments].reverse().find(ts.isObjectLiteralExpression)        // o objeto da VOZ é o último (recordVoiceOnce: o 1º são as portas)
         const p = obj?.properties.find(q => (ts.isPropertyAssignment(q) || ts.isShorthandPropertyAssignment(q)) && q.name.getText(sf) === 'kind')
         const init = p && ts.isPropertyAssignment(p) ? p.initializer : null
         const literalOk = !!init && ts.isStringLiteral(init) && ['A', 'R', 'C', 'K', 'F', 'N'].includes(init.text)
@@ -414,6 +419,11 @@ describe('ATAQUE 2 — os escritores de HOJE: nenhum grava S nem kind fora do do
     const calls = [...walkTs(SRC_ROOT), ...walkTs(path.join(PROJECT_ROOT, 'scripts'))].flatMap(f => writerCalls(read(f)).map(c => ({ ...c, f: rel(f) })))
     expect(calls.length).toBeGreaterThanOrEqual(10)
     expect(calls.filter(c => !c.ok)).toEqual([])
+    // as políticas do núcleo: K e N LITERAIS, dh NULL, pelo escritor recebido (a lista da família o tipa) — nenhuma outra escrita lá
+    const policy = read(path.join(WORKSPACE, 'fiscal-api', 'src', 'voice', 'policy.ts'))
+    expect(policy).toMatch(/return write\(itx, attempt, userId, \{ kind: 'K', source: 'P', dh: null, message: CANCEL_REQUEST_IN_FLIGHT \}\)/)
+    expect(policy).toMatch(/await write\(itx, attempt, userId, \{ kind: 'N', source: 'P', dh: null, message: message\.slice\(0, 255\) \}\)/)
+    expect(policy.match(/\bkind: '[A-Z]'/g)).toEqual(["kind: 'K'", "kind: 'N'"])
   })
   it('resistiu: setes-api (a composição de produção, lida como texto) — idem', () => {
     if (!fs.existsSync(SETES_COMPOSITION)) return
@@ -445,17 +455,17 @@ describe('ATAQUE 3 — o teste "[CONHECIMENTO NEGATIVO — D-F102]" do r20 (nfse
   it('resistiu (motivo certo HOJE): a MESMA chamada chega à decisão — devolve S sem mudança, carimba "nós olhamos", pede o carimbo do E2404 na própria S, e NÃO grava voz nenhuma (nem F)', async () => {
     lifeScenario(sibling('S'))
     fiscoP({})
-    const r = await refreshServiceTransmission(realDeps(), A, INVOICE, 'Q', { attempt: 2, fromRun: true })
+    const r = await refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q', { attempt: 2, fromRun: true })
     expect(r).toMatchObject({ attempt: 2, changed: false, kind: 'S' })
-    expect(repo.touchQueriedAt).toHaveBeenCalledWith(expect.anything(), 1, INVOICE, 2)
-    expect(pool.query.mock.calls.some((c: any[]) => /nfse_not_generated_at = NOW\(\)/.test(c[0]) && Number(c[1]?.[2]) === 2)).toBe(true)
+    expect(repo.touchQueriedAt).toHaveBeenCalledWith(expect.anything(), refOf(1, INVOICE), 2)
+    expect(pool.query.mock.calls.some((c: any[]) => /nfse_not_generated_at = NOW\(\)/.test(c[0]) && Number(c[1]?.[3]) === 2)).toBe(true)
     expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()
     expect(r20NegativeHolds()).toBe(true)
   })
   it('contexto: a asserção do r20 também fica VERDE quando a chamada NEM CHEGA à decisão — o `settle` engole o erro (fisco 503 = ambíguo → 502)', async () => {
     lifeScenario(sibling('S'))
     fiscoP({ dps: () => ({ status: 503, headers: {}, text: 'no healthy upstream' }) })
-    const out = await settle(refreshServiceTransmission(realDeps(), A, INVOICE, 'Q', { attempt: 2, fromRun: true }))
+    const out = await settle(refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q', { attempt: 2, fromRun: true }))
     expect(out).toBeInstanceOf(Error)
     expect(repo.touchQueriedAt).not.toHaveBeenCalled()
     expect(r20NegativeHolds()).toBe(true)                                         // a asserção do r20 passa sem a decisão ter sido tomada
@@ -489,7 +499,7 @@ describe('ATAQUE 4 — "quem criar produtor de S dá a ela a saída da D-F51": o
     lifeScenario(seen)
     ;(repo.getTransmission as jest.Mock).mockImplementation(async (q: unknown) => (q === conn ? underLock : seen))
     fiscoP({})
-    const r = await refreshServiceTransmission(realDeps(), A, INVOICE, 'Q', { attempt: 2, fromRun: true })
+    const r = await refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q', { attempt: 2, fromRun: true })
     expect(r).toMatchObject({ attempt: 2, changed: false, kind: 'S' })
     expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()
     expect(repo.touchQueriedAt).not.toHaveBeenCalled()                            // sem o carimbo do throttle

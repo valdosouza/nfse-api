@@ -28,6 +28,7 @@ import {
   refreshOpenServiceTransmissions, cancelServiceInvoiceAtAuthority, resetMunicipalTermsCache, CEILING_LOOKUP_TIMEOUT_MS, NfseDeps,
 } from '../nfse/transmission'
 import { removeCertificate } from '../modules/emitter/emitter.service'
+import { webRef, WEB } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
 
 const actualFiscal = jest.requireActual('fiscal-api')
 
@@ -129,7 +130,7 @@ beforeEach(() => {
   repoM.findTransmissionByDpsId.mockResolvedValue(null)
   repoM.hasTransmissionEvent.mockResolvedValue(true)
   repoM.findTransmissionEventByKind.mockResolvedValue(null)
-  repoM.insertTransmissionEvent.mockImplementation(async (_c: any, _i: number, _inv: number, _a: number, _u: any, e: any) => { lastKindNow = e.kind; return 1 })
+  repoM.insertTransmissionEvent.mockImplementation(async (__itx: any, _a: number, _u: any, e: any) => { lastKindNow = e.kind; return 1 })
   adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'authorized', nfseXml: NFSE_XML, dhProc: null })
   adapter.municipalTerms.mockResolvedValue({ cancelDays: 60, raw: {} })
 })
@@ -161,7 +162,8 @@ describe('[MEDIUM — regressão do retrabalho R4, corrigida] DELETE do A1: a 1�
     // eslint-disable-next-line no-console
     console.log('[adv-r5] ordem dos comandos na transação do DELETE do A1:\n  ' + stmts.map(s => s.replace(/\s+/g, ' ').slice(0, 110)).join('\n  '))
     expect(stmts.some(s => /FROM tb_establishment_issuer[\s\S]*FOR UPDATE/.test(s))).toBe(true)              // a guarda trava
-    expect(stmts.some(s => /FROM tb_invoice_service_transmission/.test(s))).toBe(true)                      // e conta as vivas
+    // parte 2 da NE-1a (D-NE9): o EMITTER do núcleo conta as vivas pela leitura PUBLICADA da família (a view), de TODAS as famílias
+    expect(conn.query.mock.calls.some((c: any[]) => /FROM vw_invoice_service_transmission/.test(String(c[0])))).toBe(true)   // e conta as vivas
     expect(stmts.some(s => /UPDATE tb_establishment_certificate/.test(s))).toBe(true)                       // e apaga
   })
 
@@ -188,17 +190,17 @@ describe('[LOW — D-F39, corrigido] a cerca do núcleo/composição usa o MESMO
 
   it('cenário: réplica EXCLUÍDA — o predicado da borda diz "o ERP ainda emite"; o cancelamento direto recusa (409) e nada vai ao fisco', async () => {
     pool.query.mockImplementation(excludedReplica); conn.query.mockImplementation(excludedReplica)
-    expect(await actualFiscal.emissionStillInErp(pool, 'setes_setes', 1)).toBe(true)
-    await expect(cancelServiceInvoiceAtAuthority(deps, ACTOR, INVOICE, 'cancelamento adversarial r5 réplica excluída'))
+    expect(await actualFiscal.emissionStillInErp(pool, 'setes_setes', 1, 'SE')).toBe(true)             // a borda do cancelamento = o modelo SE (D-NE10)
+    await expect(cancelServiceInvoiceAtAuthority(deps, ACTOR, webRef(ACTOR, INVOICE), 'cancelamento adversarial r5 réplica excluída'))
       .rejects.toMatchObject({ statusCode: 409 })
     expect(adapter.registerEvent).not.toHaveBeenCalled()
   })
 
   it('[corrigido] …e a composição NÃO grava K (reserva) nem N (liberação) na tentativa copiada da réplica excluída', async () => {
     pool.query.mockImplementation(excludedReplica); conn.query.mockImplementation(excludedReplica)
-    await cancelServiceInvoiceAtAuthority(deps, ACTOR, INVOICE, 'cancelamento adversarial r5 réplica excluída').catch(() => null)
+    await cancelServiceInvoiceAtAuthority(deps, ACTOR, webRef(ACTOR, INVOICE), 'cancelamento adversarial r5 réplica excluída').catch(() => null)
     // eslint-disable-next-line no-console
-    console.log('[adv-r5] vozes gravadas na réplica EXCLUÍDA pelo cancelamento direto', JSON.stringify(repoM.insertTransmissionEvent.mock.calls.map((c: any[]) => c[5].kind)))
+    console.log('[adv-r5] vozes gravadas na réplica EXCLUÍDA pelo cancelamento direto', JSON.stringify(repoM.insertTransmissionEvent.mock.calls.map((c: any[]) => c[3].kind)))
     expect(repoM.insertTransmissionEvent).not.toHaveBeenCalled()
   })
 
@@ -212,7 +214,7 @@ describe('[LOW — D-F39, corrigido] a cerca do núcleo/composição usa o MESMO
 
   it('cenário: lacuna (b) — o predicado da borda diz "o ERP ainda emite" (requireCutover recusaria o PUT do A1); o MESMO .pfx numa habilitação VIRADA grava (o arquivo é válido)', async () => {
     pool.query.mockImplementation(gapB); conn.query.mockImplementation(gapB)
-    expect(await actualFiscal.emissionStillInErp(pool, 'setes_setes', 1)).toBe(true)
+    expect(await actualFiscal.anyEmissionStillInErp(pool, 'setes_setes', 1)).toBe(true)                // a borda do A1 = o estabelecimento (D-NE10)
     const turned = async (sql: string) => {
       if (/SUM\(cutover_at IS NULL\)/.test(sql)) return [[{ n: 1, r: 0 }]]
       if (/INSERT INTO tb_establishment_certificate/.test(sql)) return [{ affectedRows: 1 }]
@@ -242,7 +244,7 @@ describe('[LOW — D-F38, corrigido] cache do prazo do PAM: uma consulta por vez
     fM.releaseRefreshLease.mockResolvedValue(true)
     repoM.listRefreshCandidates.mockResolvedValue([tx()])
   }
-  const timedPass = async () => { const t0 = Date.now(); const r = await refreshOpenServiceTransmissions(deps, ACTOR, { budgetMs: 500 }); return { ms: Date.now() - t0, r } }
+  const timedPass = async () => { const t0 = Date.now(); const r = await refreshOpenServiceTransmissions(deps, ACTOR, { terminal: WEB, budgetMs: 500 }); return { ms: Date.now() - t0, r } }
 
   it('cenário: convênio PENDURADO (nunca responde) — o bulkhead segura: cada passada espera ≤ 3 s, usa o padrão e consulta a candidata', async () => {
     virada()
@@ -283,12 +285,12 @@ describe('[LOW — D-F38, corrigido] cache do prazo do PAM: uma consulta por vez
     try {
       now.mockReturnValue(t0)
       adapter.municipalTerms.mockImplementationOnce(async () => ({ cancelDays: 120, raw: {} }))
-      const a = await refreshOpenServiceTransmissions(deps, ACTOR, { budgetMs: 500 })
+      const a = await refreshOpenServiceTransmissions(deps, ACTOR, { terminal: WEB, budgetMs: 500 })
       now.mockReturnValue(t0 + 61 * 60_000)                              // o cache de 1 h venceu
       adapter.municipalTerms.mockImplementationOnce(async () => { throw new Error('convênio fora') })
-      const b = await refreshOpenServiceTransmissions(deps, ACTOR, { budgetMs: 500 })
+      const b = await refreshOpenServiceTransmissions(deps, ACTOR, { terminal: WEB, budgetMs: 500 })
       now.mockReturnValue(t0 + 62 * 60_000)
-      const c = await refreshOpenServiceTransmissions(deps, ACTOR, { budgetMs: 500 })
+      const c = await refreshOpenServiceTransmissions(deps, ACTOR, { terminal: WEB, budgetMs: 500 })
       expect([a.ceilingSource, a.authorizedMaxDays]).toEqual(['municipio', 150])
       expect([b.ceilingSource, b.authorizedMaxDays]).toEqual(['municipio', 150])
       expect([c.ceilingSource, c.authorizedMaxDays]).toEqual(['municipio', 150])
@@ -308,12 +310,12 @@ describe('[LOW — D-F38, corrigido] cache do prazo do PAM: uma consulta por vez
     for (const [v] of cases) {
       resetMunicipalTermsCache()
       adapter.municipalTerms.mockResolvedValueOnce({ cancelDays: v as any, raw: {} })
-      const r = await refreshOpenServiceTransmissions(deps, ACTOR, { budgetMs: 500 })
+      const r = await refreshOpenServiceTransmissions(deps, ACTOR, { terminal: WEB, budgetMs: 500 })
       got.push([v, r.ceilingSource, r.authorizedMaxDays])
     }
     resetMunicipalTermsCache()
     adapter.municipalTerms.mockResolvedValueOnce('lixo' as any)
-    const junk = await refreshOpenServiceTransmissions(deps, ACTOR, { budgetMs: 500 })
+    const junk = await refreshOpenServiceTransmissions(deps, ACTOR, { terminal: WEB, budgetMs: 500 })
     expect(got).toEqual(cases)
     expect([junk.ceilingSource, junk.authorizedMaxDays]).toEqual(['padrao', 90])
   })

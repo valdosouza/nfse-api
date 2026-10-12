@@ -26,6 +26,7 @@ import {
   refreshOpenServiceTransmissions, cancelServiceInvoiceAtAuthority, resetMunicipalTermsCache, REFRESH_BUDGET_MS, NfseDeps,
 } from '../nfse/transmission'
 import { findCancelDays } from '../authority/adn'
+import { WEB, webRef } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
 
 const actualFiscal = jest.requireActual('fiscal-api')
 
@@ -128,7 +129,7 @@ beforeEach(() => {
   repoM.findTransmissionByDpsId.mockResolvedValue(null)
   repoM.hasTransmissionEvent.mockResolvedValue(true)
   repoM.findTransmissionEventByKind.mockResolvedValue(null)
-  repoM.insertTransmissionEvent.mockImplementation(async (_c: any, _i: number, _inv: number, _a: number, _u: any, e: any) => { lastKindNow = e.kind; return 1 })
+  repoM.insertTransmissionEvent.mockImplementation(async (__itx: any, _a: number, _u: any, e: any) => { lastKindNow = e.kind; return 1 })
   adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'authorized', nfseXml: NFSE_XML, dhProc: null })
   adapter.municipalTerms.mockResolvedValue({ cancelDays: 60, raw: {} })
 })
@@ -150,7 +151,7 @@ describe('[MEDIUM — D-F38, corrigido nos gates R4] o prazo do PAM fica FORA do
   it('cenário: transporte (30 s de inatividade) > orçamento da passada (20 s); com o convênio RÁPIDO a candidata autorizada é consultada', async () => {
     expect(DEFAULT_TIMEOUT_MS).toBeGreaterThan(REFRESH_BUDGET_MS)
     virada()
-    const r = await refreshOpenServiceTransmissions(deps, ACTOR, { budgetMs: 200 })
+    const r = await refreshOpenServiceTransmissions(deps, ACTOR, { terminal: WEB, budgetMs: 200 })
     expect(r).toMatchObject({ checked: 1, stoppedEarly: false, skipped: false })
     expect(adapter.municipalTerms).toHaveBeenCalledTimes(1)
     expect(adapter.queryNfse).toHaveBeenCalledTimes(1)
@@ -160,8 +161,8 @@ describe('[MEDIUM — D-F38, corrigido nos gates R4] o prazo do PAM fica FORA do
   it('[corrigido] convênio que FALHA devagar: a falha entra no cache — a passada seguinte não repete a espera e consulta a candidata', async () => {
     virada()
     adapter.municipalTerms.mockImplementation(async () => { await sleep(150); throw new Error('timeout') })   // falha dentro do teto de espera
-    const r1 = await refreshOpenServiceTransmissions(deps, ACTOR, { budgetMs: 1000 })
-    const r2 = await refreshOpenServiceTransmissions(deps, ACTOR, { budgetMs: 200 })
+    const r1 = await refreshOpenServiceTransmissions(deps, ACTOR, { terminal: WEB, budgetMs: 1000 })
+    const r2 = await refreshOpenServiceTransmissions(deps, ACTOR, { terminal: WEB, budgetMs: 200 })
     // eslint-disable-next-line no-console
     console.log('[adv-r4] convênio lento × orçamento da passada', JSON.stringify({ r1, r2, chamadasAoConvenio: adapter.municipalTerms.mock.calls.length, consultas: adapter.queryNfse.mock.calls.length }))
     expect(r1.checked).toBe(1)
@@ -180,7 +181,7 @@ describe('[LOW — D-F38, corrigido nos gates R4] prazo do PAM implausível é d
     fM.releaseRefreshLease.mockResolvedValue(true)
     repoM.listRefreshCandidates.mockResolvedValue([])
     adapter.municipalTerms.mockResolvedValue({ cancelDays: 20261231, raw: {} })
-    const r = await refreshOpenServiceTransmissions(deps, ACTOR)
+    const r = await refreshOpenServiceTransmissions(deps, ACTOR, { terminal: WEB })
     expect(repoM.listRefreshCandidates.mock.calls[0][6]).toEqual({ authorizedMaxDays: 90 })
     expect(r.ceilingSource).toBe('padrao')
   })
@@ -191,7 +192,7 @@ describe('[LOW — D-F38, corrigido nos gates R4] prazo do PAM implausível é d
     fM.releaseRefreshLease.mockResolvedValue(true)
     repoM.listRefreshCandidates.mockResolvedValue([])
     adapter.municipalTerms.mockResolvedValue({ cancelDays: 20261231, raw: {} })
-    await refreshOpenServiceTransmissions(deps, ACTOR)
+    await refreshOpenServiceTransmissions(deps, ACTOR, { terminal: WEB })
     const days = repoM.listRefreshCandidates.mock.calls[0][6].authorizedMaxDays as number
     expect(Date.now() - days * 86_400_000).toBeGreaterThanOrEqual(Date.UTC(1000, 0, 1))
   })
@@ -206,7 +207,7 @@ describe('[LOW — D-F39, corrigido nos gates R4] a réplica é recusada também
 
   it('cenário: na RÉPLICA o aluguel não é tomado (a condição da virada está no UPDATE) e nada vai ao fisco', async () => {
     poolAsReplica()
-    await refreshOpenServiceTransmissions(deps, ACTOR).catch(() => null)
+    await refreshOpenServiceTransmissions(deps, ACTOR, { terminal: WEB }).catch(() => null)
     const upd = [...pool.query.mock.calls, ...conn.query.mock.calls].map((c: any[]) => String(c[0]))   // D-F41: pela conexão emprestada
       .find((s: string) => /SET refresh_lease_until = DATE_ADD/.test(s))
     expect(upd).toMatch(/cutover_at IS NOT NULL/)
@@ -216,21 +217,21 @@ describe('[LOW — D-F39, corrigido nos gates R4] a réplica é recusada também
 
   it('[corrigido] rodízio na RÉPLICA responde `skipped: true` ("outra passada do estabelecimento em curso") em vez de 409 FISCAL_CUTOVER_PENDING', async () => {
     poolAsReplica()
-    await expect(refreshOpenServiceTransmissions(deps, ACTOR)).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_CUTOVER_PENDING' })
+    await expect(refreshOpenServiceTransmissions(deps, ACTOR, { terminal: WEB })).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_CUTOVER_PENDING' })
   })
 
   it('cenário: cancelar NO FISCO uma NFS-e autorizada da RÉPLICA → 409 FISCAL_CUTOVER_PENDING (openIssuer real) e nada vai ao fisco', async () => {
     poolAsReplica()
-    await expect(cancelServiceInvoiceAtAuthority(deps, ACTOR, INVOICE, 'cancelamento adversarial r4'))
+    await expect(cancelServiceInvoiceAtAuthority(deps, ACTOR, webRef(ACTOR, INVOICE), 'cancelamento adversarial r4'))
       .rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_CUTOVER_PENDING' })
     expect(adapter.registerEvent).not.toHaveBeenCalled()
   })
 
   it('[corrigido] …e ANTES da recusa a composição NÃO grava a reserva K e a liberação N na tentativa copiada do ERP (a próxima re-sincronia acusa dual-write)', async () => {
     poolAsReplica()
-    await cancelServiceInvoiceAtAuthority(deps, ACTOR, INVOICE, 'cancelamento adversarial r4').catch(() => null)
+    await cancelServiceInvoiceAtAuthority(deps, ACTOR, webRef(ACTOR, INVOICE), 'cancelamento adversarial r4').catch(() => null)
     // eslint-disable-next-line no-console
-    console.log('[adv-r4] vozes gravadas na RÉPLICA pela composição do cancelamento', JSON.stringify(repoM.insertTransmissionEvent.mock.calls.map((c: any[]) => c[5].kind)))
+    console.log('[adv-r4] vozes gravadas na RÉPLICA pela composição do cancelamento', JSON.stringify(repoM.insertTransmissionEvent.mock.calls.map((c: any[]) => c[3].kind)))
     expect(repoM.insertTransmissionEvent).not.toHaveBeenCalled()
   })
 

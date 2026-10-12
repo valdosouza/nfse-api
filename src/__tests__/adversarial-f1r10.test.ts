@@ -23,6 +23,7 @@ import * as txMod from '../nfse/transmission'
 import { FsFiscalStorage, MasterKeyRing } from 'fiscal-api'
 import type { NfseDeps } from '../nfse/transmission'
 import { adnAdapter } from '../authority/adn'
+import { webRef, refOf, itxLike } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
 
 /** Gate da Rodada 18 (R18-03/R18-04): a prova exige a IDENTIDADE da candidata e a VIDA — os testes antigos de 1 argumento passam por aqui. */
 const proven = (c: any, life?: any[]) => {
@@ -107,7 +108,7 @@ function arrange(over: Record<string, any> = {}, underLock?: Record<string, any>
   adapter.queryDpsAccessKey.mockResolvedValue(null)
   return t0
 }
-const fKinds = () => repoM.insertTransmissionEvent.mock.calls.map(c => c[5]?.kind)
+const fKinds = () => repoM.insertTransmissionEvent.mock.calls.map(c => c[3]?.kind)
 
 // ===========================================================================
 // 1. D-F51 — "ambíguo nunca fecha": o F só nasce do E2404 estruturado
@@ -125,7 +126,7 @@ describe('D-F51 — fisco lento/fora: só o "não gerada" CONCLUSIVO vira F', ()
   ])('resistiu: em voo há 4000 min + queryDpsAccessKey LANÇA (%s) → erro sobe, nenhuma transação, nenhum F, nenhum touch', async (_n, err) => {
     arrange({ ageMinutes: 4000 })
     adapter.queryDpsAccessKey.mockRejectedValue(err)
-    await expect(txMod.refreshServiceTransmission(deps, ACTOR, INVOICE, 'Q', { attempt: 1 })).rejects.toBe(err)
+    await expect(txMod.refreshServiceTransmission(deps, ACTOR, webRef(ACTOR, INVOICE), 'Q', { attempt: 1 })).rejects.toBe(err)
     expect(pool.getConnection).not.toHaveBeenCalled()
     expect(repoM.insertTransmissionEvent).not.toHaveBeenCalled()
     expect(repoM.touchQueriedAt).not.toHaveBeenCalled()
@@ -145,7 +146,7 @@ describe('D-F51 — fisco lento/fora: só o "não gerada" CONCLUSIVO vira F', ()
     ])('resistiu: %s → ambíguo (lança), a tentativa fica em voo', async (_n, status, text) => {
       arrange({ ageMinutes: 4000 })
       respond(status, text)
-      await expect(txMod.refreshServiceTransmission(real, ACTOR, INVOICE, 'Q', { attempt: 1 })).rejects.toBeInstanceOf(actualFiscal.AuthorityHttpError)
+      await expect(txMod.refreshServiceTransmission(real, ACTOR, webRef(ACTOR, INVOICE), 'Q', { attempt: 1 })).rejects.toBeInstanceOf(actualFiscal.AuthorityHttpError)
       expect(repoM.insertTransmissionEvent).not.toHaveBeenCalled()
       expect(pool.getConnection).not.toHaveBeenCalled()
     })
@@ -153,9 +154,9 @@ describe('D-F51 — fisco lento/fora: só o "não gerada" CONCLUSIVO vira F', ()
     it('resistiu (controle): 404 com E2404 estruturado do fisco, ≥ 10 min → F "sem resposta" (source Q) sob a trava', async () => {
       arrange({ ageMinutes: 10 })
       respond(404, '{"tipoAmbiente":1,"dataHoraProcessamento":"2026-10-04T10:00:00-03:00","erro":{"codigo":"E2404","descricao":"Não foi gerada uma NFS-e com o identificador de DPS informado"}}')
-      const r = await txMod.refreshServiceTransmission(real, ACTOR, INVOICE, 'Q', { attempt: 1 })
+      const r = await txMod.refreshServiceTransmission(real, ACTOR, webRef(ACTOR, INVOICE), 'Q', { attempt: 1 })
       expect(r).toMatchObject({ changed: true, kind: 'F', accessKey: null, localCancelPending: false })
-      expect(repoM.insertTransmissionEvent).toHaveBeenCalledWith(conn, 1, INVOICE, 1, ACTOR.userId, expect.objectContaining({ kind: 'F', source: 'Q' }))
+      expect(repoM.insertTransmissionEvent).toHaveBeenCalledWith(itxLike(conn, 1, INVOICE), 1, ACTOR.userId, expect.objectContaining({ kind: 'F', source: 'Q' }))
       const call = (actualFiscal.transport.request as jest.Mock).mock.calls[0][0]
       expect(call.url).toBe(`https://sefin.nfse.gov.br/SefinNacional/dps/${DPS}`)       // produção: host do ambiente da TENTATIVA
     })
@@ -170,12 +171,12 @@ describe('D-F51 — idade (do BANCO), ambiente da tentativa, holder', () => {
     [9, false], [10, true], [null, false],
   ])('resistiu: ageMinutes=%s (TIMESTAMPDIFF no banco, created_at = reserva) → F=%s', async (age, wantF) => {
     arrange({ ageMinutes: age })
-    const r = await txMod.refreshServiceTransmission(deps, ACTOR, INVOICE, 'Q', { attempt: 1 })
+    const r = await txMod.refreshServiceTransmission(deps, ACTOR, webRef(ACTOR, INVOICE), 'Q', { attempt: 1 })
     expect(r.kind).toBe(wantF ? 'F' : null)
     expect(fKinds()).toEqual(wantF ? ['F'] : [])
     if (!wantF) {
       expect(pool.getConnection).not.toHaveBeenCalled()
-      expect(repoM.touchQueriedAt).toHaveBeenCalledWith(pool, 1, INVOICE, 1)
+      expect(repoM.touchQueriedAt).toHaveBeenCalledWith(pool, refOf(1, INVOICE), 1)
     }
   })
 
@@ -183,14 +184,14 @@ describe('D-F51 — idade (do BANCO), ambiente da tentativa, holder', () => {
     // o SELECT comum (TX_SELECT) é o único produtor do campo; mapTx só o converte
     const src = fs.readFileSync(path.join(__dirname, '..', 'nfse', 'repository.ts'), 'utf8')
     expect(src).toMatch(/TIMESTAMPDIFF\(MINUTE, t\.created_at, NOW\(\)\) AS ageMinutes/)
-    expect(src).toMatch(/VALUES \(\?, \?, 0, \?, \?, \?, \?, NOW\(\), NOW\(\), 'N'\)/)     // created_at da tentativa = NOW() do banco
+    expect(src).toMatch(/VALUES \(\?, \?, \?, \?, \?, \?, \?, NOW\(\), NOW\(\), 'N'\)/)     // created_at da tentativa = NOW() do banco (terminal por parâmetro — NE-1a parte 2)
   })
 
   it('resistiu: tentativa de HOMOLOGAÇÃO com o emissor hoje em PRODUÇÃO → pergunta no ambiente CONGELADO (H); o F de H não prende a nota (D-F29)', async () => {
     arrange({ environment: 'H' }, undefined, 'P')
-    await txMod.refreshServiceTransmission(deps, ACTOR, INVOICE, 'Q', { attempt: 1 })
+    await txMod.refreshServiceTransmission(deps, ACTOR, webRef(ACTOR, INVOICE), 'Q', { attempt: 1 })
     expect(adapter.queryDpsAccessKey.mock.calls[0][0].environment).toBe('H')
-    expect(repoM.findTransmissionByDpsId).toHaveBeenCalledWith(pool, 1, INVOICE, 1, DPS, 'H')
+    expect(repoM.findTransmissionByDpsId).toHaveBeenCalledWith(pool, refOf(1, INVOICE), 1, DPS, 'H')
     expect(fKinds()).toEqual(['F'])
     const fH = { attempt: 1, lastKind: 'F', lastSource: 'Q', environment: 'H', accessKey: null, authorityRecorded: false, dpsId: DPS }   // NE-1a: o fato do registro
     expect(actualFiscal.reconfirmationCandidate([fH])).toBeNull()
@@ -201,7 +202,7 @@ describe('D-F51 — idade (do BANCO), ambiente da tentativa, holder', () => {
     arrange({ attempt: 2 })
     repoM.findTransmissionByDpsId.mockResolvedValue(tx({ attempt: 1, accessKey: KEY, lastKind: 'A' }))
     adapter.queryNfse.mockRejectedValue(new actualFiscal.AuthorityHttpError(503, 'fora', actualFiscal.ErrorCodes.FISCAL_AUTHORITY_UNAVAILABLE, 0, ''))
-    await expect(txMod.refreshServiceTransmission(deps, ACTOR, INVOICE, 'Q', { attempt: 2 })).rejects.toBeTruthy()
+    await expect(txMod.refreshServiceTransmission(deps, ACTOR, webRef(ACTOR, INVOICE), 'Q', { attempt: 2 })).rejects.toBeTruthy()
     expect(adapter.queryDpsAccessKey).not.toHaveBeenCalled()
     expect(adapter.queryNfse).toHaveBeenCalledWith(expect.anything(), KEY)
     expect(repoM.insertTransmissionEvent).not.toHaveBeenCalled()
@@ -210,10 +211,10 @@ describe('D-F51 — idade (do BANCO), ambiente da tentativa, holder', () => {
   it('resistiu: irmã SEM chave (tentativa 1 já F, mesmo Id da vida) → o F da D-F51 pousa na tentativa EM VOO (2), nunca na irmã', async () => {
     arrange({ attempt: 2 })
     repoM.findTransmissionByDpsId.mockResolvedValue(tx({ attempt: 1, lastKind: 'F', lastSource: 'Q' }))
-    await txMod.refreshServiceTransmission(deps, ACTOR, INVOICE, 'Q', { attempt: 2 })
+    await txMod.refreshServiceTransmission(deps, ACTOR, webRef(ACTOR, INVOICE), 'Q', { attempt: 2 })
     expect(repoM.insertTransmissionEvent).toHaveBeenCalledTimes(1)
-    expect(repoM.insertTransmissionEvent.mock.calls[0][3]).toBe(2)
-    expect(repoM.touchQueriedAt.mock.calls.every(c => c[3] === 2)).toBe(true)
+    expect(repoM.insertTransmissionEvent.mock.calls[0][1]).toBe(2)
+    expect(repoM.touchQueriedAt.mock.calls.every(c => c[2] === 2)).toBe(true)
   })
 })
 
@@ -223,7 +224,7 @@ describe('D-F51 — idade (do BANCO), ambiente da tentativa, holder', () => {
 describe('D-F51 — ordem de travas, corrida com o POST em curso, prova da reconfirmação', () => {
   it('resistiu: nota → tentativa (lockInvoice 1º; nada de emissor/DPS na transação) e touch ANTES do F (a consulta que gera o F nunca se auto-prova)', async () => {
     arrange()
-    await txMod.refreshServiceTransmission(deps, ACTOR, INVOICE, 'Q', { attempt: 1 })
+    await txMod.refreshServiceTransmission(deps, ACTOR, webRef(ACTOR, INVOICE), 'Q', { attempt: 1 })
     const lock = erpM.lockInvoice.mock.invocationCallOrder[0]
     const read = repoM.getTransmission.mock.calls.findIndex(c => c[0] === conn)
     const readOrder = repoM.getTransmission.mock.invocationCallOrder[read]
@@ -245,16 +246,16 @@ describe('D-F51 — ordem de travas, corrida com o POST em curso, prova da recon
 
   it('resistiu: passada com a candidata VELHA (tentativa 3) enquanto o transmitir já a fechou e POSTA a 4 → reconfere a 3 sob a trava, nada escrito, a 4 intocada', async () => {
     arrange({ attempt: 3 }, { lastKind: 'F', lastSource: 'Q' })
-    const r = await txMod.refreshServiceTransmission(deps, ACTOR, INVOICE, 'Q', { attempt: 3 })
-    expect(repoM.getTransmission).toHaveBeenCalledWith(conn, 1, INVOICE, 3)
+    const r = await txMod.refreshServiceTransmission(deps, ACTOR, webRef(ACTOR, INVOICE), 'Q', { attempt: 3 })
+    expect(repoM.getTransmission).toHaveBeenCalledWith(conn, refOf(1, INVOICE), 3)
     expect(repoM.insertTransmissionEvent).not.toHaveBeenCalled()
-    expect(repoM.touchQueriedAt.mock.calls.every(c => c[3] === 3)).toBe(true)
+    expect(repoM.touchQueriedAt.mock.calls.every(c => c[2] === 3)).toBe(true)
     expect(r.attempt).toBe(3)
   })
 
   it('resistiu: rota por nota SEM attempt durante o POST da tentativa nova (idade 0) → só "olhamos"; nenhuma transação', async () => {
     arrange({ attempt: 4, ageMinutes: 0 })
-    const r = await txMod.refreshServiceTransmission(deps, ACTOR, INVOICE, 'Q')
+    const r = await txMod.refreshServiceTransmission(deps, ACTOR, webRef(ACTOR, INVOICE), 'Q')
     expect(r).toMatchObject({ attempt: 4, changed: false, kind: null })
     expect(pool.getConnection).not.toHaveBeenCalled()
     expect(repoM.insertTransmissionEvent).not.toHaveBeenCalled()
@@ -263,15 +264,15 @@ describe('D-F51 — ordem de travas, corrida com o POST em curso, prova da recon
   it('resistiu: nota sumida no ERP entre a leitura e a trava → 404, nada gravado', async () => {
     arrange()
     erpM.lockInvoice.mockResolvedValue(null)
-    await expect(txMod.refreshServiceTransmission(deps, ACTOR, INVOICE, 'Q', { attempt: 1 })).rejects.toMatchObject({ statusCode: 404 })
+    await expect(txMod.refreshServiceTransmission(deps, ACTOR, webRef(ACTOR, INVOICE), 'Q', { attempt: 1 })).rejects.toMatchObject({ statusCode: 404 })
     expect(repoM.insertTransmissionEvent).not.toHaveBeenCalled()
     expect(conn.rollback).toHaveBeenCalled()
   })
 
   it('resistiu: o F da D-F51 é sempre source Q em produção → candidato da reconfirmação D-F29 (o setes-api exige consulta POSTERIOR)', async () => {
     arrange()
-    await txMod.refreshServiceTransmission(deps, ACTOR, INVOICE, 'Q', { attempt: 1 })
-    const ev = repoM.insertTransmissionEvent.mock.calls[0][5]
+    await txMod.refreshServiceTransmission(deps, ACTOR, webRef(ACTOR, INVOICE), 'Q', { attempt: 1 })
+    const ev = repoM.insertTransmissionEvent.mock.calls[0][3]
     expect(ev).toMatchObject({ kind: 'F', source: 'Q' })
     expect(actualFiscal.reconfirmationCandidate([{ attempt: 1, lastKind: ev.kind, lastSource: ev.source, environment: 'P', accessKey: null, authorityRecorded: false, dpsId: DPS }]))
       .toMatchObject({ attempt: 1 })
@@ -281,7 +282,7 @@ describe('D-F51 — ordem de travas, corrida com o POST em curso, prova da recon
   // [corrigido 2026-10-04] devolve a voz lida sob a trava e não carimba
   it('[r10-lost-race-stale][corrigido] quem perde a corrida devolve a voz que a trava LEU (F/A) e não carimba last_queried_at com uma consulta anterior ao F', async () => {
     arrange({}, { lastKind: 'F', lastSource: 'Q', lastEventAt: '2026-10-04 10:15:00' })
-    const r = await txMod.refreshServiceTransmission(deps, ACTOR, INVOICE, 'Q', { attempt: 1 })
+    const r = await txMod.refreshServiceTransmission(deps, ACTOR, webRef(ACTOR, INVOICE), 'Q', { attempt: 1 })
     expect(r.kind).toBe('F')
     expect(repoM.touchQueriedAt.mock.calls.some(c => c[0] === pool)).toBe(false)
   })

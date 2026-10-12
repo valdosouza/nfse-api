@@ -22,10 +22,11 @@ import {
   splitStatements, currentOf, fiscalStateOf, isLiveTransmission, isAuthorized, FINAL_TRANSMISSION_KINDS, AUTHORIZED_KINDS, WEB_TERMINAL,
 } from 'fiscal-api'
 import * as repo from '../nfse/repository'
-import { SERVICE_AUTHORITY_RECORDED_SQL, SERVICE_VOICE_WRITE_KINDS, mapTx, latestTransmission, findTransmissionByDpsId, listRefreshCandidates, countLiveTransmissions } from '../nfse/repository'
-import { getServiceFiscalView, webInvoice } from '../nfse/transmission'
+import { SERVICE_AUTHORITY_RECORDED_SQL, SERVICE_VOICE_WRITE_KINDS, mapTx, latestTransmission, findTransmissionByDpsId, listRefreshCandidates } from '../nfse/repository'
+import { getServiceFiscalView } from '../nfse/transmission'
 import { listPendingServiceInvoices } from '../facts/service-facts'
 import { walkTs, WORKSPACE } from './voice-kind-fence'
+import { refOf, webRef, webScope } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
 
 jest.mock('fiscal-api', () => {
   const actual = jest.requireActual('fiscal-api')
@@ -111,7 +112,7 @@ describe('A — migration 004 (D-NE56) × 003 × consumidores', () => {
 describe('B — D-NE56 na nfse-api: uma definição, várias leituras', () => {
   it('resistiu: o SQL da vigente da nfse-api (`latestTransmission`: `ORDER BY (t.access_key IS NOT NULL) DESC, t.attempt DESC LIMIT 1`) e o `currentOf` do núcleo sobre as linhas do `mapTx` (fato da MESMA definição) escolhem a MESMA tentativa em TODAS as combinações de chave de 1–4 tentativas', async () => {
     const { q, calls } = capture()
-    await latestTransmission(q, 1, 6200, 1)
+    await latestTransmission(q, refOf(1, 6200), 1)
     expect(calls[0].sql).toContain('ORDER BY (t.access_key IS NOT NULL) DESC, t.attempt DESC LIMIT 1')
     expect(calls[0].sql).toContain(`${norm(SERVICE_AUTHORITY_RECORDED_SQL)} AS authorityRecorded`)
     let combos = 0
@@ -131,7 +132,7 @@ describe('B — D-NE56 na nfse-api: uma definição, várias leituras', () => {
     ;(fiscal.erp.establishmentCnpj as jest.Mock).mockResolvedValue('12345678000199')
     ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [rawTx(1, KEY), rawTx(2, null)].map(mapTx), events: [] })
     const deps: any = { pool: { query: jest.fn(async () => [[]]) }, storage: { find: () => null }, fiscalDb: 'fiscal_api' }
-    const v = await getServiceFiscalView(deps, { schemaName: 'setes_setes', institutionId: 1, userId: 7 }, 6200)
+    const v = await getServiceFiscalView(deps, { schemaName: 'setes_setes', institutionId: 1, userId: 7 }, webRef({ schemaName: 'setes_setes', institutionId: 1, userId: 7 }, 6200))
     expect([v.state, v.localCancelPending, v.xmlAvailable]).toEqual(['authorized', false, false])
     expect(fiscal.erp.invoiceLife).toHaveBeenCalledWith(deps.pool, 'setes_setes', { institutionId: 1, invoiceId: 6200, terminal: WEB_TERMINAL })
   })
@@ -156,7 +157,7 @@ describe('B — D-NE56 na nfse-api: uma definição, várias leituras', () => {
     expect(txText.match(/\.find\(t => t\.accessKey\)|\.some\(t => !!t\.accessKey\)/g)).toHaveLength(3)
     expect(read(path.join(PROJECT_ROOT, 'scripts', 'smoke-adn-homologacao.ts'))).toMatch(/vw_invoice_service_transmission\s+WHERE last_kind IS NULL OR \(access_key IS NOT NULL/)
     const { q, calls } = capture()
-    await findTransmissionByDpsId(q, 1, 6200, 1, 'DPS1', 'P')
+    await findTransmissionByDpsId(q, refOf(1, 6200), 1, 'DPS1', 'P')
     expect(calls[0].sql).toContain('ORDER BY (t.access_key IS NOT NULL) DESC, t.attempt ASC LIMIT 1')
     expect(calls[0].sql).not.toContain(`ORDER BY (${norm(SERVICE_AUTHORITY_RECORDED_SQL)}`)
   })
@@ -175,22 +176,38 @@ describe('C — D-NE14: P/D × SQL literal da nfse-api', () => {
     expect(SERVICE_VOICE_WRITE_KINDS.map(k => fiscalStateOf({ lastKind: k }))).toEqual(['authorized', 'rejected', 'cancelled', 'cancel_in_flight', 'failed', 'authorized'])
     expect([fiscalStateOf({ lastKind: null }), fiscalStateOf(null)]).toEqual(['in_flight', 'none'])
   })
+  // parte 2 da NE-1a (D-NE9): a contagem saiu da família para o EMITTER do núcleo (leituras PUBLICADAS — `t.last_kind` da view); a promessa
+  // ("deriva a lista do vocabulário") é a mesma
   it('resistiu: `countLiveTransmissions` (guarda do DELETE do A1) DERIVA a lista do vocabulário — o SQL real sai com os finais da classificação total (D entra, P fica viva) e, para os kinds da NFS-e, conta o mesmo que antes', async () => {
     const { q, calls } = capture()
-    await countLiveTransmissions(q, 1)
+    await fiscal.countLiveTransmissions(q, 1, { branches: 'all' })
     const finals = [...FINAL_TRANSMISSION_KINDS].map(k => `'${k}'`).join(',')
-    expect(calls[0].sql).toContain(`AND (le.kind IS NULL OR le.kind NOT IN (${finals}))`)
+    expect(calls[0].sql).toContain(`AND (t.last_kind IS NULL OR t.last_kind NOT IN (${finals}))`)
     expect(finals.split(',').sort()).toEqual(["'A'", "'C'", "'D'", "'F'", "'N'", "'R'"])
   })
-  it('contexto (Q-NE69): os OUTROS leitores de "viva/autorizada" da nfse-api seguem com LISTA LITERAL — o rodízio visita as vivas por `(\'S\',\'K\')` (P, viva no vocabulário comum, nunca seria visitada) e as autorizadas por `(\'A\',\'N\')`; os pendentes do lote excluem `(\'A\',\'N\',\'S\',\'K\',\'C\',\'-\')` (P e D entrariam no lote); dentro do MESMO arquivo, `countLiveTransmissions` deriva e o rodízio não', async () => {
+  // parte 2 da NE-1a — D-NE69 (= Q-NE69 (a)) EXECUTADA: as CLASSES vêm da `KIND_CLASS` (P entra nas vivas; D nos finais); as letras de UM
+  // fato seguem pelo nome (o C do lote — D-F28; o F da revisita — D-F52; o sentinela '-'). O TEXTO do SQL mudou; para os kinds que a
+  // NFS-e escreve (e a reserva sem voz) cada lista tem os MESMOS membros de antes — a NFS-e não muda.
+  it('[DECIDIDO — D-NE69] os leitores de "viva/autorizada" da nfse-api DERIVAM as listas da classificação total — rodízio (vivas S/K/P, autorizadas A/N, ordem pelos finais) e pendentes do lote (vivas + autorizadas + C + \'-\'); para os kinds da NFS-e, os mesmos membros de antes', async () => {
     const r = capture()
-    await listRefreshCandidates(r.q, 'setes_setes', 1, 5, 10, 8)
-    expect(r.calls[0].sql).toContain("OR (le.kind IN ('S','K')")
-    expect(r.calls[0].sql).toContain("OR (le.kind IN ('A','N') AND")
-    expect(r.calls[0].sql).not.toMatch(/'P'|'D'/)
+    await listRefreshCandidates(r.q, 'setes_setes', webScope(1), 5, 10, 8, { interfaces: ['service-orders'], liveOnlyInterfaces: ['orders'] })
+    const sql = r.calls[0].sql
+    expect(sql).toContain("OR (le.kind IN ('S','K','P')")
+    expect(sql).toContain("(le.kind IS NULL OR le.kind IN ('S','K','P'))")
+    expect(sql).toContain("OR (le.kind IN ('A','N') AND")
+    expect(sql).toContain("ORDER BY (le.kind IN ('A','R','C','F','N','D')) ASC")
+    const NFSE = ['A', 'R', 'C', 'K', 'F', 'N']
+    const before = { live: ['S', 'K'], authorized: ['A', 'N'], order: ['A', 'N', 'F'] }
+    const now = { live: ['S', 'K', 'P'], authorized: ['A', 'N'], order: ['A', 'R', 'C', 'F', 'N', 'D'] }
+    // a ordenação só pesa sobre as CANDIDATAS (sem voz, S/K, A/N, F): R/C/D nunca são candidatas — a ordem entre elas é a mesma
+    const candidates = [...NFSE.filter(k => k !== 'R' && k !== 'C')]
+    expect(NFSE.map(k => [k, now.live.includes(k), now.authorized.includes(k)])).toEqual(NFSE.map(k => [k, before.live.includes(k), before.authorized.includes(k)]))
+    expect(candidates.map(k => [k, now.order.includes(k)])).toEqual(candidates.map(k => [k, before.order.includes(k)]))
     const p = capture()
-    await listPendingServiceInvoices(p.q, 'setes_setes', 1, 'fiscal_api', { page: 1, pageSize: 10 }, null)
-    expect(p.calls[0].sql).toContain("COALESCE(t.last_kind, '-') IN ('A','N','S','K','C','-')")
+    await listPendingServiceInvoices(p.q, 'setes_setes', webScope(1), 'fiscal_api', { page: 1, pageSize: 10 }, null)
+    expect(p.calls[0].sql).toContain("COALESCE(t.last_kind, '-') IN ('S','K','P','A','N','C','-')")
+    const pendBefore = ['A', 'N', 'S', 'K', 'C', '-'], pendNow = ['S', 'K', 'P', 'A', 'N', 'C', '-']
+    expect([...NFSE, '-'].map(k => [k, pendNow.includes(k)])).toEqual([...NFSE, '-'].map(k => [k, pendBefore.includes(k)]))
   })
   it('contexto: voz P/D gravada POR FORA do código na NFS-e (D-F103: sem CHECK até a F2a — D-F107) MUDOU de leitura com a NE-1a — P era "in_flight" e agora é "processing" (estado fora do contrato da NFS-e); D era VIVA ("in_flight", 409 em andamento, contava para o A1) e agora é FINAL "denied": a barreira da NFS-e (`isLive || isAuthorized`) deixaria nova tentativa passar e o lote a listaria como pendente', () => {
     expect([fiscalStateOf({ lastKind: 'P' }), isLiveTransmission({ lastKind: 'P' })]).toEqual(['processing', true])
@@ -200,17 +217,18 @@ describe('C — D-NE14: P/D × SQL literal da nfse-api', () => {
 })
 
 // ===========================================================================
-// D — D-NE12: a borda da referência (`webInvoice`)
+// D — D-NE12: a borda da referência (parte 2 da NE-1a: a ROTA monta; `webInvoice` saiu — D-NE59)
 // ===========================================================================
 
 describe('D — D-NE12 na nfse-api: o terminal da web só na borda', () => {
-  /** Chamadas a leitores do ERP do núcleo que recebem a referência da nota (3º argumento). */
+  /** Chamadas a leitores do ERP do núcleo que recebem a referência da nota (3º argumento) — e à transação sob a trava do núcleo
+   *  (`withInvoiceTx`, importada como `withLockedInvoice`: a trava `erp.lockInvoice` passou para dentro dela no passo 4 da parte 2). */
   function erpRefCalls(): { at: string; ref: string }[] {
     const out: { at: string; ref: string }[] = []
     for (const f of [...walkTs(SRC_ROOT), ...walkTs(path.join(PROJECT_ROOT, 'scripts'))]) {
       const sf = ts.createSourceFile(f, read(f), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
       const visit = (n: ts.Node): void => {
-        if (ts.isCallExpression(n) && /^(?:fiscal\.)?erp\.(?:lockInvoice|invoiceLife|invoiceLives|orderInterface)$/.test(n.expression.getText(sf))) {
+        if (ts.isCallExpression(n) && /^(?:(?:fiscal\.)?erp\.(?:lockInvoice|invoiceLife|invoiceLives|orderInterface)|withLockedInvoice)$/.test(n.expression.getText(sf))) {
           out.push({ at: `${rel(f)}:${sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1}`, ref: n.arguments[2]?.getText(sf) ?? '' })
         }
         ts.forEachChild(n, visit)
@@ -219,23 +237,36 @@ describe('D — D-NE12 na nfse-api: o terminal da web só na borda', () => {
     }
     return out
   }
-  it('resistiu: TODA chamada de produção (src + scripts) a um leitor do ERP do núcleo passa a referência montada por `webInvoice(…)` — nenhuma referência à mão, nenhum terminal solto; guarda e operação montam a MESMA referência', () => {
+  it('[DECIDIDO — D-NE12/D-NE59, parte 2] TODA chamada de produção (src + scripts) a um leitor do ERP do núcleo passa a referência que CHEGOU inteira (`ref`, conferida por `refOf` na trava) — nenhuma montada no meio do caminho, nenhum terminal solto', () => {
     const calls = erpRefCalls()
     expect(calls.length).toBeGreaterThanOrEqual(7)
-    expect(calls.filter(c => !/^webInvoice\((?:inst|actor)?\.?institutionId, invoiceId\)$/.test(c.ref))).toEqual([])
+    expect(calls.filter(c => !/^(?:ref|refOf\(actor, ref\))$/.test(c.ref))).toEqual([])
   })
-  it('resistiu: `WEB_TERMINAL` e `invoiceRef(` só aparecem na definição de `webInvoice` (transmission.ts); o resultado é congelado e leva o terminal da web', () => {
+  it('[DECIDIDO — D-NE12/D-NE59, parte 2] `WEB_TERMINAL` só na BORDA (rotas HTTP e scripts); `webInvoice` não existe mais; dentro da composição a única referência montada é a da candidata do rodízio, com o terminal do ESCOPO dito pela borda', () => {
     const files = [...walkTs(SRC_ROOT), ...walkTs(path.join(PROJECT_ROOT, 'scripts'))]
-    const uses = files.filter(f => /\bWEB_TERMINAL\b|\binvoiceRef\(/.test(stripComments(read(f)))).map(rel)
-    expect(uses).toEqual(['nfse-api/src/nfse/transmission.ts'])
-    expect(stripComments(read(path.join(SRC_ROOT, 'nfse', 'transmission.ts'))).match(/\bWEB_TERMINAL\b|\binvoiceRef\(/g)).toHaveLength(3)   // import ×2 + a borda
-    const ref = webInvoice(1, 6200)
-    expect([ref, Object.isFrozen(ref)]).toEqual([{ institutionId: 1, invoiceId: 6200, terminal: 0 }, true])
+    const code = (f: string) => stripComments(read(f))
+    const border = (f: string) => /\.routes\.ts$/.test(f) || rel(f).startsWith('nfse-api/scripts/')
+    expect(files.filter(f => /\bWEB_TERMINAL\b/.test(code(f)) && !border(f)).map(rel)).toEqual([])
+    expect(files.filter(f => /\bwebInvoice\b/.test(code(f))).map(rel)).toEqual([])
+    const inner = files.filter(f => !border(f)).flatMap(f => [...code(f).matchAll(/\binvoiceRef\(([^)]*)\)/g)].map(m => `${rel(f)}: ${m[1]}`))
+    // + a CÓPIA congelada do `refOf` (gate NE1A2-12 da parte 2): a referência que chegou, conferida, não uma montada no caminho
+    expect(inner.sort()).toEqual(['nfse-api/src/nfse/transmission.ts: ref.institutionId, ref.invoiceId, ref.terminal',
+      'nfse-api/src/nfse/transmission.ts: scope.institutionId, tx.invoiceId, scope.terminal'])
   })
-  it('contexto: a parte 1 deixou o `terminal = 0` LITERAL no SQL da própria família (tabelas do `fiscal_api` — repository.ts e service-facts.ts); a parte 2 leva a referência até a rota (D-NE59). Hoje os dois lados dizem "terminal da web" — o literal da família e a borda `webInvoice`', () => {
-    const literal = [path.join(SRC_ROOT, 'nfse', 'repository.ts'), path.join(SRC_ROOT, 'facts', 'service-facts.ts')]
-      .map(f => [rel(f), (stripComments(read(f)).match(/\bterminal\s*=\s*0\b|VALUES \(\?, \?, 0,/g) ?? []).length] as const)
-    expect(literal.every(([, n]) => n > 0)).toBe(true)
+  it('[DECIDIDO — D-NE12/D-NE59, parte 2] nenhum `terminal = 0` LITERAL no SQL da família — as três peças da VOZ (escritor e leitores de idempotência) foram ao núcleo no passo 4 (D-F108/D-NE74) e lá usam o terminal da REFERÊNCIA', () => {
+    const LIT = /\bterminal\s*=\s*0\b|VALUES \(\?, \?, 0,/g
+    expect((stripComments(read(path.join(SRC_ROOT, 'facts', 'service-facts.ts'))).match(LIT) ?? []).length).toBe(0)
+    const file = path.join(SRC_ROOT, 'nfse', 'repository.ts')
+    const sf = ts.createSourceFile(file, read(file), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+    const owners: string[] = []
+    for (const st of sf.statements) {
+      if (ts.isFunctionDeclaration(st) && st.name && (st.getText(sf).match(LIT) ?? []).length) owners.push(st.name.text)
+    }
+    expect(owners).toEqual([])
+    expect(stripComments(read(file)).match(LIT) ?? []).toEqual([])
+    const core = stripComments(read(path.join(CORE, 'src', 'voice', 'event-table.ts')))
+    expect(core.match(LIT) ?? []).toEqual([])
+    expect((core.match(/\bterminal = \?/g) ?? []).length).toBe(3)                 // escritor (MAX+1) + os dois leitores de idempotência
   })
 })
 

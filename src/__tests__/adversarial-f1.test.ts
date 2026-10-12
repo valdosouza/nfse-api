@@ -19,6 +19,7 @@ import {
 } from '../nfse/transmission'
 import { createApp } from '../app'
 import type { AppContext } from '../context'
+import { webRef, WEB } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
 
 jest.mock('fiscal-api', () => {
   const actual = jest.requireActual('fiscal-api')
@@ -119,9 +120,9 @@ describe('[HIGH — corrigido] vida que atravessa H → P: a chave de um ambient
   // XML vai para <cnpj>/H/ e o setes-api (só chave de PRODUÇÃO é registro fiscal — Q-CA5) vê homologação.
   const t1H = tx({ attempt: 1, environment: 'H', lastKind: 'R', lastSource: 'P' })
   const t2P = tx({ attempt: 2, environment: 'P', lastKind: null, ageMinutes: 11 })
-  const byAttempt = (list: any[]) => async (_q: any, _i: number, _n: number, attempt: number) => list.find(t => t.attempt === attempt) ?? null
+  const byAttempt = (list: any[]) => async (_q: any, _ref: any, attempt: number) => list.find(t => t.attempt === attempt) ?? null
   /** O titular do Id é procurado SÓ no ambiente pedido (a consulta SQL real filtra `environment`). */
-  const byDpsIdIn = (list: any[]) => async (_q: any, _i: number, _n: number, _life: number, dpsId: string, env: string) =>
+  const byDpsIdIn = (list: any[]) => async (_q: any, _ref: any, _life: number, dpsId: string, env: string) =>
     list.filter(t => t.dpsId === dpsId && t.environment === env).sort((a, b) => a.attempt - b.attempt)[0] ?? null
 
   it('refresh de envio ambíguo em P: a chave NÃO pode pousar na tentativa H (fillAuthorityData com a tentativa de P)', async () => {
@@ -130,12 +131,12 @@ describe('[HIGH — corrigido] vida que atravessa H → P: a chave de um ambient
     repoM.getTransmission.mockImplementation(byAttempt([t1H, t2P]))
     adapter.queryDpsAccessKey.mockResolvedValue(KEY)
     adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'authorized', nfseXml: NFSE_XML, dhProc: '2026-09-21T10:15:30-03:00' })
-    await refreshServiceTransmission(deps, A, INVOICE, 'Q')
-    expect(repoM.findTransmissionByDpsId.mock.calls[0][5]).toBe('P')                  // o titular é procurado no ambiente da tentativa
+    await refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q')
+    expect(repoM.findTransmissionByDpsId.mock.calls[0][4]).toBe('P')                  // o titular é procurado no ambiente da tentativa
     expect(adapter.queryDpsAccessKey.mock.calls[0][0].environment).toBe('P')          // perguntou ao fisco de P…
-    const landedOn = repoM.fillAuthorityData.mock.calls.map(c => c[3])
+    const landedOn = repoM.fillAuthorityData.mock.calls.map(c => c[1])
     expect(landedOn).toEqual([2])                                                       // …e a chave de P tem que pousar na tentativa de P (hoje: [1] — a H)
-    expect(repoM.insertTransmissionEvent.mock.calls.filter(c => c[4].kind === 'F').map(c => c[3])).toEqual([])  // a de P não pode virar "órfã" (hoje: F na 2)
+    expect(repoM.insertTransmissionEvent.mock.calls.filter(c => c[2].kind === 'F').map(c => c[3])).toEqual([])  // a de P não pode virar "órfã" (hoje: F na 2)
   })
 
   it('reconfirmação (D-F29): o "minter" escolhido para receber a chave de P não pode ser a tentativa H', async () => {
@@ -145,15 +146,15 @@ describe('[HIGH — corrigido] vida que atravessa H → P: a chave de um ambient
     repoM.getTransmission.mockImplementation(byAttempt([t1H, t2F]))
     adapter.queryDpsAccessKey.mockResolvedValue(KEY)
     adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'authorized', nfseXml: NFSE_XML, dhProc: '2026-09-21T10:15:30-03:00' })
-    await reconfirmBeforeLocalCancel(deps, A, INVOICE).catch(() => undefined)
-    expect(repoM.fillAuthorityData.mock.calls.map(c => c[3])).toEqual([2])               // hoje: [1] (H)
+    await reconfirmBeforeLocalCancel(deps, A, webRef(A, INVOICE)).catch(() => undefined)
+    expect(repoM.fillAuthorityData.mock.calls.map(c => c[1])).toEqual([2])               // hoje: [1] (H)
   })
 
   it('consequência: o pedido de cancelamento vai ao fisco do ambiente de QUEM DETÉM a chave (P → P; NFS-e de H → H)', async () => {
     adapter.registerEvent.mockResolvedValue({ dhEvento: '2026-09-21T11:00:00-03:00', eventXml: null, raw: {} })
     for (const env of ['P', 'H'] as const) {
       repoM.latestTransmission.mockResolvedValue(tx({ attempt: 2, environment: env, lastKind: 'A', accessKey: KEY, dhProc: '2026-09-21 13:15:30' }))
-      await cancelServiceInvoiceAtAuthority(deps, A, INVOICE, `cancelar a NFS-e de ${env}`)
+      await cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), `cancelar a NFS-e de ${env}`)
     }
     expect(adapter.registerEvent.mock.calls.map(c => c[0].environment)).toEqual(['P', 'H'])
   })
@@ -175,12 +176,12 @@ describe('[MEDIUM — corrigido] cancelamento no fisco com RESERVA em voo (K ant
     conn.rollback.mockImplementation(unlock)
     // a tentativa ACOMPANHA as vozes gravadas (K da reserva → C)
     let kind: string | null = 'A'
-    repoM.insertTransmissionEvent.mockImplementation(async (_c: any, _i: number, _n: number, _a: number, _u: any, ev: any) => { kind = ev.kind; return 2 })
+    repoM.insertTransmissionEvent.mockImplementation(async (__itx: any, _a: number, _u: any, ev: any) => { kind = ev.kind; return 2 })
     repoM.latestTransmission.mockImplementation(async () => tx({ lastKind: kind, accessKey: KEY, dhProc: '2026-09-21 13:15:30' }))
     adapter.registerEvent.mockImplementation(async () => { await new Promise(r => setTimeout(r, 30)); return { dhEvento: '2026-09-21T11:00:00-03:00', eventXml: null, raw: {} } })
     const rs = await Promise.allSettled([
-      cancelServiceInvoiceAtAuthority(deps, A, INVOICE, 'primeiro clique no cancelar'),
-      cancelServiceInvoiceAtAuthority(deps, A, INVOICE, 'segundo clique no cancelar'),
+      cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'primeiro clique no cancelar'),
+      cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'segundo clique no cancelar'),
     ])
     expect(adapter.registerEvent).toHaveBeenCalledTimes(1)
     expect(rs.map(r => r.status).sort()).toEqual(['fulfilled', 'rejected'])
@@ -197,10 +198,10 @@ describe('[MEDIUM — corrigido] reserva de notas DIFERENTES em paralelo: nenhum
     // trava o GAP do índice (compartilhado por todas as notas novas — supremum), espera o emissor; quem tem o emissor
     // insere no gap → espera o outro. §14.2 manda contador primeiro (regra 7 do PADROES §9).
     adapter.transmit.mockResolvedValue({ accessKey: KEY, nfseNumber: '1', dhProc: null, nfseXml: NFSE_XML, raw: {} })
-    await transmitServiceInvoice(deps, A, INVOICE)
+    await transmitServiceInvoice(deps, A, webRef(A, INVOICE))
     const issuerLockAt = (fiscal.openIssuer as jest.Mock).mock.invocationCallOrder[(fiscal.openIssuer as jest.Mock).mock.calls.findIndex(c => c[3]?.forUpdate)]
     const gapReads = repoM.latestTransmission.mock.calls
-      .map((c, i) => ({ forUpdate: c[4] === true, order: repoM.latestTransmission.mock.invocationCallOrder[i] }))
+      .map((c, i) => ({ forUpdate: c[3] === true, order: repoM.latestTransmission.mock.invocationCallOrder[i] }))
       .filter(x => x.forUpdate)
     expect(gapReads.every(x => x.order > issuerLockAt)).toBe(true)
   })
@@ -232,7 +233,7 @@ describe('[MEDIUM — corrigido] consulta ativa: ALUGUEL em vez de conexão reti
         } finally { releaseSlot() }
       }),
     } as any
-    const run = refreshOpenServiceTransmissions({ ...deps, pool: tinyPool }, A, { budgetMs: 200 }).then(() => 'terminou')
+    const run = refreshOpenServiceTransmissions({ ...deps, pool: tinyPool }, A, { terminal: WEB, budgetMs: 200 }).then(() => 'terminou')
     const outcome = await Promise.race([run, new Promise(r => setTimeout(() => r('TRAVADO'), 500))])
     expect(outcome).toBe('terminou')
     // nada retido durante a passada: toda conexão emprestada pelo comando do aluguel volta antes do próximo pedido ao pool
@@ -274,14 +275,14 @@ describe('licença (D-F14) nas AÇÕES — usuário (gates da F1) e ADMIN (D-F37
 describe('[LOW — corrigido] bordas de contrato', () => {
   it('reconfirmar / consultar nota que NÃO existe → 404', async () => {
     erpM.invoiceLife.mockResolvedValue(null)
-    await expect(reconfirmBeforeLocalCancel(deps, A, 2147483648)).rejects.toMatchObject({ statusCode: 404 })
-    await expect(refreshServiceTransmission(deps, A, 2147483648)).rejects.toMatchObject({ statusCode: 404 })
+    await expect(reconfirmBeforeLocalCancel(deps, A, webRef(A, 2147483648))).rejects.toMatchObject({ statusCode: 404 })
+    await expect(refreshServiceTransmission(deps, A, webRef(A, 2147483648))).rejects.toMatchObject({ statusCode: 404 })
   })
 
   it('motivo do cancelamento com caractere de CONTROLE não vai cru no XML assinado (XML 1.0 o proíbe)', async () => {
     repoM.latestTransmission.mockResolvedValue(tx({ lastKind: 'A', accessKey: KEY, dhProc: '2026-09-21 13:15:30' }))
     adapter.registerEvent.mockResolvedValue({ dhEvento: '2026-09-21T11:00:00-03:00', eventXml: null, raw: {} })
-    await cancelServiceInvoiceAtAuthority(deps, A, INVOICE, 'erro\u0001 na emissão \u0007 da nota')
+    await cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'erro\u0001 na emissão \u0007 da nota')
     expect(adapter.registerEvent.mock.calls[0][2]).not.toMatch(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/)
   })
 })

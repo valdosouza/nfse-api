@@ -108,8 +108,8 @@ beforeEach(() => {
   locked = { alive: true, lifeEvent: 1, lastEvent: 1, lastKind: 'E' }
   pool.query.mockImplementation(async (sql: string, params: any[] = []) => {
     if (/nfse_not_generated_at = NOW\(\)/.test(sql)) {
-      const ok = Number(params[3]) === maxEvent
-      if (ok) stamps.push({ attempt: Number(params[2]), seen: Number(params[3]) }); else refusedStamps += 1
+      const ok = Number(params[4]) === maxEvent
+      if (ok) stamps.push({ attempt: Number(params[3]), seen: Number(params[4]) }); else refusedStamps += 1
       return [{ affectedRows: ok ? 1 : 0 }]
     }
     return /GET_LOCK/.test(sql) ? [[{ ok: 1 }]] : [[]]
@@ -200,6 +200,7 @@ const ambiguousLogs = () => ((fiscal.logger as any).error as jest.Mock).mock.cal
 // ===========================================================================
 import { HttpError, AuthorityHttpError } from 'fiscal-api'
 import { transmitServiceInvoice, logAmbiguousFiscal, IN_FLIGHT_MINUTES } from '../nfse/transmission'
+import { webRef, WEB } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
 
 const origins = () => ambiguousLogs().map((c: any[]) => c[1]?.origin)
 const unknownBoom = () => new HttpError(502, 'Fisco respondeu sem situação legível para a NFS-e', undefined, ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE)
@@ -304,7 +305,7 @@ describe('ACHADO R18-01 (LOW) — D-F94: o `reason` é a MENSAGEM inteira com os
   it('[CORRIGIDO — D-F98] consulta da tela com a NFS-e de OUTRO DPS (terceiro com CNPJ alfanumérico) → 502, UM alarme "consulta" com a causa FECHADA `nfse-de-outro-dps`', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     adapter.queryNfse.mockResolvedValue(foreignVoice(FOREIGN_ALNUM_DPS_ID))
-    expect(await settle(refreshServiceTransmission(deps, A, INVOICE, 'Q', SCREEN))).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
+    expect(await settle(refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q', SCREEN))).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
     expect(origins()).toEqual(['consulta'])
     expect(reasonOf()).not.toMatch(/\d/)
     expect(reasonOf()).toBe('nfse-de-outro-dps')                                   // D-F98 (b): a causa da lista FECHADA, nunca texto
@@ -312,14 +313,14 @@ describe('ACHADO R18-01 (LOW) — D-F94: o `reason` é a MENSAGEM inteira com os
   it('[CORRIGIDO — D-F98] [LOW R18-01] consulta da tela: o alarme não leva fragmento do identificador de TERCEIRO (nem as letras do CNPJ alfanumérico)', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     adapter.queryNfse.mockResolvedValue(foreignVoice(FOREIGN_ALNUM_DPS_ID))
-    await settle(refreshServiceTransmission(deps, A, INVOICE, 'Q', SCREEN))
+    await settle(refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q', SCREEN))
     expect(reasonOf()).not.toContain('ABC')
   })
   it('[CORRIGIDO — D-F98] passo 0b do transmitir (reserva interrompida → o GET /dps acha a chave → a NFS-e lida é de OUTRO DPS) → 502, nada reservado, UM alarme "transmissao" com a causa FECHADA', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(interrupted())
     adapter.queryDpsAccessKey.mockResolvedValue(KEY)
     adapter.queryNfse.mockResolvedValue(foreignVoice(FOREIGN_ALNUM_DPS_ID))
-    expect(await settle(transmitServiceInvoice(deps, A, INVOICE))).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
+    expect(await settle(transmitServiceInvoice(deps, A, webRef(A, INVOICE)))).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
     expect(adapter.transmit).not.toHaveBeenCalled(); expect(repo.insertTransmission).not.toHaveBeenCalled()
     expect(origins()).toEqual(['transmissao'])
     expect(reasonOf()).toBe('nfse-de-outro-dps')                                   // D-F98 (b): a causa da lista FECHADA, nunca texto
@@ -328,7 +329,7 @@ describe('ACHADO R18-01 (LOW) — D-F94: o `reason` é a MENSAGEM inteira com os
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(interrupted())
     adapter.queryDpsAccessKey.mockResolvedValue(KEY)
     adapter.queryNfse.mockResolvedValue(foreignVoice(FOREIGN_ALNUM_DPS_ID))
-    await settle(transmitServiceInvoice(deps, A, INVOICE))
+    await settle(transmitServiceInvoice(deps, A, webRef(A, INVOICE)))
     expect(reasonOf()).not.toContain('ABC')
   })
 })
@@ -356,7 +357,7 @@ describe('ACHADO R18-02 (LOW, FORA do delta — a mesma classe do R17-02) — a 
   it('[CORRIGIDO — D-F98 (c)] o 502 da CONSULTA (OUTRO DPS) não leva o Id alheio ao app — nem o CPF do terceiro, nem o Id inteiro; o alarme também não', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     adapter.queryNfse.mockResolvedValue(foreignVoice(FOREIGN_DPS_ID))
-    const out = await settle(refreshServiceTransmission(deps, A, INVOICE, 'Q', SCREEN))
+    const out = await settle(refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q', SCREEN))
     expect(out).toMatchObject({ statusCode: 502 })
     expect(String(out.message)).not.toContain(THIRD_CPF)
     expect(String(out.message)).not.toContain(FOREIGN_DPS_ID)
@@ -387,7 +388,7 @@ describe('ACHADO R18-07 (LOW — regressão do D-F96) — o `firstText` DES-ESCA
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(t)
     ;(repo.listRefreshCandidates as jest.Mock).mockResolvedValue([t])
     fisco({ typed: code => (code === '101101' ? typedOk(typedItemRaw(bad('nDFSe', '1'))) : undefined) })
-    const r = await refreshOpenServiceTransmissions(realDeps(), A)
+    const r = await refreshOpenServiceTransmissions(realDeps(), A, { terminal: WEB })
     expect(r.errors).toEqual([expect.objectContaining({ invoiceId: INVOICE, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })])
     expect(ambiguousLogs()).toHaveLength(1)
     expect(repo.touchQueriedAt).toHaveBeenCalled()
@@ -406,7 +407,7 @@ describe('CONTEXTO R18-05 (LOW — Q-F105) — a reconferência da nfse-api GRAV
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(v2)
     ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [f1, v2], events: [] })
     fisco({})                                                                          // GET /dps → E2404 (tipoAmbiente 1)
-    expect(await reconfirmBeforeLocalCancel(realDeps(), A, INVOICE)).toEqual({ invoiceId: INVOICE, needed: true, found: false, attempt: 1, accessKey: null })
+    expect(await reconfirmBeforeLocalCancel(realDeps(), A, webRef(A, INVOICE))).toEqual({ invoiceId: INVOICE, needed: true, found: false, attempt: 1, accessKey: null })
     expect(stamps).toEqual([{ attempt: 1, seen: 2 }])
     // o que a F2a vai ler: o carimbo (NOW() da nfse-api) 2 s depois da RESERVA da 2 — o POST dela pode chegar ao fisco depois disso
     const proof = { ...f1, nfseNotGeneratedAt: '2026-10-11 10:00:02' }
@@ -450,7 +451,7 @@ describe('RESISTIU — D-F95: a origem é dita por quem chama — nenhum chamado
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(interrupted())
     adapter.queryDpsAccessKey.mockResolvedValue(KEY)
     adapter.queryNfse.mockRejectedValue(unknownBoom())
-    await settle(transmitServiceInvoice(deps, A, INVOICE))
+    await settle(transmitServiceInvoice(deps, A, webRef(A, INVOICE)))
     expect(origins()).toEqual(['transmissao'])
     expect(ambiguousLogs()[0][1]).toMatchObject({ institutionId: 1, invoiceId: INVOICE, attempt: 1, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
   })

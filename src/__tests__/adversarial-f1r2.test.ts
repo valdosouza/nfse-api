@@ -18,6 +18,7 @@ import { FsFiscalStorage, MasterKeyRing, ProductTokenVerifier } from 'fiscal-api
 import { refreshOpenServiceTransmissions, resetMunicipalTermsCache, NfseDeps } from '../nfse/transmission'
 import { createApp, loadOpenApi } from '../app'
 import type { AppContext } from '../context'
+import { WEB } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
 
 jest.mock('fiscal-api', () => {
   const actual = jest.requireActual('fiscal-api')
@@ -140,7 +141,7 @@ describe('[LOW — corrigido] rodízio NÃO engole erro TÉCNICO: mensagem gené
     repoM.listRefreshCandidates.mockResolvedValue([tx({ attempt: 3 })])
     const dbErr = Object.assign(new Error("Unknown column 't.secret_col' in 'field list' (setes_setes.tb_invoice_service)"), { code: 'ER_BAD_FIELD_ERROR' })
     repoM.getTransmission.mockRejectedValue(dbErr)
-    const report = await refreshOpenServiceTransmissions(deps, ACTOR, { budgetMs: 1000 })
+    const report = await refreshOpenServiceTransmissions(deps, ACTOR, { terminal: WEB, budgetMs: 1000 })
     expect(report.checked).toBe(1)
     expect(report.errors[0].message).not.toMatch(/Unknown column|setes_setes|tb_invoice_service/)
     expect(report.errors[0]).toMatchObject({ code: 'INTERNAL', message: expect.stringMatching(/^Erro interno \(ref [0-9A-F]{8}\)$/) })

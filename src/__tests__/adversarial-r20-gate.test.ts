@@ -101,8 +101,8 @@ beforeEach(() => {
   locked = { alive: true, lifeEvent: 1, lastEvent: 1, lastKind: 'E' }
   pool.query.mockImplementation(async (sql: string, params: any[] = []) => {
     if (/nfse_not_generated_at = NOW\(\)/.test(sql)) {
-      const ok = Number(params[3]) === maxEvent
-      if (ok) stamps.push({ attempt: Number(params[2]), seen: Number(params[3]) })
+      const ok = Number(params[4]) === maxEvent
+      if (ok) stamps.push({ attempt: Number(params[3]), seen: Number(params[4]) })
       return [{ affectedRows: ok ? 1 : 0 }]
     }
     return /GET_LOCK/.test(sql) ? [[{ ok: 1 }]] : [[]]
@@ -141,6 +141,7 @@ import { transport, HttpsCall, reconfirmationCandidate, reconfirmationProven, is
 import { adnAdapter } from '../authority/adn'
 import { reconfirmBeforeLocalCancel, transmitServiceInvoice, isInterruptedInFlight, IN_FLIGHT_MINUTES } from '../nfse/transmission'
 import { voiceSProducers } from './voice-kind-fence'
+import { webRef, webScope, refOf, itxLike } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
 
 const realTransport = transport.request
 const mockHttp = jest.fn()
@@ -249,7 +250,7 @@ describe('ACHADO R20-01 (LOW latente — S não tem produtor; questão Q-F108) �
   it('contexto: a nfse-api RESPONDE "reconferida" (needed, !found) e carimba o E2404 na candidata — e o núcleo, com a MESMA vida, diz NÃO PROVADO (irmã S viva)', async () => {
     const { f1, life } = lifeScenario(sibling('S'))
     fiscoP({})                                                                        // GET /dps → E2404 (P)
-    expect(await reconfirmBeforeLocalCancel(realDeps(), A, INVOICE)).toEqual({ invoiceId: INVOICE, needed: true, found: false, attempt: 1, accessKey: null })
+    expect(await reconfirmBeforeLocalCancel(realDeps(), A, webRef(A, INVOICE))).toEqual({ invoiceId: INVOICE, needed: true, found: false, attempt: 1, accessKey: null })
     expect(stamps).toEqual([{ attempt: 1, seen: 2 }])
     expect(reconfirmationCandidate(life as any)?.attempt).toBe(1)
     expect(reconfirmationProven(stamped(f1), life as any)).toBe(false)
@@ -261,21 +262,21 @@ describe('ACHADO R20-01 (LOW latente — S não tem produtor; questão Q-F108) �
   it('contexto: o rodízio revisita S a cada `minMinutes`, PARA SEMPRE (SQL real das candidatas: S/K só pelo throttle, sem teto de idade)', async () => {
     let sql = ''
     const actual = jest.requireActual('../nfse/repository') as typeof repo
-    await actual.listRefreshCandidates({ query: async (s: string) => { sql = s; return [[]] } } as any, 'setes_setes', 1, 5, IN_FLIGHT_MINUTES, 8)
-    expect(sql.replace(/\s+/g, ' ')).toMatch(/OR \(le\.kind IN \('S','K'\) AND \(t\.last_queried_at IS NULL OR t\.last_queried_at < DATE_SUB\(NOW\(\), INTERVAL \? MINUTE\)\)\)/)
+    await actual.listRefreshCandidates({ query: async (s: string) => { sql = s; return [[]] } } as any, 'setes_setes', webScope(1), 5, IN_FLIGHT_MINUTES, 8)
+    expect(sql.replace(/\s+/g, ' ')).toMatch(/OR \(le\.kind IN \('S','K','P'\) AND \(t\.last_queried_at IS NULL OR t\.last_queried_at < DATE_SUB\(NOW\(\), INTERVAL \? MINUTE\)\)\)/)   // as vivas com voz DERIVADAS da KIND_CLASS (D-NE69 — P entra no texto; a NFS-e não grava P)
   })
   it('contexto: a consulta (rodízio) da irmã S velha com E2404 → NADA muda (sem voz nova, carimba "nós olhamos" e o E2404 na própria S) — `isInterruptedInFlight` não a reconhece', async () => {
     const s2 = sibling('S')
     lifeScenario(s2)
     fiscoP({})
     expect(isInterruptedInFlight(s2 as any)).toBe(false)
-    expect(await refreshServiceTransmission(realDeps(), A, INVOICE, 'Q', { attempt: 2, fromRun: true })).toMatchObject({ attempt: 2, changed: false, kind: 'S' })
+    expect(await refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q', { attempt: 2, fromRun: true })).toMatchObject({ attempt: 2, changed: false, kind: 'S' })
     expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()
-    expect(repo.touchQueriedAt).toHaveBeenCalledWith(expect.anything(), 1, INVOICE, 2)
+    expect(repo.touchQueriedAt).toHaveBeenCalledWith(expect.anything(), refOf(1, INVOICE), 2)
   })
   it('contexto: o transmitir com a vigente S → 409 "em andamento" (não reconcilia: o passo 0b também só olha a tentativa SEM voz)', async () => {
     lifeScenario(sibling('S'))
-    const out = await settle(transmitServiceInvoice(realDeps(), A, INVOICE))
+    const out = await settle(transmitServiceInvoice(realDeps(), A, webRef(A, INVOICE)))
     expect(out).toMatchObject({ statusCode: 409, code: ErrorCodes.FISCAL_TRANSMISSION_IN_PROGRESS })
     expect(mockHttp.mock.calls.some((c: any[]) => /\/dps\//.test(String(c[0].url)))).toBe(false)
   })
@@ -283,17 +284,17 @@ describe('ACHADO R20-01 (LOW latente — S não tem produtor; questão Q-F108) �
     lifeScenario(sibling('S'))
     fiscoP({})
     // R21-04 do gate da Rodada 21: SEM `settle` — a chamada tem de CHEGAR à decisão (o `settle` deixava o teste verde com o fisco em 503)
-    const r = await refreshServiceTransmission(realDeps(), A, INVOICE, 'Q', { attempt: 2, fromRun: true })
+    const r = await refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q', { attempt: 2, fromRun: true })
     expect(r).toMatchObject({ attempt: 2, changed: false, kind: 'S' })
-    expect(repo.touchQueriedAt).toHaveBeenCalledWith(expect.anything(), 1, INVOICE, 2)
-    expect(repo.insertTransmissionEvent).not.toHaveBeenCalledWith(expect.anything(), 1, INVOICE, 2, A.userId, expect.objectContaining({ kind: 'F' }))
+    expect(repo.touchQueriedAt).toHaveBeenCalledWith(expect.anything(), refOf(1, INVOICE), 2)
+    expect(repo.insertTransmissionEvent).not.toHaveBeenCalledWith(itxLike(expect.anything(), 1, INVOICE), 2, A.userId, expect.objectContaining({ kind: 'F' }))
   })
   it('resistiu — CERCA da D-F102 (é o que torna o R20-01 LATENTE; quebra no dia em que S ganhar produtor): nenhum produtor de voz S — nem na nfse-api, nem no núcleo, nem na composição de produção do setes-api; o `OUTCOME_KIND` (recusa/credencial) só dá R/F', () => {
     // R21-01 do gate da Rodada 21: a cerca é a peça COMPARTILHADA `voice-kind-fence.ts` — AST (qualquer grafia, comentário fora pelo
     // compilador) sobre TODO lugar que escreve na voz (nfse-api src/scripts/migrations, núcleo, setes-api — pasta + migrations)
     expect(voiceSProducers()).toEqual([])
     const { OUTCOME_KIND } = jest.requireActual('../nfse/transmission') as typeof import('../nfse/transmission')
-    expect(Object.values(OUTCOME_KIND).sort()).toEqual(['F', 'F', 'R'])
+    expect([...new Set(Object.values(OUTCOME_KIND))].sort()).toEqual(['F', 'R'])         // D-NE57: + chain_untrusted → F (a promessa "só R/F" segue)
   })
 })
 
@@ -306,9 +307,9 @@ describe('RESISTIU — D-F101 × nfse-api: irmã SEM voz tem saída (D-F51) e ir
     const s2 = sibling(null)
     const { f1, life } = lifeScenario(s2)
     fiscoP({})
-    expect(await reconfirmBeforeLocalCancel(realDeps(), A, INVOICE)).toMatchObject({ needed: true, found: false, attempt: 1 })
+    expect(await reconfirmBeforeLocalCancel(realDeps(), A, webRef(A, INVOICE))).toMatchObject({ needed: true, found: false, attempt: 1 })
     expect(reconfirmationProven(stamped(f1), life as any)).toBe(false)
-    expect(await refreshServiceTransmission(realDeps(), A, INVOICE, 'Q', { attempt: 2, fromRun: true })).toMatchObject({ attempt: 2, changed: true, kind: 'F' })
+    expect(await refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q', { attempt: 2, fromRun: true })).toMatchObject({ attempt: 2, changed: true, kind: 'F' })
     const f2 = F({ attempt: 2, createdAt: '2026-10-11 08:00:00', lastEvent: 1, lastEventAt: '2026-10-11 08:20:00' })
     const after = [f1, f2]
     expect(reconfirmationCandidate(after as any)?.attempt).toBe(2)
@@ -317,17 +318,18 @@ describe('RESISTIU — D-F101 × nfse-api: irmã SEM voz tem saída (D-F51) e ir
   it('resistiu: irmã K — K só nasce em tentativa AUTORIZADA (com chave): com chave na vida o seletor devolve null, a nfse-api responde "nada a reconferir" SEM perguntar ao fisco (a prova nunca é pedida)', async () => {
     const k2 = sibling('K', { accessKey: KEY, nfseNumber: '123', dhProc: '2026-10-11 08:00:00' })
     lifeScenario(k2)
-    expect(await reconfirmBeforeLocalCancel(realDeps(), A, INVOICE)).toEqual({ invoiceId: INVOICE, needed: false, found: false, attempt: null, accessKey: null })
+    expect(await reconfirmBeforeLocalCancel(realDeps(), A, webRef(A, INVOICE))).toEqual({ invoiceId: INVOICE, needed: false, found: false, attempt: null, accessKey: null })
     expect(mockHttp).not.toHaveBeenCalled()
     expect(stamps).toEqual([])
   })
   it('resistiu: o cancelamento no fisco nunca grava K em tentativa SEM chave (fonte: a decisão do cancelamento exige A/N com `accessKey`) — análise estática do produtor', () => {
     const code = uncomment(fs.readFileSync(path.join(SRC_ROOT, 'nfse/transmission.ts'), 'utf8'))
-    const k = code.indexOf("kind: 'K'")
+    const k = code.indexOf('await reserveCancelRequest(insertTransmissionEvent, itx, tx.attempt, userId)')   // NE-1a parte 2: o K é da peça do núcleo
     expect(k).toBeGreaterThan(0)
     const before = code.slice(Math.max(0, k - 2500), k)
     expect(before).toMatch(/if \(!tx\.accessKey\) throw new HttpError\(409/)
-    expect(before).toMatch(/if \(tx\.lastKind === null \|\| tx\.lastKind === 'S' \|\| tx\.lastKind === 'K'\) throw liveTransmissionError\(tx\)/)
+    // gates da parte 2 da NE-1a (socrático): a decisão pelas CLASSES — viva (sem voz/S/K/P) = em andamento; só A/N seguem
+    expect(before).toMatch(/if \(tx && isLiveTransmission\(tx\)\) throw liveTransmissionError\(tx\)\s*if \(!tx \|\| !isAuthorized\(tx\)\) \{/)
   })
 })
 
@@ -365,7 +367,7 @@ describe('RESISTIU — D-F100: nada da NFS-e de OUTRO DPS persiste nem sai — b
   it.each(THIRDS)('resistiu: TRANSMITIR (POST /nfse devolve a NFS-e alheia) — terceiro com $label', async ({ dpsId, extra }) => {
     mockHttp.mockImplementation(async (call: HttpsCall) => (call.method === 'POST' && /\/nfse$/.test(call.url) ? ok({ nfseXmlGZipB64: gz(foreignXml(dpsId)) })
       : /convenio/.test(call.url) ? ok({ prazoCancelamentoDias: 365 }) : notFound()))
-    const out = await settle(transmitServiceInvoice(realDeps(), A, INVOICE))
+    const out = await settle(transmitServiceInvoice(realDeps(), A, webRef(A, INVOICE)))
     expect(out).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
     expect(filesUnder(storageRoot).length).toBeGreaterThan(0)                         // o DPS NOSSO foi ao disco (prova que o disco é olhado)
     const hay = persistedAndEmitted(out)
@@ -374,7 +376,7 @@ describe('RESISTIU — D-F100: nada da NFS-e de OUTRO DPS persiste nem sai — b
   it.each(THIRDS)('resistiu: CONSULTA da tela (GET /nfse/{chave} devolve a NFS-e alheia) — terceiro com $label', async ({ dpsId, extra }) => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
     fiscoP({ nfse: () => ok({ nfseXmlGZipB64: gz(foreignXml(dpsId)) }) })
-    const out = await settle(refreshServiceTransmission(realDeps(), A, INVOICE, 'Q', { origin: 'consulta' }))
+    const out = await settle(refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q', { origin: 'consulta' }))
     expect(out).toMatchObject({ statusCode: 502 })
     const hay = persistedAndEmitted(out)
     for (const n of needlesOf(dpsId, extra)) expect(hay).not.toContain(n)
@@ -382,7 +384,7 @@ describe('RESISTIU — D-F100: nada da NFS-e de OUTRO DPS persiste nem sai — b
   it.each(THIRDS)('resistiu: passo 0b do TRANSMITIR (reserva interrompida → GET /dps acha a NOSSA chave → a NFS-e vem alheia) — terceiro com $label', async ({ dpsId, extra }) => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(inFlight({ ageMinutes: IN_FLIGHT_MINUTES + 5 }))
     fiscoP({ dpsKey: KEY, nfse: () => ok({ nfseXmlGZipB64: gz(foreignXml(dpsId)) }) })
-    const out = await settle(transmitServiceInvoice(realDeps(), A, INVOICE))
+    const out = await settle(transmitServiceInvoice(realDeps(), A, webRef(A, INVOICE)))
     expect(out).toMatchObject({ statusCode: 502 })
     const hay = persistedAndEmitted(out)
     for (const n of needlesOf(dpsId, extra)) expect(hay).not.toContain(n)
@@ -393,7 +395,7 @@ describe('RESISTIU — D-F100: nada da NFS-e de OUTRO DPS persiste nem sai — b
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(f1)
     ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [f1], events: [] })
     fiscoP({ dpsKey: KEY, nfse: () => ok({ nfseXmlGZipB64: gz(foreignXml(dpsId)) }) })
-    const out = await settle(reconfirmBeforeLocalCancel(realDeps(), A, INVOICE))
+    const out = await settle(reconfirmBeforeLocalCancel(realDeps(), A, webRef(A, INVOICE)))
     expect(out).toMatchObject({ statusCode: 502 })
     expect(stamps).toEqual([])
     const hay = persistedAndEmitted(out)
@@ -402,7 +404,7 @@ describe('RESISTIU — D-F100: nada da NFS-e de OUTRO DPS persiste nem sai — b
   it('[CORRIGIDO na sessão — S1 / D-F100] o 502 do TRANSMITIR com a resposta TROCADA não leva mais o corpo CRU: `body` VAZIO — nenhuma porta que serialize o erro inteiro carrega o blob gzip+base64 da NFS-e alheia', async () => {
     mockHttp.mockImplementation(async (call: HttpsCall) => (call.method === 'POST' && /\/nfse$/.test(call.url) ? ok({ nfseXmlGZipB64: gz(foreignXml(FOREIGN_DPS_ID)) })
       : /convenio/.test(call.url) ? ok({ prazoCancelamentoDias: 365 }) : notFound()))
-    const out = await settle(transmitServiceInvoice(realDeps(), A, INVOICE))
+    const out = await settle(transmitServiceInvoice(realDeps(), A, webRef(A, INVOICE)))
     expect((out as any).body).toBe('')
     expect(JSON.stringify(out)).not.toContain(gz(foreignXml(FOREIGN_DPS_ID)))
     expect(JSON.stringify(out)).not.toContain(THIRD_CPF)
