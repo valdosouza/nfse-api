@@ -24,7 +24,7 @@ describe('D-NE56 na família de serviço — uma definição do registro, nas du
     expect(statements[0]).toMatch(/^CREATE OR REPLACE VIEW `vw_invoice_service_transmission` AS SELECT /)
   })
   it('a linha interna mapeia o fato ("S" → registrado) e a vigente segue a regra da NFS-e (a tentativa que obteve a NFS-e)', () => {
-    const base = { institutionId: 1, invoiceId: 6200, lifeEvent: 1, environment: 'P', lastKind: 'R' }
+    const base = { institutionId: 1, invoiceId: 6200, lifeEvent: 1, environment: 'P', lastKind: 'R', nfseNotGeneratedAt: null }   // gates da A1: a prova vem no SELECT
     const withNfse = mapTx({ ...base, attempt: 1, accessKey: 'K'.repeat(50), authorityRecorded: 'S', lastKind: 'A' })
     const later = mapTx({ ...base, attempt: 2, accessKey: null, authorityRecorded: 'N' })
     expect([withNfse.authorityRecorded, later.authorityRecorded]).toEqual([true, false])
@@ -46,7 +46,7 @@ describe('D-NE56 na família de serviço — uma definição do registro, nas du
     expect(core).toMatch(/lifeList\.some\(t => authorityRecordedOf\(t\)\)/)
   })
   it('gates da parte 1 (NE1A-08): a linha INTERNA também falha alto sem o fato ou incoerente com a chave', () => {
-    const base = { institutionId: 1, invoiceId: 6200, lifeEvent: 1, environment: 'P', attempt: 1 }
+    const base = { institutionId: 1, invoiceId: 6200, lifeEvent: 1, environment: 'P', attempt: 1, nfseNotGeneratedAt: null }
     expect(() => mapTx({ ...base, accessKey: 'K' })).toThrow(/authorityRecorded/)
     expect(() => mapTx({ ...base, accessKey: 'K', authorityRecorded: 'N' })).toThrow(/INCOERENTE/)
     expect(() => mapTx({ ...base, accessKey: null, authorityRecorded: 'S' })).toThrow(/INCOERENTE/)

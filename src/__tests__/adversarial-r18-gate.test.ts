@@ -400,16 +400,16 @@ describe('ACHADO R18-07 (LOW — regressão do D-F96) — o `firstText` DES-ESCA
 // ===========================================================================
 
 describe('CONTEXTO R18-05 (LOW — Q-F105) — a reconferência da nfse-api GRAVA a prova (E2404 na candidata) mesmo com uma tentativa da MESMA identidade EM VOO; a D-F97 conta a apresentação dela pelo `createdAt` da RESERVA', () => {
-  it('[CORRIGIDO — D-F99] vida = [F por consulta (1), em voo (2, mesmo Id, P)] → a nfse-api ainda responde "reconferido, não gerada" e carimba a prova na 1 (Q-F105 (c) não foi escolhida), mas a prova LIDA pela regra do núcleo NÃO passa enquanto a 2 estiver sem voz', async () => {
+  it('[CORRIGIDO — D-F99; DECIDIDO — D-F109] vida = [F por consulta (1), em voo (2, mesmo Id, P)] → (era: a nfse-api respondia "reconferido, não gerada" e carimbava a prova na 1) o VEREDITO barra ANTES da prova: 409 em andamento, nada vai ao fisco, nada é carimbado; e a prova LIDA pela regra do núcleo segue NÃO passando enquanto a 2 estiver sem voz', async () => {
     const f1 = F({ attempt: 1, lastEventAt: '2026-10-09 10:00:00' })
     const v2 = inFlight({ attempt: 2, createdAt: '2026-10-11 10:00:00' })
     maxEvent = 2
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(v2)
     ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [f1, v2], events: [] })
     fisco({})                                                                          // GET /dps → E2404 (tipoAmbiente 1)
-    expect(await reconfirmBeforeLocalCancel(realDeps(), A, webRef(A, INVOICE))).toEqual({ invoiceId: INVOICE, needed: true, found: false, attempt: 1, accessKey: null })
-    expect(stamps).toEqual([{ attempt: 1, seen: 2 }])
-    // o que a F2a vai ler: o carimbo (NOW() da nfse-api) 2 s depois da RESERVA da 2 — o POST dela pode chegar ao fisco depois disso
+    expect(await settle(reconfirmBeforeLocalCancel(realDeps(), A, webRef(A, INVOICE)))).toMatchObject({ statusCode: 409, code: ErrorCodes.FISCAL_TRANSMISSION_IN_PROGRESS })
+    expect(stamps).toEqual([])
+    // o que a F2a vai ler (se um carimbo existisse): o carimbo (NOW() da nfse-api) 2 s depois da RESERVA da 2 — o POST dela pode chegar ao fisco depois disso
     const proof = { ...f1, nfseNotGeneratedAt: '2026-10-11 10:00:02' }
     expect(reconfirmationProven(proof as any, [f1, v2] as any)).toBe(false)              // D-F99: tentativa da mesma identidade sem voz
   })
@@ -444,7 +444,7 @@ describe('RESISTIU — D-F95: a origem é dita por quem chama — nenhum chamado
     const reconcileCalls = code.match(/[^\n]*reconcileInterrupted\([^\n]*/g)!.filter(l => !/function\s+reconcileInterrupted/.test(l))
     expect(reconcileCalls).toHaveLength(1)
     expect(code).toMatch(/try \{ await reconcileInterrupted\([^)]*\) \}\s*catch \(err\) \{ logAmbiguousFiscal\('transmissao'[^\n]*throw err \}/)
-    expect(code).toMatch(/try \{\s*return await reconfirmCandidate\([^)]*\)\s*\} catch \(err\) \{\s*logAmbiguousFiscal\('reconferencia'/)
+    expect(code).toMatch(/try \{\s*done = await reconfirmCandidate\([^)]*\)\s*\} catch \(err\) \{\s*logAmbiguousFiscal\('reconferencia'/)   // D-F109: o veredito DEPOIS fica fora do alarme
     expect(code).toMatch(/logAmbiguousFiscal\('rodizio'/)
   })
   it('resistiu: 0b com a leitura AMBÍGUA dentro do refresh interno → UM alarme só ("transmissao", tentativa certa) — o invólucro interno não registra de novo', async () => {

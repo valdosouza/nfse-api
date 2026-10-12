@@ -30,7 +30,7 @@
 import fs from 'fs'
 import path from 'path'
 import ts from 'typescript'
-import { tsProducesS, sqlFileProducesS, voiceFenceScope, voiceSProducers, walkTs, writerCallFlags, VOICE_SQL_WRITERS, WORKSPACE } from './voice-kind-fence'
+import { tsProducesS, sqlFileProducesS, voiceFenceScope, voiceSProducers, walkTs, writerCallFlags, VOICE_SQL_WRITERS, WORKSPACE, SETES_API_DIR, setesApiPath, mustExist, relWorkspace } from './voice-kind-fence'
 import { insertTransmissionEvent } from '../nfse/repository'
 import type { TransmissionEventInput, ServiceVoiceWriteKind } from '../nfse/repository'
 import { OUTCOME_KIND } from '../nfse/transmission'
@@ -42,12 +42,12 @@ jest.setTimeout(180_000)
 const SRC_ROOT = path.resolve(__dirname, '..')
 const PROJECT_ROOT = path.resolve(SRC_ROOT, '..')
 const NFSE = PROJECT_ROOT
-const SETES = path.join(WORKSPACE, 'setes-api')
-const SETES_IT = path.join(SETES, 'src', 'shared', 'invoice-transmission')
+const SETES = SETES_API_DIR                                                      // D-F117: worktree ou árvore viva
+const SETES_IT = setesApiPath('src', 'shared', 'invoice-transmission')           // D-F117: tem de existir (a A3 da F2a a remove — revisar aqui)
 const CORE_KINDS = path.join(WORKSPACE, 'fiscal-api', 'src', 'voice', 'kinds.ts')
 const R21_FILE = path.join(SRC_ROOT, '__tests__', 'adversarial-r21-gate.test.ts')
 const read = (f: string) => fs.readFileSync(f, 'utf8')
-const rel = (f: string) => path.relative(WORKSPACE, f).replace(/\\/g, '/')
+const rel = (f: string) => relWorkspace(f)                                  // D-F117: setes-api/… mesmo numa worktree
 const norm = (p: string) => path.resolve(p).split(path.sep).join('/')
 
 // ===========================================================================
@@ -280,7 +280,8 @@ describe('ATAQUE 1b — o escritor REAL (`insertTransmissionEvent`) em execuçã
     expect(Reflect.set(OUTCOME_KIND, 'auth_failed', 'S')).toBe(false)         // objeto congelado: o Reflect.set não muda nada
     expect(OUTCOME_KIND.auth_failed).toBe('F')
     const setes = path.join(SETES_IT, 'branches', 'service.ts')
-    if (fs.existsSync(setes)) expect(read(setes)).toMatch(/OUTCOME_KIND[^=\n]*=\s*Object\.freeze\(/)
+    mustExist(setes)
+    expect(read(setes)).toMatch(/OUTCOME_KIND[^=\n]*=\s*Object\.freeze\(/)
   })
 })
 
@@ -296,7 +297,7 @@ describe('ATAQUE 2 — D-F105: no núcleo a cerca só olha SQL na tabela da NFS-
     expect(core("await q.query(`UPDATE \\`${db}\\`.tb_invoice_service_transmission_event SET kind = 'S' WHERE attempt = ?`, [a])")).toBe(true)
     // texto REAL do repositório do setes-api com o kind do INSERT trocado por 'S' (injeção em memória): pego
     const setesRepo = path.join(SETES_IT, 'transmission.repository.ts')
-    if (fs.existsSync(setesRepo)) {
+    if (mustExist(setesRepo)) {
       const real = read(setesRepo)
       expect(core(real)).toBe(false)
       const injected = real.replace("VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), 'N')", "VALUES (?, ?, 0, ?, ?, 'S', ?, ?, ?, ?, ?, ?, NOW(), NOW(), 'N')")
@@ -370,7 +371,7 @@ describe('ATAQUE 3 — NE-1a simulada: o tipo comum ganha P/D (e casos-limite)',
     const list = /export const SERVICE_VOICE_WRITE_KINDS = (?:Object\.freeze\()?\['A', 'R', 'C', 'K', 'F', 'N'\] as const satisfies readonly TransmissionEventKind\[\]/
     const derived = /export type ServiceVoiceWriteKind = typeof SERVICE_VOICE_WRITE_KINDS\[number\]/
     const setesRepo = path.join(SETES_IT, 'transmission.repository.ts')
-    for (const f of [path.join(SRC_ROOT, 'nfse', 'voice-family.ts'), setesRepo].filter(f => fs.existsSync(f))) {
+    for (const f of [path.join(SRC_ROOT, 'nfse', 'voice-family.ts'), setesRepo].filter(f => mustExist(f))) {
       const t = read(f)
       expect(t).toMatch(list)
       expect(t).toMatch(derived)
@@ -404,7 +405,7 @@ declare const WIDE: TransmissionEventKind
 export {}`
 
 describe('ATAQUE 3b — setes-api', () => {
-  const has = fs.existsSync(path.join(SETES_IT, 'transmission.repository.ts'))
+  const has = mustExist(path.join(SETES_IT, 'transmission.repository.ts'))
   const prod = () => [...walkTs(SETES_IT)]
   it('resistiu: os arquivos da composição do setes-api (o delta da D-F106 incluso) compilam SEM erro com o tsconfig dele — e o tipo recusa literal, constante, shorthand, mapa, parâmetro e `OUTCOME_KIND.local = …`', () => {
     if (!has) return
@@ -473,7 +474,7 @@ describe('ATAQUE 4 — casts e formas de chamada no código REAL', () => {
     expect(files.length).toBeGreaterThan(40)
     const hits = files.flatMap(f => kindCasts(read(f)).map(h => `${rel(f)}: ${h}`))
     expect(hits.filter(h => !/^setes-api\/src\/shared\/invoice-transmission\/transmission\.repository\.ts: TransmissionEventRow(?:\[\])? @/.test(h))).toEqual([])
-    expect(hits).toHaveLength(fs.existsSync(SETES_IT) ? 3 : 0)
+    expect(hits).toHaveLength(3)
   })
   it('resistiu: toda chamada REAL ao escritor é por identificador NU, com objeto literal SEM spread e `kind` literal da família ou `OUTCOME_KIND[…]` — nfse-api (src+scripts) e a pasta INTEIRA da composição do setes-api (o r21 lia só `invoice-transmission.ts`)', () => {
     const calls: { f: string; text: string; ok: boolean }[] = []
@@ -497,7 +498,7 @@ describe('ATAQUE 4 — casts e formas de chamada no código REAL', () => {
       visit(sf)
     }
     expect(calls.filter(c => c.f.startsWith('nfse-api/')).length).toBeGreaterThanOrEqual(10)
-    if (fs.existsSync(SETES_IT)) expect(calls.filter(c => c.f.startsWith('setes-api/')).length).toBeGreaterThanOrEqual(8)
+    expect(calls.filter(c => c.f.startsWith('setes-api/')).length).toBeGreaterThanOrEqual(8)
     expect(calls.filter(c => !c.ok)).toEqual([])
   })
   it('resistiu: o escritor tem UMA assinatura (sem sobrecarga) e o último parâmetro é a entrada da FAMÍLIA — nfse-api (ligação ao genérico do núcleo: `VoiceFamily<K>.insertTransmissionEvent` é PROPRIEDADE-FUNÇÃO com `VoiceEventInput<K>`; NE-1a parte 2) e setes-api (`TransmissionEventInput`)', () => {
@@ -519,7 +520,8 @@ describe('ATAQUE 4 — casts e formas de chamada no código REAL', () => {
     const ps = (fnType as ts.FunctionTypeNode).parameters
     expect([ps[0].type?.getText(sf), ps[ps.length - 1].type?.getText(sf)]).toEqual(['InvoiceTx', 'VoiceEventInput<K>'])
     const setesRepo = path.join(SETES_IT, 'transmission.repository.ts')
-    if (fs.existsSync(setesRepo)) expect(sigs(setesRepo)).toEqual(['TransmissionEventInput'])
+    mustExist(setesRepo)
+    expect(sigs(setesRepo)).toEqual(['TransmissionEventInput'])
   })
   it('[CORRIGIDO na sessão] os escritores SQL da voz da NFS-e são EXATAMENTE o funil tipado do setes-api + a cópia do `migrate:setes` = a lista `VOICE_SQL_WRITERS` da peça (ESCRITOR ÚNICO, R22-05) — o da nfse-api é o GENÉRICO do núcleo, que escreve pela tabela do DESCRITOR (`${table}`, nunca o literal; NE-1a parte 2); nenhum UPDATE põe `kind`', () => {
     /** Textos SQL (literais e templates, substituição = '?') de um fonte TS, pelo AST. */
@@ -541,9 +543,9 @@ describe('ATAQUE 4 — casts e formas de chamada no código REAL', () => {
     const inserters = files.filter(f => sqlTexts(read(f)).some(s => INSERT.test(s))).map(rel).sort()
     expect(inserters).toEqual([
       'nfse-api/scripts/migrate-from-setes-api.ts',
-      ...(fs.existsSync(SETES_IT) ? ['setes-api/src/shared/invoice-transmission/transmission.repository.ts'] : []),
+      'setes-api/src/shared/invoice-transmission/transmission.repository.ts',
     ].sort())
-    if (fs.existsSync(SETES_IT)) expect(inserters).toEqual([...VOICE_SQL_WRITERS].sort())
+    expect(inserters).toEqual([...VOICE_SQL_WRITERS].sort())
     // o genérico do núcleo: INSERT pela tabela do descritor, e o ÚNICO descritor da tabela da NFS-e é o da família (`voice-family.ts`)
     const core = read(path.join(WORKSPACE, 'fiscal-api', 'src', 'voice', 'event-table.ts'))
     expect(core).toMatch(/INSERT INTO \$\{table\}/)

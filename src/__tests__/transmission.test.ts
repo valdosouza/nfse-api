@@ -509,10 +509,26 @@ describe('reconfirmar (Q-ADV1b → D-F29) — a PROVA lida no banco', () => {
     const base = pool.query.getMockImplementation()
     pool.query.mockImplementation(async (sql: string, p: any[]) => (/nfse_not_generated_at = NOW\(\)/.test(sql) ? [{ affectedRows: 1 }] : base!(sql, p)))
     const r = await reconfirmBeforeLocalCancel(deps, A, webRef(A, INVOICE))
-    expect(r).toEqual({ invoiceId: INVOICE, needed: true, found: false, attempt: 1, accessKey: null })
+    // D-F109: o veredito DEPOIS — o repositório simulado não reflete o carimbo (a mesma vida volta), então "sem-e2404"; o veredito com o
+    // carimbo refletido (`provada`) está em f2a-a1-nfse.test.ts
+    expect(r).toEqual({ invoiceId: INVOICE, needed: true, found: false, attempt: 1, accessKey: null, verdict: 'sem-e2404' })
     expect(repo.touchQueriedAt).toHaveBeenCalledWith(pool, refOf(1, INVOICE), 1)
     expect(pool.query.mock.calls.filter((c: any[]) => /nfse_not_generated_at = NOW\(\)/.test(String(c[0])))).toHaveLength(1)
     expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()
+  })
+  it('[D-F109] o veredito DEPOIS reflete o carimbo: a vida RELIDA traz o E2404 posterior à apresentação → `provada` (o que o plano do setes-api vai exigir); vida registrada → `nao-exigida` sem ir ao fisco', async () => {
+    const before = fq({ attempt: 1 })
+    ;(repo.listLifeTransmissions as jest.Mock)
+      .mockResolvedValueOnce({ transmissions: [before], events: [] })
+      .mockResolvedValueOnce({ transmissions: [{ ...before, nfseNotGeneratedAt: '2026-09-22 10:00:00' }], events: [] })
+    adapter.queryDpsAccessKey.mockResolvedValue(null)
+    const base = pool.query.getMockImplementation()
+    pool.query.mockImplementation(async (sql: string, p: any[]) => (/nfse_not_generated_at = NOW\(\)/.test(sql) ? [{ affectedRows: 1 }] : base!(sql, p)))
+    expect(await reconfirmBeforeLocalCancel(deps, A, webRef(A, INVOICE))).toMatchObject({ needed: true, found: false, attempt: 1, verdict: 'provada' })
+    adapter.queryDpsAccessKey.mockClear()
+    ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [tx({ attempt: 1 })], events: [] })   // A com chave
+    expect(await reconfirmBeforeLocalCancel(deps, A, webRef(A, INVOICE))).toEqual({ invoiceId: INVOICE, needed: false, found: false, attempt: null, accessKey: null, verdict: 'nao-exigida' })
+    expect(adapter.queryDpsAccessKey).not.toHaveBeenCalled()
   })
   it('LOW-4 do gate da Rodada 16: a guarda da prova recusa (a voz mudou durante a pergunta) → 409 RESOURCE_BUSY "consulte de novo", nunca "reconferido"', async () => {
     ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [fq({ attempt: 1 })], events: [] })

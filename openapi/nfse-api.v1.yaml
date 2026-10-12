@@ -291,12 +291,18 @@ paths:
       summary: Reconfere no fisco a tentativa que fechou com F de envio interrompido (Q-ADV1b) — antes do cancelamento local
       description: >-
         D-F29: o setes-api não fala com o fisco (D-F4); a conferência que hoje roda dentro do cancelamento local
-        passa a ser pedida pelo app aqui. Grava `last_queried_at` na tentativa — é a PROVA lida no banco que o
-        setes-api exige (consulta POSTERIOR ao F) antes de cancelar localmente uma nota com F por consulta em
-        produção; sem ela o cancelamento local é recusado (fail-closed preservado).
+        passa a ser pedida pelo app aqui. Não achou (E2404 explícito) → grava `nfse_not_generated_at` na tentativa
+        (D-F90) — é a PROVA lida no banco que o setes-api exige (E2404 POSTERIOR à última apresentação do Id — D-F97)
+        antes de cancelar localmente uma nota com F por consulta em produção; sem ela o cancelamento local é recusado.
+        D-F109 (Rodada 1 da F2a): decide pelo VEREDITO do núcleo, com a barreira ANTES da prova — tentativa VIVA na
+        vida responde 409 sem ir ao fisco (FISCAL_TRANSMISSION_IN_PROGRESS — reserva sem voz/S; FISCAL_CANCEL_IN_FLIGHT —
+        pedido de cancelamento K em voo; a mesma mensagem do transmitir); a resposta traz o veredito DEPOIS da chamada
+        (`verdict` — o mesmo que o plano de cancelamento do setes-api exige). ⚠️ `nao-exigida` NÃO quer dizer "pode
+        cancelar localmente": cobre também a vida REGISTRADA pelo fisco (autorizada — o cancelamento é no fisco primeiro);
+        a barreira do registro é do PLANO do ERP (D-F29), não do veredito.
       responses:
         '200':
-          description: 'conferido (achou a NFS-e → reconciliada como A; não achou → grava a PROVA last_queried_at)'
+          description: 'conferido (achou a NFS-e → reconciliada como A; não achou → grava a PROVA nfse_not_generated_at)'
           content:
             application/json:
               schema:
@@ -622,6 +628,13 @@ components:
         found:     { type: boolean, description: 'true = o fisco tem a NFS-e: reconciliada como A — o cancelamento passa a exigir "Cancelar NFS-e"' }
         attempt:   { type: integer, nullable: true }
         accessKey: { type: string, nullable: true }
+        verdict:
+          type: string
+          enum: [provada, irma-viva, apresentada-depois, sem-e2404, sem-identidade, instante-invalido, nao-exigida]
+          description: >-
+            D-F109: veredito da reconferência DEPOIS desta chamada (`reconfirmationVerdict` do núcleo — a mesma regra que o
+            plano de cancelamento do setes-api exige). provada = o cancelamento local está liberado quanto à prova;
+            nao-exigida = nada a provar (ou a NFS-e foi achada e reconciliada); os demais dizem por que ainda não.
     RefreshRunReport:
       type: object
       properties:

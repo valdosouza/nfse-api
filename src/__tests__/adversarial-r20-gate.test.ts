@@ -247,11 +247,12 @@ const stamped = (f1: any) => ({ ...f1, nfseNotGeneratedAt: '2026-10-11 10:00:00'
 // ===========================================================================
 
 describe('ACHADO R20-01 (LOW latente — S não tem produtor; questão Q-F108) — D-F101 faz a prova esperar a irmã VIVA ganhar voz FINAL ("a prova volta quando a tentativa ganhar voz" — D-F99), mas na nfse-api só a tentativa SEM voz tem saída (D-F51: `isInterruptedInFlight` exige `lastKind === null`). Uma irmã S sem chave: o rodízio a revisita para sempre (`le.kind IN (\'S\',\'K\')`), o fisco responde E2404 e ela NUNCA fecha — a reconferência da nfse-api responde "reconferida, não achou" e a prova lida pelo núcleo diz "não provado" para sempre (laço "reconfira"/"em andamento" sem fim); o transmitir também fica preso (409 em andamento)', () => {
-  it('contexto: a nfse-api RESPONDE "reconferida" (needed, !found) e carimba o E2404 na candidata — e o núcleo, com a MESMA vida, diz NÃO PROVADO (irmã S viva)', async () => {
+  it('[DECIDIDO — D-F109] (era o contexto: a nfse-api respondia "reconferida" e carimbava o E2404 com a irmã S viva — o laço) — o VEREDITO barra ANTES da prova: 409 em andamento, nada vai ao fisco, nada é carimbado; o núcleo, com a MESMA vida, segue dizendo NÃO PROVADO (irmã S viva)', async () => {
     const { f1, life } = lifeScenario(sibling('S'))
-    fiscoP({})                                                                        // GET /dps → E2404 (P)
-    expect(await reconfirmBeforeLocalCancel(realDeps(), A, webRef(A, INVOICE))).toEqual({ invoiceId: INVOICE, needed: true, found: false, attempt: 1, accessKey: null })
-    expect(stamps).toEqual([{ attempt: 1, seen: 2 }])
+    fiscoP({})                                                                        // GET /dps → E2404 (P) — não é perguntado
+    expect(await settle(reconfirmBeforeLocalCancel(realDeps(), A, webRef(A, INVOICE)))).toMatchObject({ statusCode: 409, code: ErrorCodes.FISCAL_TRANSMISSION_IN_PROGRESS })
+    expect(mockHttp).not.toHaveBeenCalled()
+    expect(stamps).toEqual([])
     expect(reconfirmationCandidate(life as any)?.attempt).toBe(1)
     expect(reconfirmationProven(stamped(f1), life as any)).toBe(false)
   })
@@ -303,11 +304,12 @@ describe('ACHADO R20-01 (LOW latente — S não tem produtor; questão Q-F108) �
 // ===========================================================================
 
 describe('RESISTIU — D-F101 × nfse-api: irmã SEM voz tem saída (D-F51) e irmã K nunca chega à reconferência', () => {
-  it('resistiu: irmã SEM voz e velha — a reconferência carimba (needed) e o núcleo diz NÃO PROVADO; a consulta da irmã com E2404 a FECHA com F (D-F51) e, com ela final, a nova candidata (2) prova com o E2404 posterior', async () => {
+  it('resistiu [D-F109]: irmã SEM voz e velha — a reconferência responde 409 em andamento (nada carimba) e o núcleo diz NÃO PROVADO; a consulta da irmã com E2404 a FECHA com F (D-F51) e, com ela final, a nova candidata (2) prova com o E2404 posterior', async () => {
     const s2 = sibling(null)
     const { f1, life } = lifeScenario(s2)
     fiscoP({})
-    expect(await reconfirmBeforeLocalCancel(realDeps(), A, webRef(A, INVOICE))).toMatchObject({ needed: true, found: false, attempt: 1 })
+    expect(await settle(reconfirmBeforeLocalCancel(realDeps(), A, webRef(A, INVOICE)))).toMatchObject({ statusCode: 409, code: ErrorCodes.FISCAL_TRANSMISSION_IN_PROGRESS })
+    expect(stamps).toEqual([])
     expect(reconfirmationProven(stamped(f1), life as any)).toBe(false)
     expect(await refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q', { attempt: 2, fromRun: true })).toMatchObject({ attempt: 2, changed: true, kind: 'F' })
     const f2 = F({ attempt: 2, createdAt: '2026-10-11 08:00:00', lastEvent: 1, lastEventAt: '2026-10-11 08:20:00' })
@@ -315,10 +317,10 @@ describe('RESISTIU — D-F101 × nfse-api: irmã SEM voz tem saída (D-F51) e ir
     expect(reconfirmationCandidate(after as any)?.attempt).toBe(2)
     expect(reconfirmationProven({ ...f2, nfseNotGeneratedAt: '2026-10-11 08:20:01' } as any, after as any)).toBe(true)
   })
-  it('resistiu: irmã K — K só nasce em tentativa AUTORIZADA (com chave): com chave na vida o seletor devolve null, a nfse-api responde "nada a reconferir" SEM perguntar ao fisco (a prova nunca é pedida)', async () => {
+  it('resistiu [D-F109]: irmã K — K só nasce em tentativa AUTORIZADA (com chave): a K é VIVA → o veredito barra ANTES (409 cancelamento em voo — a mesma mensagem do transmitir) SEM perguntar ao fisco (a prova nunca é pedida)', async () => {
     const k2 = sibling('K', { accessKey: KEY, nfseNumber: '123', dhProc: '2026-10-11 08:00:00' })
     lifeScenario(k2)
-    expect(await reconfirmBeforeLocalCancel(realDeps(), A, webRef(A, INVOICE))).toEqual({ invoiceId: INVOICE, needed: false, found: false, attempt: null, accessKey: null })
+    expect(await settle(reconfirmBeforeLocalCancel(realDeps(), A, webRef(A, INVOICE)))).toMatchObject({ statusCode: 409, code: ErrorCodes.FISCAL_CANCEL_IN_FLIGHT })
     expect(mockHttp).not.toHaveBeenCalled()
     expect(stamps).toEqual([])
   })

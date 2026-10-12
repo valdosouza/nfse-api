@@ -57,6 +57,7 @@ import {
   validatePrivateKeyPem, certificateAad, assertSchema, PoolConnection, ISSUER_MODELS, anyEmissionStillInErp, erp,
 } from 'fiscal-api'
 import { SERVICE_MODEL } from '../src/facts/service-facts'
+import { SERVICE_VOICE_WRITE_KINDS } from '../src/nfse/voice-family'
 import { assertNoteSerieKept, retireErpServiceIssuer } from './cutover-erp'
 import { argumentErrors, npmSwallowedFlags } from './migrate-args'
 
@@ -181,7 +182,22 @@ async function migrateInstitution(c: PoolConnection, keyring: MasterKeyRing, sto
        deleted = src.deleted, updated_at = GREATEST(tb_invoice_service_transmission.updated_at, src.updated_at)`, [institutionId])
   rep.transmissions = Number(t.affectedRows ?? 0)
 
-  // 5. vozes (sem a coluna de efeito — D-F28)
+  // 5. vozes (sem a coluna de efeito — D-F28). ANTES, o DOMÍNIO da origem (gates da A1 da F2a, F2A1-08): o `INSERT IGNORE … SELECT` abaixo
+  // REBAIXA a violação do CHECK da 005 (kind = lista da família, source = P/Q, binários) a AVISO e a linha SOME calada (provado no MariaDB
+  // 10.4.20; no MySQL 8, pela documentação dele, também) — a conferência do passo 6 só vê a ÚLTIMA voz e não acusaria uma voz do meio. Voz fora do domínio na origem
+  // = falha ALTO aqui, com o motivo certo (não "dual-write"). Tentativa e habilitação são copiadas SEM IGNORE (o CHECK já falha alto).
+  const [outOfDomain] = await c.query<any[]>(
+    `SELECT ev.tb_invoice_id AS inv, ev.attempt, ev.event, HEX(ev.kind) AS kindHex, HEX(ev.source) AS sourceHex
+       FROM \`${s}\`.tb_invoice_service_transmission_event ev
+       JOIN \`${s}\`.tb_invoice_service_transmission t
+         ON t.tb_institution_id = ev.tb_institution_id AND t.tb_invoice_id = ev.tb_invoice_id AND t.terminal = ev.terminal AND t.attempt = ev.attempt
+      WHERE ev.tb_institution_id = ? AND t.dps_id IS NOT NULL
+        AND (ev.kind COLLATE utf8mb4_bin NOT IN (?) OR ev.source COLLATE utf8mb4_bin NOT IN ('P', 'Q'))
+      LIMIT 5`, [institutionId, [...SERVICE_VOICE_WRITE_KINDS]])
+  if (outOfDomain.length) {
+    throw new Error(`${s}: voz FORA DO DOMÍNIO na origem (${outOfDomain.map(x => `${x.inv}/${x.attempt}#${x.event} kind=0x${x.kindHex} source=0x${x.sourceHex}`).join(', ')}) `
+      + `— a família NFS-e só grava ${SERVICE_VOICE_WRITE_KINDS.join('/')} e P/Q (D-F107/D-F120); corrija a origem antes; nada migrado`)
+  }
   const [e] = await c.query<any>(
     `INSERT IGNORE INTO tb_invoice_service_transmission_event
        (tb_institution_id, tb_invoice_id, terminal, attempt, event, kind, authority_code, message, dh, source, tb_user_id, created_at, updated_at, deleted)

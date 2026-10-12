@@ -28,9 +28,13 @@ GRANT ALL PRIVILEGES ON `fiscal\_api\_adv%`.* TO 'fiscal_api'@'%';
 
 -- 2. Usuário do setes-api (F2a): lê a voz fiscal SÓ pelas VIEWs publicadas (contrato — D-F15); nunca as
 --    tabelas internas do fiscal_api. As views são SQL SECURITY DEFINER (definidor = quem rodou a migration
---    da família, o 'fiscal_api'), então o SELECT na view basta.
--- GRANT SELECT ON `fiscal_api`.`vw_invoice_service_transmission`       TO 'setes_api'@'%';
--- GRANT SELECT ON `fiscal_api`.`vw_invoice_service_transmission_event` TO 'setes_api'@'%';
+--    da família, o 'fiscal_api'), então o SELECT na view basta. GRANT MÍNIMO (parecer do guardião na Rodada 0
+--    da F2a, `prompt_apis_fiscais_isoladas.md` §22.5-5): só a view de TENTATIVAS — o plano, a prova, a pendência
+--    do efeito e o selo leem dela (`readFamilyTransmissions` do núcleo); a view de VOZES é da tela "No fisco",
+--    que é da nfse-api (o app compõe — D-F79). Família nova = a view de tentativas DELA (D-F113: o catálogo
+--    `VOICE_READINGS` da biblioteca é a lista das famílias instaladas; o boot do setes-api confere cada view).
+--    Aplicar na JANELA da F2a (D-F111), junto do usuário 'setes_api' da instância — antes não há leitor.
+-- GRANT SELECT ON `fiscal_api`.`vw_invoice_service_transmission` TO 'setes_api'@'%';
 
 -- 3. Conferência (critério §12.8-2): pela conexão do 'fiscal_api', um INSERT em setes_<cliente>.tb_invoice_event
 --    tem que dar ER_TABLEACCESS_DENIED_ERROR; um SELECT … FOR UPDATE em setes_<cliente>.tb_invoice tem que passar.

@@ -28,7 +28,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import ts from 'typescript'
-import { tsProducesS, voiceFenceScope } from './voice-kind-fence'
+import { tsProducesS, voiceFenceScope, setesApiPath, relWorkspace } from './voice-kind-fence'
 import * as fiscal from 'fiscal-api'
 import * as repo from '../nfse/repository'
 import type { TransmissionEventInput } from '../nfse/repository'
@@ -197,7 +197,7 @@ const SRC_ROOT = path.resolve(__dirname, '..')
 const PROJECT_ROOT = path.resolve(SRC_ROOT, '..')
 const WORKSPACE = path.resolve(PROJECT_ROOT, '..')
 const R20_FILE = path.join(SRC_ROOT, '__tests__', 'adversarial-r20-gate.test.ts')
-const SETES_COMPOSITION = path.join(WORKSPACE, 'setes-api', 'src', 'shared', 'invoice-transmission', 'invoice-transmission.ts')
+const SETES_COMPOSITION = setesApiPath('src', 'shared', 'invoice-transmission', 'invoice-transmission.ts')   // D-F117: tem de existir
 const walkTs = (dir: string): string[] => (!fs.existsSync(dir) ? [] : fs.readdirSync(dir, { withFileTypes: true }).flatMap(d =>
   d.isDirectory() ? (d.name === '__tests__' || d.name === 'node_modules' ? [] : walkTs(path.join(dir, d.name))) : d.name.endsWith('.ts') ? [path.join(dir, d.name)] : []))
 const uncomment = (code: string) => code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
@@ -205,7 +205,7 @@ const uncomment = (code: string) => code.replace(/\/\*[\s\S]*?\*\//g, '').replac
 const fenceFlags = (code: string) => tsProducesS(code)
 /** …e este o CONJUNTO dela: todo lugar que escreve na voz (nfse-api src/scripts/migrations, núcleo, setes-api — pasta + migrations). */
 const fenceScope = () => new Set(voiceFenceScope())
-const rel = (f: string) => path.relative(WORKSPACE, f).replace(/\\/g, '/')
+const rel = (f: string) => relWorkspace(f)
 const read = (f: string) => fs.readFileSync(f, 'utf8')
 
 describe('A CERCA da D-F102 é a peça compartilhada `voice-kind-fence.ts` (R21-01 corrigido na sessão — a réplica deixou de existir)', () => {
@@ -219,8 +219,8 @@ describe('A CERCA da D-F102 é a peça compartilhada `voice-kind-fence.ts` (R21-
     expect([...fenceScope()].filter(f => fs.existsSync(f) && fenceFlags(read(f))).map(rel)).toEqual([])
   })
   it('resistiu: a forma CANÔNICA de um produtor de S (a do precedente real — o registro do boleto no setes-api grava `kind: \'S\', source: \'P\'` na voz do BANCO) É pega pela cerca', () => {
-    const bank = path.join(WORKSPACE, 'setes-api', 'src', 'shared', 'bank-slip-registration', 'bank-slip-registration.ts')
-    if (fs.existsSync(bank)) expect(fenceFlags(read(bank))).toBe(true)
+    const bank = setesApiPath('src', 'shared', 'bank-slip-registration', 'bank-slip-registration.ts')
+    expect(fenceFlags(read(bank))).toBe(true)
     expect(fenceFlags(`await insertTransmissionEvent(conn, i, n, a, u, { kind: 'S', source: 'P', dh: null })`)).toBe(true)
     expect(fenceFlags(`await insertTransmissionEvent(conn, i, n, a, u, { kind:'S', source: 'P' })`)).toBe(true)
     expect(fenceFlags(`const v = { kind: 'S' as TransmissionEventKind }`)).toBe(true)
@@ -291,7 +291,7 @@ describe('ATAQUE 1 — ESCAPE da cerca da D-F102: a promessa é "a cerca quebra 
     expect(SYNTACTIC.filter(([, src]) => !astFlags(src)).map(([l]) => l)).toEqual([])
   })
   it('resistiu: a alternativa por AST NÃO acusa nada no código REAL — nem no conjunto da cerca, nem nos escritores fora dela (scripts, setes-api) — e pega a forma canônica', () => {
-    const extra = [path.join(PROJECT_ROOT, 'scripts'), path.join(WORKSPACE, 'setes-api', 'src', 'shared', 'invoice-transmission')].flatMap(walkTs)
+    const extra = [path.join(PROJECT_ROOT, 'scripts'), setesApiPath('src', 'shared', 'invoice-transmission')].flatMap(walkTs)
     const all = [...new Set([...fenceScope(), ...extra.map(f => path.resolve(f))])].filter(f => fs.existsSync(f))
     expect(all.length).toBeGreaterThan(40)
     expect(all.filter(f => astFlags(read(f))).map(rel)).toEqual([])
@@ -367,8 +367,8 @@ describe('ATAQUE 1 — ESCAPE da cerca da D-F102: a promessa é "a cerca quebra 
     const candidates = [
       ...walkTs(SRC_ROOT), ...walkTs(path.join(PROJECT_ROOT, 'scripts')), ...sqlUnder(path.join(SRC_ROOT, 'migrations', 'sql')),
       ...walkTs(path.join(WORKSPACE, 'fiscal-api', 'src')), ...sqlUnder(path.join(WORKSPACE, 'fiscal-api', 'src', 'migrations', 'sql')),
-      ...walkTs(path.join(WORKSPACE, 'setes-api', 'src', 'shared', 'invoice-transmission')),
-      ...sqlUnder(path.join(WORKSPACE, 'setes-api', 'src', 'migrations', 'sql')),
+      ...walkTs(setesApiPath('src', 'shared', 'invoice-transmission')),
+      ...sqlUnder(setesApiPath('src', 'migrations', 'sql')),
     ]
     // alvo com ou sem qualificador (`${s}`.x, `x`, x — com a crase escapada `\`` dentro de template)
     const WRITE = /\b(?:INSERT(?:\s+IGNORE)?\s+INTO|REPLACE\s+INTO|UPDATE)\s+(?:\\?`?\$\{\w+\}\\?`?\.|\\?`?\w+\\?`?\.)?\\?`?tb_invoice_service_transmission_event\b/i
@@ -426,7 +426,6 @@ describe('ATAQUE 2 — os escritores de HOJE: nenhum grava S nem kind fora do do
     expect(policy.match(/\bkind: '[A-Z]'/g)).toEqual(["kind: 'K'", "kind: 'N'"])
   })
   it('resistiu: setes-api (a composição de produção, lida como texto) — idem', () => {
-    if (!fs.existsSync(SETES_COMPOSITION)) return
     const calls = writerCalls(read(SETES_COMPOSITION))
     expect(calls.length).toBeGreaterThanOrEqual(5)
     expect(calls.filter(c => !c.ok)).toEqual([])
@@ -489,7 +488,7 @@ describe('ATAQUE 4 — "quem criar produtor de S dá a ela a saída da D-F51": o
     const code = uncomment(read(path.join(SRC_ROOT, 'nfse', 'transmission.ts')))
     const body = code.slice(code.indexOf('async function recordInterruptedFailure'), code.indexOf('async function recordInterruptedFailure') + 800)
     expect(body).toMatch(/if \(!cur \|\| cur\.lastKind !== null\) return \{ recorded: false, current: cur \}/)
-    if (fs.existsSync(SETES_COMPOSITION)) expect(read(SETES_COMPOSITION)).toMatch(/if \(!cur \|\| cur\.attempt !== tx\.attempt \|\| cur\.lastKind !== null\) return/)
+    expect(read(SETES_COMPOSITION)).toMatch(/if \(!cur \|\| cur\.attempt !== tx\.attempt \|\| cur\.lastKind !== null\) return/)
   })
   it('contexto: estender SÓ o predicado (o que o aviso sugere) cai no ramo "perdeu a corrida" A CADA passada — devolve S sem carimbar `last_queried_at` nem o E2404: a S nunca sai do topo do rodízio (consulta o fisco toda passada — "monopoliza o rodízio") e a prova nunca volta', async () => {
     // a tentativa VISTA fora da trava parece "sem voz e velha" (o que o predicado estendido diria da S); sob a trava, ela tem voz S
@@ -511,7 +510,7 @@ describe('ATAQUE 4 — "quem criar produtor de S dá a ela a saída da D-F51": o
     const sites = [
       near(path.join(SRC_ROOT, 'nfse', 'transmission.ts'), 'export function isInterruptedInFlight'),
       near(path.join(WORKSPACE, 'fiscal-api', 'src', 'voice', 'kinds.ts'), 'export type TransmissionEventKind'),
-      ...(fs.existsSync(SETES_COMPOSITION) ? [near(SETES_COMPOSITION, 'export function isInterruptedInFlight')] : []),
+      near(SETES_COMPOSITION, 'export function isInterruptedInFlight'),
     ]
     for (const s of sites) {
       expect(s).toMatch(/D-F102/)

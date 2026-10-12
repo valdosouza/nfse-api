@@ -25,6 +25,33 @@ const PROJECT_ROOT = path.resolve(SRC_ROOT, '..')
 export const WORKSPACE = path.resolve(PROJECT_ROOT, '..')
 const CORE_ROOT = path.resolve(WORKSPACE, 'fiscal-api')
 
+/**
+ * D-F117 (= Q-F123 (a), Valdo 2026-10-12 — Rodada 1 da F2a): a F2a se desenvolve numa WORKTREE do setes-api; as cercas que vigiam o setes-api
+ * leem `SETES_API_DIR` (padrão: a árvore viva `D:/Gestao2027/setes-api`) e FALHAM ALTO quando o que vigiam some (antes `existsSync` pulava
+ * calado — a cerca da D-NE77 não veria o 1º import da A2 na worktree, só depois do merge = deploy). O nome RELATIVO segue `setes-api/…` em
+ * qualquer pasta (as listas das cercas não mudam com a worktree).
+ */
+export const SETES_API_DIR = path.resolve(process.env.SETES_API_DIR ?? path.join(WORKSPACE, 'setes-api'))
+export function mustExist(p: string): true {
+  if (!fs.existsSync(p)) {
+    throw new Error(`D-F117: a cerca vigia ${p}, que NÃO existe — o arquivo saiu (F2a?) e a cerca precisa ser revista na mesma entrega, ou `
+      + 'SETES_API_DIR aponta para o lugar errado')
+  }
+  return true
+}
+/** Caminho dentro do setes-api (`SETES_API_DIR`) que TEM de existir. */
+export function setesApiPath(...parts: string[]): string {
+  const p = path.join(SETES_API_DIR, ...parts)
+  mustExist(p)
+  return p
+}
+/** Nome relativo ao workspace, com o setes-api SEMPRE como `setes-api/…` (mesmo numa worktree). */
+export function relWorkspace(file: string): string {
+  const abs = path.resolve(file)
+  if (abs === SETES_API_DIR || abs.startsWith(SETES_API_DIR + path.sep)) return `setes-api/${path.relative(SETES_API_DIR, abs)}`.replace(/\\/g, '/')
+  return path.relative(WORKSPACE, abs).replace(/\\/g, '/')
+}
+
 /** `.ts` de uma pasta, recursivo, sem `__tests__` nem `node_modules`. */
 export const walkTs = (dir: string): string[] => (!fs.existsSync(dir) ? [] : fs.readdirSync(dir, { withFileTypes: true }).flatMap(d =>
   d.isDirectory() ? (d.name === '__tests__' || d.name === 'node_modules' ? [] : walkTs(path.join(dir, d.name))) : d.name.endsWith('.ts') ? [path.join(dir, d.name)] : []))
@@ -281,12 +308,12 @@ export const VOICE_FAMILY_DESCRIPTORS = ['nfse-api/src/nfse/voice-family.ts']
 export function voiceWriterViolations(files: string[] = voiceFenceScope()): string[] {
   return files.filter(f => fs.existsSync(f) && f.endsWith('.ts') && !path.resolve(f).startsWith(CORE_ROOT + path.sep))
     .filter(f => {
-      const r = path.relative(WORKSPACE, f).replace(/\\/g, '/')
+      const r = relWorkspace(f)
       return writerCallFlags(fs.readFileSync(f, 'utf8'), {
         allowSqlWriter: VOICE_SQL_WRITERS.includes(r), allowFamilyDescriptor: VOICE_FAMILY_DESCRIPTORS.includes(r),
       })
     })
-    .map(f => path.relative(WORKSPACE, f).replace(/\\/g, '/'))
+    .map(f => relWorkspace(f))
 }
 
 /** Um `.sql` produz a voz S? (comentários SQL fora; statement a statement) */
@@ -302,8 +329,9 @@ export function voiceFenceScope(): string[] {
     ...walkTs(path.join(W, 'nfse-api', 'src')), ...walkTs(path.join(W, 'nfse-api', 'scripts')),
     ...sqlUnder(path.join(W, 'nfse-api', 'src', 'migrations', 'sql')),
     ...walkTs(path.join(W, 'fiscal-api', 'src')), ...sqlUnder(path.join(W, 'fiscal-api', 'src', 'migrations', 'sql')),
-    ...walkTs(path.join(W, 'setes-api', 'src', 'shared', 'invoice-transmission')),
-    ...sqlUnder(path.join(W, 'setes-api', 'src', 'migrations', 'sql')),
+    // D-F117: o setes-api por `SETES_API_DIR`, e a pasta TEM de existir (a A3 da F2a remove a composição — revisar a cerca junto)
+    ...walkTs(setesApiPath('src', 'shared', 'invoice-transmission')),
+    ...sqlUnder(setesApiPath('src', 'migrations', 'sql')),
   ].map(f => path.resolve(f)))]
 }
 
@@ -314,5 +342,5 @@ export function voiceSProducers(files: string[] = voiceFenceScope()): string[] {
       const c = fs.readFileSync(f, 'utf8')
       return f.endsWith('.sql') ? sqlFileProducesS(c) : tsProducesS(c, { sqlOnly: path.resolve(f).startsWith(CORE_ROOT + path.sep) })
     })
-    .map(f => path.relative(WORKSPACE, f).replace(/\\/g, '/'))
+    .map(f => relWorkspace(f))
 }

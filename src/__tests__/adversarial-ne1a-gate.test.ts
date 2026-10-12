@@ -65,7 +65,7 @@ const KEY = '41069022123456780001990000000000123202609210000123'.slice(0, 50)
 const rawTx = (attempt: number, accessKey: string | null, over: Record<string, unknown> = {}) => ({
   institutionId: 1, invoiceId: 6200, attempt, lifeEvent: 1, environment: 'P', serie: '1', dpsNumber: 42, dpsId: 'DPS1',
   accessKey, authorityRecorded: accessKey == null ? 'N' : 'S', nfseNumber: accessKey ? '704' : null, dhProc: null,
-  createdAt: '2026-10-01 09:59:00', ageMinutes: 30, lastQueriedAt: null, lastEvent: 1, lastKind: accessKey ? 'A' : 'F', lastCode: null,
+  createdAt: '2026-10-01 09:59:00', ageMinutes: 30, lastQueriedAt: null, nfseNotGeneratedAt: null, lastEvent: 1, lastKind: accessKey ? 'A' : 'F', lastCode: null,
   lastMessage: null, lastSource: accessKey ? 'P' : 'Q', lastDh: null, lastEventAt: '2026-10-01 10:00:00', lastEventAgeMinutes: 30, ...over,
 })
 

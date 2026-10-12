@@ -13,6 +13,7 @@
 // REGRAS DO GATE: nenhum socket (transport.request do núcleo mockado), nenhum banco (pool/conn/repositório/erp mockados; o
 // script `migrate-from-setes-api` roda INTEIRO contra um pool FALSO — molde do `adversarial-f1r10.test.ts`), nenhuma
 // migration executada (a 002 é LIDA do disco e interpretada em memória), nenhum script que fale com o fisco.
+import { setesApiPath } from './voice-kind-fence'   // D-F117: SETES_API_DIR, falha alto
 import { withRecord } from './fixture-record'   // NE-1a (D-NE56): a tentativa traz o FATO do registro
 import fs from 'fs'
 import os from 'os'
@@ -362,8 +363,8 @@ describe('ACHADO R13-02 (LOW) — backfill da 002 (o MESMO da 067 do setes-api) 
       { kind: 'C', source: 'Q', message: 'Cancelada no fisco: cliente desistiu', code: null },
     ]
     expect(applyBackfill(MIGRATION_002, rows).map(r => r.code)).toEqual(['105102', '101101', null])
-    const m067 = path.join(__dirname, '..', '..', '..', 'setes-api', 'src', 'migrations', 'sql', '067_fiscal_cancel_code_and_cancel_waiver.sql')
-    if (fs.existsSync(m067)) expect(applyBackfill(m067, rows)).toEqual(applyBackfill(MIGRATION_002, rows))
+    const m067 = setesApiPath('src', 'migrations', 'sql', '067_fiscal_cancel_code_and_cancel_waiver.sql')   // D-F117: tem de existir
+    expect(applyBackfill(m067, rows)).toEqual(applyBackfill(MIGRATION_002, rows))
   })
 })
 

@@ -2,7 +2,7 @@ import {
   Pool, PoolConnection, HttpError, ErrorCodes, logger, withTransaction, isDeadlock, isLockWaitTimeout,
   MasterKeyRing, FiscalStorage, OpenedIssuer, openIssuer, nextDpsNumber, erp, AuthorityHttpError,
   signXml, isLocalCredentialError, toDbDateTime, nowIsoIn, withZoneWall, DEFAULT_TIME_ZONE,
-  isLiveTransmission, isAuthorized, fiscalStateOf, localCancelPending, isSubstitutionCancel, CANCEL_EVENT_CODES, reconfirmationCandidate, currentOf,
+  isLiveTransmission, isAuthorized, fiscalStateOf, localCancelPending, isSubstitutionCancel, CANCEL_EVENT_CODES, reconfirmationVerdict, ReconfirmReason, currentOf,
   acquireRefreshLease, releaseRefreshLease, renewRefreshLease, getIssuer, newCrashRef, contentionToHttpError, emissionStillInErp, SERVICE_ISSUER_MODEL,
   ServiceFiscalState, TransmissionEventKind, TransmissionSource, AuthorityEnvironment, AuthorityContext, Queryable, runShortCommand,
   tagAmbiguous, ambiguousCauseOf, invoiceRef, InvoiceRef, InvoiceScope, InvoiceTx, withInvoiceTx as withLockedInvoice,
@@ -692,6 +692,12 @@ export interface ReconfirmResult {
   found:     boolean
   attempt:   number | null
   accessKey: string | null
+  /**
+   * D-F109 (Rodada 1 da F2a): o VEREDITO da reconferência DEPOIS desta chamada — a MESMA regra que o plano de cancelamento do setes-api
+   * exige (`reconfirmationVerdict` do núcleo): `provada` libera o cancelamento local; `nao-exigida` = nada a provar (ou a NFS-e foi
+   * achada e reconciliada); os demais motivos dizem por que ainda não.
+   */
+  verdict:   ReconfirmReason
 }
 
 /**
@@ -707,19 +713,33 @@ export async function reconfirmBeforeLocalCancel(deps: NfseDeps, actor: Actor, r
   const life = await erp.invoiceLife(deps.pool, s, ref)
   if (!life) throw new HttpError(404, `Nota ${invoiceId} não encontrada`, undefined, ErrorCodes.INVOICE_NOT_FOUND)
   const { transmissions } = await listLifeTransmissions(deps.pool, ref, life.lifeEvent)
-  const cand = reconfirmationCandidate(transmissions)
-  if (!cand) return { invoiceId, needed: false, found: false, attempt: null, accessKey: null }
+  // D-F109 (= Q-F115 (b), Rodada 1 da F2a): o VEREDITO do núcleo decide, com a barreira ANTES da prova (nota (1) da F2a) — com tentativa
+  // VIVA na vida a reconferência carimbaria um E2404 que não prova (o app entraria no laço "reconfira"): nada vai ao fisco
+  const before = reconfirmationVerdict(transmissions)
+  if (before.reason === 'irma-viva') {
+    // a MESMA mensagem do transmitir com a tentativa viva (K = cancelamento em voo; sem voz/S = transmissão em andamento). `irma-viva` ⇔
+    // há tentativa viva (gates da A1, F2A1-02) — a guarda abaixo nunca dispara; se disparar, 409 legível, nunca TypeError (500)
+    const live = transmissions.find(t => isLiveTransmission(t))
+    throw live ? liveTransmissionError(live)
+      : new HttpError(409, 'Tentativa em andamento nesta nota — consulte a nota antes de reconferir', undefined, ErrorCodes.FISCAL_TRANSMISSION_IN_PROGRESS)
+  }
+  const cand = before.candidate
+  if (!cand) return { invoiceId, needed: false, found: false, attempt: null, accessKey: null, verdict: before.reason }
+  let done: Omit<ReconfirmResult, 'verdict'>
   try {
-    return await reconfirmCandidate(deps, actor, ref, cand, transmissions, life.lifeEvent)
+    done = await reconfirmCandidate(deps, actor, ref, cand, transmissions, life.lifeEvent)
   } catch (err) {
     logAmbiguousFiscal('reconferencia', { institutionId, invoiceId, attempt: cand.attempt }, err)   // D-F91
     throw err
   }
+  // o veredito DEPOIS (o carimbo do E2404 ou a reconciliação mudaram a vida) — leitura do banco, fora do alarme do fisco
+  const after = await listLifeTransmissions(deps.pool, ref, life.lifeEvent)
+  return { ...done, verdict: reconfirmationVerdict(after.transmissions).reason }
 }
 
 async function reconfirmCandidate(
   deps: NfseDeps, actor: Actor, ref: InvoiceRef, cand: TransmissionRow, transmissions: TransmissionRow[], lifeEvent: number | null,
-): Promise<ReconfirmResult> {
+): Promise<Omit<ReconfirmResult, 'verdict'>> {
   const { institutionId } = actor
   const { invoiceId } = ref
   const opened = await openIssuer(estDeps(deps), institutionId, SERVICE_MODEL, { schemaName: actor.schemaName })

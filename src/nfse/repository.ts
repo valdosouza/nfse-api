@@ -38,6 +38,8 @@ export interface TransmissionRow {
   /** Idade da reserva em minutos, NO BANCO (MEDIUM-2: nunca Date.now() contra string do MySQL). */
   ageMinutes:     number | null
   lastQueriedAt:  string | null
+  /** D-F90: último E2404 explícito a uma consulta desta tentativa — a PROVA da reconferência (o veredito da D-F109 a lê; nunca opcional — R20-02). */
+  nfseNotGeneratedAt: string | null
   lastEvent:      number | null
   lastKind:       TransmissionEventKind | null
   lastCode:       string | null
@@ -83,6 +85,7 @@ const TX_SELECT = `
          DATE_FORMAT(t.created_at, '%Y-%m-%d %H:%i:%s') AS createdAt,
          TIMESTAMPDIFF(MINUTE, t.created_at, NOW()) AS ageMinutes,
          DATE_FORMAT(t.last_queried_at, '%Y-%m-%d %H:%i:%s') AS lastQueriedAt,
+         DATE_FORMAT(t.nfse_not_generated_at, '%Y-%m-%d %H:%i:%s') AS nfseNotGeneratedAt,
          le.event AS lastEvent, le.kind AS lastKind, le.authority_code AS lastCode, le.message AS lastMessage, le.source AS lastSource,
          DATE_FORMAT(le.dh, '%Y-%m-%d %H:%i:%s') AS lastDh,
          DATE_FORMAT(le.created_at, '%Y-%m-%d %H:%i:%s') AS lastEventAt,
@@ -109,16 +112,23 @@ export function mapTx(r: any): TransmissionRow {
   if (r.authorityRecorded !== 'S' && r.authorityRecorded !== 'N') {
     throw new Error(`Linha de tentativa sem authorityRecorded ('S'/'N') — SELECT sem a definição da família? (recebido: ${JSON.stringify(r.authorityRecorded)})`)
   }
+  // gates da A1 da F2a: o ambiente decide registro fiscal e prova — fora de H/P falha ALTO (antes virava 'H' calado; o CHECK da 005 fecha o
+  // banco, o mapa fecha a projeção — M4 dos gates da NE-1a); a PROVA (D-F90) tem de vir no SELECT (R20-02: projeção que a esquece não pode
+  // virar "sem E2404" calado — laço "reconfira")
+  if (r.environment !== 'P' && r.environment !== 'H') {
+    throw new Error(`Linha de tentativa sem environment ('P'/'H') — projeção torta? (recebido: ${JSON.stringify(r.environment)})`)
+  }
+  if (!('nfseNotGeneratedAt' in r)) throw new Error('Linha de tentativa sem nfseNotGeneratedAt — SELECT sem a prova da reconferência (D-F90)?')
   if ((r.authorityRecorded === 'S') !== (r.accessKey != null)) {
     throw new Error(`Linha de tentativa INCOERENTE: authorityRecorded=${r.authorityRecorded} com chave ${r.accessKey == null ? 'ausente' : 'presente'} (NFS-e: registro ⇔ chave)`)
   }
   return {
     institutionId: Number(r.institutionId), invoiceId: Number(r.invoiceId), attempt: Number(r.attempt),
-    lifeEvent: Number(r.lifeEvent), environment: r.environment === 'P' ? 'P' : 'H',
+    lifeEvent: Number(r.lifeEvent), environment: r.environment,
     serie: r.serie ?? null, dpsNumber: n(r.dpsNumber), dpsId: r.dpsId ?? null,
     accessKey: r.accessKey ?? null, authorityRecorded: r.authorityRecorded === 'S',
     nfseNumber: r.nfseNumber ?? null, dhProc: r.dhProc ?? null, createdAt: r.createdAt ?? null,
-    ageMinutes: n(r.ageMinutes), lastQueriedAt: r.lastQueriedAt ?? null,
+    ageMinutes: n(r.ageMinutes), lastQueriedAt: r.lastQueriedAt ?? null, nfseNotGeneratedAt: r.nfseNotGeneratedAt ?? null,
     lastEvent: n(r.lastEvent), lastKind: r.lastKind ?? null, lastCode: r.lastCode ?? null, lastMessage: r.lastMessage ?? null,
     lastSource: r.lastSource ?? null, lastDh: r.lastDh ?? null, lastEventAt: r.lastEventAt ?? null,
     lastEventAgeMinutes: n(r.lastEventAgeMinutes),

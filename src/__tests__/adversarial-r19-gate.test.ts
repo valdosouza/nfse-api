@@ -18,6 +18,7 @@
 // copiado do `adversarial-r18-gate.test.ts`), nenhuma migration, nada que fale com o fisco.
 // ⚠️ O log do TRANSPORTE é o `logger` REAL do núcleo (`fiscal-api/src/log/logger.ts`) — o mock do índice `fiscal-api` não o pega
 // (o "NENHUM log" do R18-02 olhava só o do índice); aqui os dois são capturados (`allLogs`).
+import { setesApiPath } from './voice-kind-fence'   // D-F117: SETES_API_DIR, falha alto
 import { withRecord } from './fixture-record'   // NE-1a (D-NE56): a tentativa traz o FATO do registro
 import fs from 'fs'
 import os from 'os'
@@ -434,8 +435,8 @@ describe('RESISTIU — D-F98: cerca estática da nfse-api (todo produtor do amb�
     }
   })
   it('resistiu: ESPELHO — os pares (causa, rótulo) do adaptador da nfse-api são os MESMOS do adaptador do setes-api (caminho de produção até a F2a)', () => {
-    const mirror = path.resolve(PROJECT_ROOT, '..', 'setes-api', 'src', 'shared', 'tax-authority', 'adapters', 'adn.ts')
-    if (!fs.existsSync(mirror)) return
+    // D-F117: o espelho TEM de existir até a A3 da F2a (que o remove — e revisa esta cerca na mesma entrega)
+    const mirror = setesApiPath('src', 'shared', 'tax-authority', 'adapters', 'adn.ts')
     expect(causePairs(path.join(SRC_ROOT, 'authority/adn.ts'))).toEqual(causePairs(mirror))
   })
 })
