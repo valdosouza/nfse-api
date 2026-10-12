@@ -28,7 +28,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import ts from 'typescript'
-import { tsProducesS, voiceFenceScope, setesApiPath, relWorkspace } from './voice-kind-fence'
+import { tsProducesS, voiceFenceScope, setesApiPath, setesApiPathUntilF2a, setesApiSources, relWorkspace } from './voice-kind-fence'
 import * as fiscal from 'fiscal-api'
 import * as repo from '../nfse/repository'
 import type { TransmissionEventInput } from '../nfse/repository'
@@ -197,7 +197,9 @@ const SRC_ROOT = path.resolve(__dirname, '..')
 const PROJECT_ROOT = path.resolve(SRC_ROOT, '..')
 const WORKSPACE = path.resolve(PROJECT_ROOT, '..')
 const R20_FILE = path.join(SRC_ROOT, '__tests__', 'adversarial-r20-gate.test.ts')
-const SETES_COMPOSITION = setesApiPath('src', 'shared', 'invoice-transmission', 'invoice-transmission.ts')   // D-F117: tem de existir
+// D-F117 revisto na A3 da F2a: a composição fiscal do setes-api existe até a A3 (que a remove); depois, null = cerca do "depois"
+const SETES_COMPOSITION = setesApiPathUntilF2a('src', 'shared', 'invoice-transmission', 'invoice-transmission.ts')
+const SETES_IT = setesApiPathUntilF2a('src', 'shared', 'invoice-transmission')
 const walkTs = (dir: string): string[] => (!fs.existsSync(dir) ? [] : fs.readdirSync(dir, { withFileTypes: true }).flatMap(d =>
   d.isDirectory() ? (d.name === '__tests__' || d.name === 'node_modules' ? [] : walkTs(path.join(dir, d.name))) : d.name.endsWith('.ts') ? [path.join(dir, d.name)] : []))
 const uncomment = (code: string) => code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
@@ -291,9 +293,9 @@ describe('ATAQUE 1 — ESCAPE da cerca da D-F102: a promessa é "a cerca quebra 
     expect(SYNTACTIC.filter(([, src]) => !astFlags(src)).map(([l]) => l)).toEqual([])
   })
   it('resistiu: a alternativa por AST NÃO acusa nada no código REAL — nem no conjunto da cerca, nem nos escritores fora dela (scripts, setes-api) — e pega a forma canônica', () => {
-    const extra = [path.join(PROJECT_ROOT, 'scripts'), setesApiPath('src', 'shared', 'invoice-transmission')].flatMap(walkTs)
+    const extra = [path.join(PROJECT_ROOT, 'scripts'), ...(SETES_IT ? [SETES_IT] : [])].flatMap(walkTs)
     const all = [...new Set([...fenceScope(), ...extra.map(f => path.resolve(f))])].filter(f => fs.existsSync(f))
-    expect(all.length).toBeGreaterThan(40)
+    expect(all.length).toBeGreaterThan(SETES_IT ? 40 : 25)              // sem a composição do setes-api (F2a), o conjunto encolhe
     expect(all.filter(f => astFlags(read(f))).map(rel)).toEqual([])
     expect(astFlags(`await insertTransmissionEvent(conn, i, n, a, u, { kind: 'S', source: 'P' })`)).toBe(true)
     expect(astFlags(`const r = await conn.query(\`SELECT 1 FROM tb_invoice_service_transmission_event WHERE kind IN ('S','K')\`)`)).toBe(false)   // leitor não é produtor
@@ -367,7 +369,7 @@ describe('ATAQUE 1 — ESCAPE da cerca da D-F102: a promessa é "a cerca quebra 
     const candidates = [
       ...walkTs(SRC_ROOT), ...walkTs(path.join(PROJECT_ROOT, 'scripts')), ...sqlUnder(path.join(SRC_ROOT, 'migrations', 'sql')),
       ...walkTs(path.join(WORKSPACE, 'fiscal-api', 'src')), ...sqlUnder(path.join(WORKSPACE, 'fiscal-api', 'src', 'migrations', 'sql')),
-      ...walkTs(setesApiPath('src', 'shared', 'invoice-transmission')),
+      ...(SETES_IT ? walkTs(SETES_IT) : []),
       ...sqlUnder(setesApiPath('src', 'migrations', 'sql')),
     ]
     // alvo com ou sem qualificador (`${s}`.x, `x`, x — com a crase escapada `\`` dentro de template)
@@ -378,7 +380,7 @@ describe('ATAQUE 1 — ESCAPE da cerca da D-F102: a promessa é "a cerca quebra 
   it('[CORRIGIDO na sessão — R21-01] os escritores que ficavam FORA — a cópia do `migrate:setes`, as migrations .sql e o repositório do setes-api — agora estão no conjunto da cerca', () => {
     const scope = fenceScope()
     for (const f of ['nfse-api/scripts/migrate-from-setes-api.ts', 'nfse-api/src/migrations/sql/002_cancel_event_code.sql',
-      'setes-api/src/shared/invoice-transmission/transmission.repository.ts']) {
+      ...(SETES_IT ? ['setes-api/src/shared/invoice-transmission/transmission.repository.ts'] : [])]) {   // o do setes-api morre na A3 da F2a
       expect([...scope].map(rel)).toContain(f)
     }
   })
@@ -425,7 +427,13 @@ describe('ATAQUE 2 — os escritores de HOJE: nenhum grava S nem kind fora do do
     expect(policy).toMatch(/await write\(itx, attempt, userId, \{ kind: 'N', source: 'P', dh: null, message: message\.slice\(0, 255\) \}\)/)
     expect(policy.match(/\bkind: '[A-Z]'/g)).toEqual(["kind: 'K'", "kind: 'N'"])
   })
-  it('resistiu: setes-api (a composição de produção, lida como texto) — idem', () => {
+  it('resistiu: setes-api (a composição de produção, lida como texto) — idem; com a F2a aplicada, o setes-api não chama escritor da voz nenhum', () => {
+    if (!SETES_COMPOSITION) {
+      // código de PRODUÇÃO (src) — os scripts de prova da F2a atacam a origem congelada num banco DESCARTÁVEL (prove-f2a-passivo.ts)
+      expect(setesApiSources().filter(f => rel(f).startsWith('setes-api/src/'))
+        .filter(f => /\binsertTransmissionEvent\b|tb_invoice_service_transmission_event/.test(read(f))).map(rel)).toEqual([])
+      return
+    }
     const calls = writerCalls(read(SETES_COMPOSITION))
     expect(calls.length).toBeGreaterThanOrEqual(5)
     expect(calls.filter(c => !c.ok)).toEqual([])
@@ -488,7 +496,7 @@ describe('ATAQUE 4 — "quem criar produtor de S dá a ela a saída da D-F51": o
     const code = uncomment(read(path.join(SRC_ROOT, 'nfse', 'transmission.ts')))
     const body = code.slice(code.indexOf('async function recordInterruptedFailure'), code.indexOf('async function recordInterruptedFailure') + 800)
     expect(body).toMatch(/if \(!cur \|\| cur\.lastKind !== null\) return \{ recorded: false, current: cur \}/)
-    expect(read(SETES_COMPOSITION)).toMatch(/if \(!cur \|\| cur\.attempt !== tx\.attempt \|\| cur\.lastKind !== null\) return/)
+    if (SETES_COMPOSITION) expect(read(SETES_COMPOSITION)).toMatch(/if \(!cur \|\| cur\.attempt !== tx\.attempt \|\| cur\.lastKind !== null\) return/)
   })
   it('contexto: estender SÓ o predicado (o que o aviso sugere) cai no ramo "perdeu a corrida" A CADA passada — devolve S sem carimbar `last_queried_at` nem o E2404: a S nunca sai do topo do rodízio (consulta o fisco toda passada — "monopoliza o rodízio") e a prova nunca volta', async () => {
     // a tentativa VISTA fora da trava parece "sem voz e velha" (o que o predicado estendido diria da S); sob a trava, ela tem voz S
@@ -510,7 +518,7 @@ describe('ATAQUE 4 — "quem criar produtor de S dá a ela a saída da D-F51": o
     const sites = [
       near(path.join(SRC_ROOT, 'nfse', 'transmission.ts'), 'export function isInterruptedInFlight'),
       near(path.join(WORKSPACE, 'fiscal-api', 'src', 'voice', 'kinds.ts'), 'export type TransmissionEventKind'),
-      near(SETES_COMPOSITION, 'export function isInterruptedInFlight'),
+      ...(SETES_COMPOSITION ? [near(SETES_COMPOSITION, 'export function isInterruptedInFlight')] : []),   // morre na A3 da F2a
     ]
     for (const s of sites) {
       expect(s).toMatch(/D-F102/)

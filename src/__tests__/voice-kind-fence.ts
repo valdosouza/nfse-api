@@ -45,6 +45,32 @@ export function setesApiPath(...parts: string[]): string {
   mustExist(p)
   return p
 }
+/**
+ * F2a, etapa A3 (D-F110/D-F50): o setes-api com a F2a APLICADA = a migration de nome FIXO `NNN_f2a_fiscal_passivo.sql` no disco do
+ * SETES_API_DIR (o mesmo nome que a cópia do `migrate:setes` confere em `_migrations` antes do ato da virada). Gêmeo do núcleo.
+ */
+export function setesApiF2aApplied(): boolean {
+  const dir = path.join(SETES_API_DIR, 'src', 'migrations', 'sql')
+  return fs.existsSync(dir) && fs.readdirSync(dir).some(f => /^\d{3}_f2a_fiscal_passivo\.sql$/.test(f))
+}
+/**
+ * D-F117 revisto na A3: caminho que EXISTE até a A3 da F2a e MORRE nela. Existe → o caminho (a cerca do "antes" vale). Não existe → só com
+ * a F2a APLICADA (senão falha ALTO, como o `mustExist`) e devolve null: quem chama confere o invariante do "depois" (o código fiscal saiu
+ * do setes-api). Árvore sem o arquivo e sem a F2a = setes-api QUEBRADO, nunca "a cerca passa calada".
+ */
+export function setesApiPathUntilF2a(...parts: string[]): string | null {
+  const p = path.join(SETES_API_DIR, ...parts)
+  if (fs.existsSync(p)) return p
+  if (!setesApiF2aApplied()) {
+    throw new Error(`D-F117: a cerca vigia ${p}, que NÃO existe, e o setes-api em ${SETES_API_DIR} não tem a F2a aplicada `
+      + '(migration NNN_f2a_fiscal_passivo.sql) — arquivo sumido fora da A3, ou SETES_API_DIR errado')
+  }
+  return null
+}
+/** `.ts` do setes-api (src + scripts, sem testes) — as cercas do "depois da F2a" conferem que nada do código fiscal sobrou. */
+export function setesApiSources(): string[] {
+  return [...walkTs(path.join(SETES_API_DIR, 'src')), ...walkTs(path.join(SETES_API_DIR, 'scripts'))]
+}
 /** Nome relativo ao workspace, com o setes-api SEMPRE como `setes-api/…` (mesmo numa worktree). */
 export function relWorkspace(file: string): string {
   const abs = path.resolve(file)
@@ -298,7 +324,9 @@ export function writerCallFlags(code: string, opts: { allowSqlWriter?: boolean; 
  */
 export const VOICE_SQL_WRITERS = [
   'nfse-api/scripts/migrate-from-setes-api.ts',
-  'setes-api/src/shared/invoice-transmission/transmission.repository.ts',
+  // F2a, etapa A3 (D-F110): o escritor do setes-api existe até a A3 (que o remove); depois ele SAI da lista (o setes-api não escreve a voz)
+  ...(setesApiPathUntilF2a('src', 'shared', 'invoice-transmission', 'transmission.repository.ts')
+    ? ['setes-api/src/shared/invoice-transmission/transmission.repository.ts'] : []),
 ]
 /** O ÚNICO lugar fora do núcleo que declara uma família da voz (`defineVoiceFamily`): um 2º descritor da tabela da NFS-e com outra lista
  *  de escrita (com S) furaria a D-F106 sem SQL nenhum — a cerca o pega (NE-1a parte 2). */
@@ -329,8 +357,8 @@ export function voiceFenceScope(): string[] {
     ...walkTs(path.join(W, 'nfse-api', 'src')), ...walkTs(path.join(W, 'nfse-api', 'scripts')),
     ...sqlUnder(path.join(W, 'nfse-api', 'src', 'migrations', 'sql')),
     ...walkTs(path.join(W, 'fiscal-api', 'src')), ...sqlUnder(path.join(W, 'fiscal-api', 'src', 'migrations', 'sql')),
-    // D-F117: o setes-api por `SETES_API_DIR`, e a pasta TEM de existir (a A3 da F2a remove a composição — revisar a cerca junto)
-    ...walkTs(setesApiPath('src', 'shared', 'invoice-transmission')),
+    // D-F117: o setes-api por `SETES_API_DIR`; a pasta existe até a A3 da F2a (que a remove) — depois, só com a F2a aplicada (D-F110)
+    ...(() => { const it = setesApiPathUntilF2a('src', 'shared', 'invoice-transmission'); return it ? walkTs(it) : [] })(),
     ...sqlUnder(setesApiPath('src', 'migrations', 'sql')),
   ].map(f => path.resolve(f)))]
 }
