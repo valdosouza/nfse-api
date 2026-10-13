@@ -396,6 +396,8 @@ async function resyncInstitution(c: PoolConnection, keyring: MasterKeyRing, stor
 
 /** Nome FIXO da migration da F2a no setes-api (arquivo `NNN_f2a_fiscal_passivo.sql` → `_migrations.name`) — D-F50. */
 export const F2A_MIGRATION_NAME = 'f2a_fiscal_passivo'
+/** A LÁPIDE do aborto da F2a no setes-api (D-F153/D-F162 — versão sentinela `F2A-ABORT`): a F2a foi ABORTADA no schema. */
+export const F2A_TOMBSTONE_NAME = 'f2a_fiscal_passivo_abortada'
 
 async function setesApiF2aApplied(q: { query: (sql: string, p?: unknown[]) => Promise<any> }, s: string): Promise<boolean> {
   try {
@@ -405,6 +407,17 @@ async function setesApiF2aApplied(q: { query: (sql: string, p?: unknown[]) => Pr
     if (err?.errno === 1146 || err?.code === 'ER_NO_SUCH_TABLE') return false    // schema sem controle de migrations = sem F2a
     throw err
   }
+}
+
+/**
+ * Sem a F2a, a LÁPIDE diz se ela foi ABORTADA aqui (D-F153/D-F162) — só muda a FRASE (como voltar), a recusa já está decidida pela
+ * ausência; por isso uma falha desta leitura não muda nada (gate socrático da Rodada 6, R6-SOC-10).
+ */
+async function setesApiF2aAborted(q: { query: (sql: string, p?: unknown[]) => Promise<any> }, s: string): Promise<boolean> {
+  try {
+    const [rows] = await q.query(`SELECT name FROM \`${s}\`._migrations WHERE name = ? LIMIT 1`, [F2A_TOMBSTONE_NAME])
+    return Array.isArray(rows) && rows.some((r: any) => r?.name === F2A_TOMBSTONE_NAME)
+  } catch { return false }
 }
 
 async function cutover(pool: ReturnType<typeof createFiscalPool>, keyring: MasterKeyRing, storage: FsFiscalStorage, institutionId: number): Promise<void> {
@@ -419,9 +432,14 @@ async function cutover(pool: ReturnType<typeof createFiscalPool>, keyring: Maste
   // cunhar nDPS já usados — R2-2). Leitura em autocommit, ANTES da transação. No --dry-run vira BLOQUEIO no relatório (o
   // ensaio segue); no ato real, recusa. O rollback do DEPLOY do setes-api depois da virada continua proibido por procedimento.
   const f2aMissing = !(await setesApiF2aApplied(pool, s))
+  // a LÁPIDE (D-F153/D-F162) = a F2a foi ABORTADA aqui: a mesma recusa, com a frase de COMO voltar (R6-SOC-10)
+  const f2aAborted = f2aMissing && (await setesApiF2aAborted(pool, s))
   if (f2aMissing && !DRY) {
-    throw new Error(`${s}: a F2a do setes-api não está aplicada neste schema (migration "${F2A_MIGRATION_NAME}" ausente em _migrations) — `
-      + 'a tela antiga do Emissor fiscal reviveria a habilitação SE aposentada; aplique a F2a antes da virada (D-F50)')
+    throw new Error(f2aAborted
+      ? `${s}: a F2a do setes-api foi ABORTADA neste schema (lápide "${F2A_TOMBSTONE_NAME}" em _migrations — D-F153/D-F162) — voltar à F2a = `
+        + '`scripts/f2a-abort-before-cutover.ts <schema> <institutionId> --retirar-lapide --vai` no setes-api e o merge de novo, antes da virada (D-F50)'
+      : `${s}: a F2a do setes-api não está aplicada neste schema (migration "${F2A_MIGRATION_NAME}" ausente em _migrations) — `
+        + 'a tela antiga do Emissor fiscal reviveria a habilitação SE aposentada; aplique a F2a antes da virada (D-F50)')
   }
   // D-F110 + F2A3-ADV-04: o nome da migration não basta — os 9 gatilhos de TRAVA conferidos pelo NOME (autocommit, ANTES da transação);
   // faltando = BLOQUEIO no ensaio, recusa no ato (sem eles o ERP antigo voltaria a escrever a voz e a reviver a SE aposentada)
@@ -429,10 +447,12 @@ async function cutover(pool: ReturnType<typeof createFiscalPool>, keyring: Maste
   if (triggersMissing.length && !DRY) {
     throw new Error(`${s}: gatilhos de TRAVA da F2a faltando ou diferentes (${triggersMissing.join('; ')}) — "${F2A_MIGRATION_NAME}" consta em `
       + '_migrations, mas o ERP não está congelado (DROP TRIGGER/dump sem gatilhos/restauração, ou o usuário do ato sem o privilégio TRIGGER); '
-      + 'reaplique a migration (é re-executável) antes da virada (D-F110)')
+      + 'reaplique a trava antes da virada — `scripts/f2a-reapply-freeze.ts <schema> --vai` no setes-api (D-F152; D-F110)')
   }
   const bloqueios = [
-    ...(f2aMissing ? [`D-F50: a virada REAL seria recusada — migration "${F2A_MIGRATION_NAME}" (F2a do setes-api) ausente em ${s}._migrations`] : []),
+    ...(f2aMissing ? [f2aAborted
+      ? `D-F50: a virada REAL seria recusada — a F2a do setes-api foi ABORTADA em ${s} (lápide "${F2A_TOMBSTONE_NAME}" — D-F153/D-F162)`
+      : `D-F50: a virada REAL seria recusada — migration "${F2A_MIGRATION_NAME}" (F2a do setes-api) ausente em ${s}._migrations`] : []),
     ...(triggersMissing.length ? [`D-F110: a virada REAL seria recusada — gatilhos de TRAVA faltando/diferentes em ${s}: ${triggersMissing.join('; ')}`] : []),
   ]
   const c = await pool.getConnection()

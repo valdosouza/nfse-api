@@ -393,6 +393,24 @@ describe('D-F50 — a virada confere `_migrations.name = f2a_fiscal_passivo` no 
     expect(dry.conn.commit).not.toHaveBeenCalled()
   })
 
+  it('R6-SOC-10 (gate socrático da Rodada 6): a F2a ABORTADA (lápide D-F153/D-F162) → a MESMA recusa, com a frase de COMO voltar; o --dry-run diz "ABORTADA"', async () => {
+    const abortedDb = (): Handler => {
+      const base = cutoverDb(() => [[]])                                           // UM banco falso por execução (ele guarda estado)
+      return (sql, p) => (/\._migrations WHERE name = \?/.test(sql)
+        ? ((p as any[])?.[0] === 'f2a_fiscal_passivo_abortada' ? [[{ name: 'f2a_fiscal_passivo_abortada' }]] : [[]])
+        : base(sql, p))
+    }
+    const aborted = abortedDb()
+    const real = await runScript([...CUT, '--vai'], aborted)
+    expect(real.exitCode).toBe(1)
+    expect(real.errors.join(' ')).toMatch(/F2a do setes-api foi ABORTADA[\s\S]*--retirar-lapide --vai/)
+    expect(real.conn.beginTransaction).not.toHaveBeenCalled()
+    expect(real.sqls.some(s => isWrite(s.sql))).toBe(false)
+    const dry = await runScript([...CUT, '--dry-run'], abortedDb())
+    expect(dry.exitCode).toBeNull()
+    expect(dry.logs.join(' ')).toMatch(/"bloqueios"[\s\S]*ABORTADA/)
+  })
+
   it('[CORRIGIDO — gates da A3, F2A3-ADV-04] F2a aplicada mas um gatilho de TRAVA faltando (DROP TRIGGER) ou sem nenhum visível (usuário sem TRIGGER) → o ato REAL recusa antes da transação; o --dry-run reporta o bloqueio D-F110', async () => {
     const withTriggers = (rows: object[]): Handler => {
       const base = cutoverDb(() => [[{ x: 1 }]])

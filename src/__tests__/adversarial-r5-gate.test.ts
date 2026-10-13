@@ -62,5 +62,11 @@ describe('o RAIO de uma linha incoerente', () => {
     const ok = await listRefreshCandidates(q as any, 'setes_setes', { institutionId: 1, terminal: 0 }, 10, 10, 50, {}, row => { seen.push(row) })
     expect([ok.map(t => t.invoiceId), seen]).toEqual([[7401], [{ invoiceId: 7402, attempt: 1 }]])
     expect(fnBody('refreshOpenServiceTransmissions')).toMatch(/INCOERENTE pulada[\s\S]*touchQueriedAt/)
+    // gate socrático da Rodada 6 (R6-SOC-07): só a INCOERÊNCIA é pulada — a projeção torta (sem environment) relança mesmo com o aviso
+    const broken = { query: jest.fn().mockResolvedValue([[raw({ invoiceId: 7401 }), raw({ invoiceId: 7403, environment: undefined })], []]) }
+    const none: unknown[] = []
+    await expect(listRefreshCandidates(broken as any, 'setes_setes', { institutionId: 1, terminal: 0 }, 10, 10, 50, {}, row => { none.push(row) }))
+      .rejects.toThrow(/sem environment/)
+    expect(none).toEqual([])
   })
 })

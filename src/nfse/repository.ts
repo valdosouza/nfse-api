@@ -108,6 +108,15 @@ function n(v: unknown): number | null { return v === null || v === undefined ? n
  * coluna do registro tem de vir ('S'/'N') e COERENTE com a chave (na NFS-e registro ⇔ chave, pela definição da view 004): linha sem a
  * coluna (SELECT novo que a esqueça) ou incoerente falha ALTO, nunca vira "não registrada" calada.
  */
+/**
+ * A linha de tentativa é INCOERENTE (registro ⇔ chave; D-F136 A/N ⇒ registro; D-F154 C/K ⇒ registro) — dado torto, não projeção torta.
+ * Tipada para o rodízio pular SÓ ela (D-F164); erro ESTRUTURAL (SELECT sem a definição da família) relança — senão uma regressão do
+ * `TX_SELECT` faria o rodízio "pular" e carimbar TODAS as linhas (gate socrático da Rodada 6, R6-SOC-07).
+ */
+export class IncoherentTransmissionError extends Error {
+  constructor(message: string) { super(message); this.name = 'IncoherentTransmissionError' }
+}
+
 export function mapTx(r: any): TransmissionRow {
   if (r.authorityRecorded !== 'S' && r.authorityRecorded !== 'N') {
     throw new Error(`Linha de tentativa sem authorityRecorded ('S'/'N') — SELECT sem a definição da família? (recebido: ${JSON.stringify(r.authorityRecorded)})`)
@@ -120,18 +129,18 @@ export function mapTx(r: any): TransmissionRow {
   }
   if (!('nfseNotGeneratedAt' in r)) throw new Error('Linha de tentativa sem nfseNotGeneratedAt — SELECT sem a prova da reconferência (D-F90)?')
   if ((r.authorityRecorded === 'S') !== (r.accessKey != null)) {
-    throw new Error(`Linha de tentativa INCOERENTE: authorityRecorded=${r.authorityRecorded} com chave ${r.accessKey == null ? 'ausente' : 'presente'} (NFS-e: registro ⇔ chave)`)
+    throw new IncoherentTransmissionError(`Linha de tentativa INCOERENTE: authorityRecorded=${r.authorityRecorded} com chave ${r.accessKey == null ? 'ausente' : 'presente'} (NFS-e: registro ⇔ chave)`)
   }
   // D-F136 também AQUI (gate socrático do delta da Rodada 4 — F2AR4-SOC-06): o mesmo invariante do mapa comum do núcleo — voz A/N ⇒
   // registro. Antes a mesma linha torta dava 503 no setes-api e `state: authorized` + `currentAttempt` na nfse-api, com a barreira de
   // nova tentativa livre. Dois leitores, uma resposta.
   if (AUTHORIZED_KINDS.has(r.lastKind ?? '') && r.authorityRecorded !== 'S') {
-    throw new Error(`Linha de tentativa INCOERENTE: voz ${r.lastKind} (autorizada) SEM registro — a família publica a autorizada sempre registrada (D-F136)`)
+    throw new IncoherentTransmissionError(`Linha de tentativa INCOERENTE: voz ${r.lastKind} (autorizada) SEM registro — a família publica a autorizada sempre registrada (D-F136)`)
   }
   // D-F154 (= Q-F159 (a)): a voz que PRESSUPÕE a autorização (C cancelada, K cancelamento em voo) também exige registro — o mesmo do mapa
   // comum do núcleo (dois leitores, uma resposta)
   if (AUTHORIZATION_PRESUPPOSED_KINDS.has(r.lastKind ?? '') && r.authorityRecorded !== 'S') {
-    throw new Error(`Linha de tentativa INCOERENTE: voz ${r.lastKind} (pressupõe a autorização) SEM registro — só se cancela no fisco o que ele registrou (D-F154)`)
+    throw new IncoherentTransmissionError(`Linha de tentativa INCOERENTE: voz ${r.lastKind} (pressupõe a autorização) SEM registro — só se cancela no fisco o que ele registrou (D-F154)`)
   }
   return {
     institutionId: Number(r.institutionId), invoiceId: Number(r.invoiceId), attempt: Number(r.attempt),
@@ -421,7 +430,8 @@ export async function listRefreshCandidates(
   const out: TransmissionRow[] = []
   for (const r of rows as any[]) {
     try { out.push(mapTx(r)) } catch (err) {
-      onIncoherent({ invoiceId: Number(r.invoiceId), attempt: Number(r.attempt) }, err instanceof Error ? err : new Error(String(err)))
+      if (!(err instanceof IncoherentTransmissionError)) throw err                      // R6-SOC-07: projeção torta falha alto
+      onIncoherent({ invoiceId: Number(r.invoiceId), attempt: Number(r.attempt) }, err)
     }
   }
   return out
