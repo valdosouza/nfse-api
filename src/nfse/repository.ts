@@ -1,6 +1,6 @@
 import {
   PoolConnection, Queryable, TransmissionEventKind, TransmissionSource, TransmissionEnvironment,
-  assertSchema, InvoiceRef, InvoiceScope, LIVE_VOICE_KINDS, AUTHORIZED_KINDS, FINAL_TRANSMISSION_KINDS, sqlKindList,
+  assertSchema, InvoiceRef, InvoiceScope, LIVE_VOICE_KINDS, AUTHORIZED_KINDS, AUTHORIZATION_PRESUPPOSED_KINDS, FINAL_TRANSMISSION_KINDS, sqlKindList,
   InvoiceTx, assertInvoiceTx,
 } from 'fiscal-api'
 import { SERVICE_VOICE_FAMILY } from './voice-family'
@@ -127,6 +127,11 @@ export function mapTx(r: any): TransmissionRow {
   // nova tentativa livre. Dois leitores, uma resposta.
   if (AUTHORIZED_KINDS.has(r.lastKind ?? '') && r.authorityRecorded !== 'S') {
     throw new Error(`Linha de tentativa INCOERENTE: voz ${r.lastKind} (autorizada) SEM registro — a família publica a autorizada sempre registrada (D-F136)`)
+  }
+  // D-F154 (= Q-F159 (a)): a voz que PRESSUPÕE a autorização (C cancelada, K cancelamento em voo) também exige registro — o mesmo do mapa
+  // comum do núcleo (dois leitores, uma resposta)
+  if (AUTHORIZATION_PRESUPPOSED_KINDS.has(r.lastKind ?? '') && r.authorityRecorded !== 'S') {
+    throw new Error(`Linha de tentativa INCOERENTE: voz ${r.lastKind} (pressupõe a autorização) SEM registro — só se cancela no fisco o que ele registrou (D-F154)`)
   }
   return {
     institutionId: Number(r.institutionId), invoiceId: Number(r.invoiceId), attempt: Number(r.attempt),

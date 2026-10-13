@@ -25,3 +25,23 @@ describe('D-F146 — CORS_ORIGINS explícita por ambiente', () => {
     expect(fs.readFileSync(path.join(__dirname, '..', '..', '.env.example'), 'utf8')).toMatch(/^CORS_ORIGINS=http:\/\/localhost:5051$/m)
   })
 })
+
+// D-F154 (= Q-F159 (a), Valdo 2026-10-13): a voz que PRESSUPÕE a autorização (C cancelada, K cancelamento em voo) sem registro é linha
+// incoerente — o `mapTx` falha ALTO como o mapa comum do núcleo (dois leitores, uma resposta); a mesma linha registrada passa.
+describe('D-F154 — C/K ⇒ registro também no mapTx da nfse-api', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { mapTx } = require('../nfse/repository') as typeof import('../nfse/repository')
+  const raw = (over: Record<string, unknown>) => ({
+    institutionId: 1, invoiceId: 7400, attempt: 1, lifeEvent: 1, environment: 'P', serie: '1', dpsNumber: 10, dpsId: 'DPS1',
+    accessKey: null, authorityRecorded: 'N', nfseNumber: null, dhProc: null, createdAt: '2026-10-10 12:00:00', ageMinutes: 1,
+    lastQueriedAt: null, nfseNotGeneratedAt: null, lastEvent: 2, lastKind: 'C', lastCode: '101101', lastMessage: null, lastSource: 'P',
+    lastDh: null, lastEventAt: null, lastEventAgeMinutes: 1, ...over,
+  })
+  it('C e K sem registro → falha ALTO (D-F154); com registro (a chave do fisco) passa', () => {
+    for (const lastKind of ['C', 'K']) {
+      expect(() => mapTx(raw({ lastKind }))).toThrow(/D-F154/)
+      expect(mapTx(raw({ lastKind, authorityRecorded: 'S', accessKey: '4106902'.padEnd(50, '0') })).lastKind).toBe(lastKind)
+    }
+    for (const lastKind of ['R', 'F', 'S', null]) expect(() => mapTx(raw({ lastKind }))).not.toThrow()
+  })
+})
