@@ -6,9 +6,11 @@ import { contextFromEnv } from './context'
 import { createApp } from './app'
 import { MIGRATION_SETS } from './migrations'
 import { assertServiceVoiceDomainsEnforced } from './nfse/voice-family'
+import { assertCorsOrigins } from './cors-origins'
 
 async function main(): Promise<void> {
   const ctx = contextFromEnv()
+  logger.info(`CORS (origens do app — D-F146): ${assertCorsOrigins(ctx.corsOrigins)}`)
   // migrations: núcleo primeiro, depois a família (trava nomeada — duas instâncias sobem juntas — D-F35)
   const applied = await runMigrations(ctx.db, MIGRATION_SETS)
   if (applied.length) logger.info('Migrations aplicadas no boot', { applied })

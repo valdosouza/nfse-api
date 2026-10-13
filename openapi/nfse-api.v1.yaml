@@ -169,6 +169,10 @@ paths:
       parameters:
         - { name: page,     in: query, schema: { type: integer, minimum: 1, maximum: 100000, default: 1 } }
         - { name: pageSize, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
+        - name: interfaceKey
+          in: query
+          description: 'D-F145: só as notas DESTE ramo (o lote da tela de OS pede service-orders) — filtro do SERVIDOR; sem o parâmetro, todos os ramos visíveis; ramo não contratado = lista vazia'
+          schema: { type: string, enum: [service-orders, orders] }
       responses:
         '200':
           description: envelope paginado da casa
@@ -588,6 +592,7 @@ components:
       properties:
         invoiceId: { type: integer }
         state: { type: string, enum: [none, in_flight, authorized, rejected, failed, cancelled, cancel_in_flight] }
+        currentAttempt: { type: integer, nullable: true, description: 'D-F142: a tentativa VIGENTE da vida (currentOf do núcleo — a registrada pelo fisco, senão a última); null = nunca transmitida nesta vida. O app escolhe os botões por state + currentAttempt, nunca por transmissions.last' }
         transmissions: { type: array, items: { $ref: '#/components/schemas/Transmission' } }
         events: { type: array, items: { $ref: '#/components/schemas/Voice' } }
         localCancelPending: { type: boolean, description: 'voz C do fisco sem o C local aplicado pelo setes-api (DERIVADO — D-F28; o app envia o cancelamento ao setes-api)' }

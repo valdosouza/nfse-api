@@ -15,4 +15,10 @@ export const refreshPassDto = z.object({
 export const pendingQueryDto = z.object({
   page:     z.coerce.number().int().min(1).max(100_000).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(25),
+  /**
+   * D-F145 (= Q-F153 (a), Valdo 2026-10-13): o lote é da tela que o pede — o filtro do RAMO é do SERVIDOR (o cliente filtrando uma página
+   * paginada esconderia notas). Sem o parâmetro: todos os ramos visíveis (como antes). Ramo não contratado = lista vazia (nunca 403: a
+   * lista é do que se pode ver).
+   */
+  interfaceKey: z.enum(['service-orders', 'orders']).optional(),
 })

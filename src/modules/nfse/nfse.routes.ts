@@ -33,8 +33,10 @@ export function nfseRoutes(ctx: AppContext): Router {
 
   router.get('/invoices/pending', route('GET /v1/nfse/invoices/pending', async (req, res) => {
     const inst = institutionOf(req)
-    const page = parseWith(pendingQueryDto, req.query)
-    const interfaces = await visibleInterfaces(ctx, inst, BRANCH_INTERFACES)
+    const { interfaceKey, ...page } = parseWith(pendingQueryDto, req.query)
+    const visible = await visibleInterfaces(ctx, inst, BRANCH_INTERFACES)
+    // D-F145: o ramo pedido, dentro do que é visível (não contratado → lista vazia)
+    const interfaces = interfaceKey ? (visible ?? BRANCH_INTERFACES).filter(k => k === interfaceKey) : visible
     // envelope paginado da casa: { ok, data, page, pageSize, total }
     res.status(200).json({ ok: true, ...(await tx.listPending(ctx, actorOf(inst), WEB_TERMINAL, page, interfaces)) })
   }))

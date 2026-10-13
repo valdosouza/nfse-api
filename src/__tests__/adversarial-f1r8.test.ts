@@ -216,6 +216,23 @@ describe('D-F46 — ataques à borda: ramo não contratado, admin, lista vazia, 
     for (const n of NAMES) expect([n, spies[n].mock.calls.length]).toEqual([n, 0])
   })
 
+  it('[D-F145] pendentes com ?interfaceKey: o filtro do RAMO é do servidor, dentro do que é visível; ramo não contratado → lista vazia; valor fora do domínio → 400', async () => {
+    contracted('service-orders', 'orders')
+    const app = createApp(ctx())
+    const admin = { Authorization: `Bearer ${token({ role: 'admin' })}` }
+    expect((await request(app).get('/v1/nfse/invoices/pending?interfaceKey=service-orders').set(admin)).status).toBe(200)
+    expect(spies.listPending).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), WEB, { page: 1, pageSize: 25 }, ['service-orders'])
+    await request(app).get('/v1/nfse/invoices/pending').set(admin)                            // sem o parâmetro: todos os visíveis (como antes)
+    expect(spies.listPending).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), WEB, { page: 1, pageSize: 25 }, ['service-orders', 'orders'])
+    contracted('service-orders')
+    await request(app).get('/v1/nfse/invoices/pending?interfaceKey=orders&page=2').set(admin)
+    expect(spies.listPending).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), WEB, { page: 2, pageSize: 25 }, [])
+    for (const bad of ['order-returns', 'ORDERS', '']) {
+      const r = await request(app).get(`/v1/nfse/invoices/pending?interfaceKey=${encodeURIComponent(bad)}`).set(admin)
+      expect([bad, r.status, r.body.code]).toEqual([bad, 400, 'VALIDATION_FAILED'])
+    }
+  })
+
   it('pendentes: nada contratado → lista VAZIA sem consultar o banco (a lista vazia nunca vira "sem filtro")', async () => {
     contracted()
     spies.listPending.mockRestore()

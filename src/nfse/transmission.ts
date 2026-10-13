@@ -1086,6 +1086,12 @@ export async function refreshOpenServiceTransmissions(
 export interface ServiceFiscalView {
   invoiceId:          number
   state:              ServiceFiscalState
+  /**
+   * D-F142 (= Q-F150 (a), Valdo 2026-10-13): a tentativa VIGENTE da vida (`currentOf` do núcleo — D-N26: a registrada pelo fisco, senão a
+   * última) — o app escolhe os botões pelo `state` + esta tentativa, nunca reimplementa o `currentOf` (`transmissions.last` ≠ D-N26).
+   * null = nunca transmitida nesta vida. Aditivo.
+   */
+  currentAttempt:     number | null
   transmissions:      TransmissionRow[]
   events:             TransmissionEventRow[]
   /** Voz C do fisco com a nota ainda não cancelada no ERP (pendência DERIVADA — D-F28); nunca na substituição (D-F68). */
@@ -1115,7 +1121,7 @@ export async function getServiceFiscalView(deps: NfseDeps, actor: Actor, ref: In
   const txKeys = ['dhProc', 'createdAt', 'lastQueriedAt', 'lastDh', 'lastEventAt'] as const
   const evKeys = ['dh', 'createdAt'] as const
   return {
-    invoiceId, state: fiscalStateOf(current),
+    invoiceId, state: fiscalStateOf(current), currentAttempt: current?.attempt ?? null,
     transmissions: transmissions.map(t => withZoneWall(t, txKeys, zone)),
     events: events.map(e => withZoneWall(e, evKeys, zone)),
     localCancelPending: localCancelPending(current, life.lastKind),

@@ -134,6 +134,8 @@ describe('B — D-NE56 na nfse-api: uma definição, várias leituras', () => {
     const deps: any = { pool: { query: jest.fn(async () => [[]]) }, storage: { find: () => null }, fiscalDb: 'fiscal_api' }
     const v = await getServiceFiscalView(deps, { schemaName: 'setes_setes', institutionId: 1, userId: 7 }, webRef({ schemaName: 'setes_setes', institutionId: 1, userId: 7 }, 6200))
     expect([v.state, v.localCancelPending, v.xmlAvailable]).toEqual(['authorized', false, false])
+    // D-F142 (Rodada 1 da F2b): a visão publica a VIGENTE — a tentativa 1 (registrada), nunca a última da lista (2) que o app pegaria
+    expect([v.currentAttempt, v.transmissions[v.transmissions.length - 1].attempt]).toEqual([1, 2])
     expect(fiscal.erp.invoiceLife).toHaveBeenCalledWith(deps.pool, 'setes_setes', { institutionId: 1, invoiceId: 6200, terminal: WEB_TERMINAL })
   })
   it('[CORRIGIDO na sessão — gate socrático M2] as fixtures da suíte unitária (`tx()` de `transmission.test.ts` e irmãs) agora trazem o FATO (`withRecord` — derivado da chave, como na produção); um objeto SEM o fato passado ao `currentOf` falha ALTO (D-NE66) em vez de escolher a última calado', () => {
