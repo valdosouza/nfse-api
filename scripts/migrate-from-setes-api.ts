@@ -546,6 +546,12 @@ async function cutover(pool: ReturnType<typeof createFiscalPool>, keyring: Maste
   } catch (err) {
     // gate do delta (L6): rollback que falha (conexão morta) não pode esconder a CAUSA RAIZ do ato — molde do r9 da re-sincronia
     try { await c.rollback() } catch (rbErr) { console.error('[migrate:setes] rollback do ato falhou (a conexão morta desfaz sozinha):', (rbErr as Error)?.message ?? rbErr) }
+    // R11-SOC-06 = R11-ADV-01 (gates do delta da Rodada 11): o ENSAIO que falha DENTRO da transação (transmissão viva, ERP sem SE, já
+    // virada, série, pós-condição) ainda imprime os bloqueios D-F50/D-F110 já conferidos — o ato real recusaria PRIMEIRO por eles; sem
+    // isto o operador da janela corrigia uma coisa, ensaiava de novo e só então descobria a outra
+    if (DRY && bloqueios.length) {
+      console.log(JSON.stringify({ dryRun: true, committed: false, bloqueios, interrompidoPor: (err as Error)?.message ?? String(err) }, null, 2))
+    }
     throw err
   } finally {
     c.release()
