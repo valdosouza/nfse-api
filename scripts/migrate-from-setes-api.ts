@@ -433,6 +433,22 @@ function tombstonePhrase(s: string, state: TombstoneState, standing: number): st
 }
 
 /**
+ * Gate socrático do delta da Rodada 10 (R10-SOC-05): a frase ÚNICA vale também fora da lápide — "sem F2a" e D-F110 (gatilhos de trava
+ * faltando) recusam no ato e bloqueiam no ensaio com o MESMO texto: o porquê e o comando que resolve, de ONDE rodá-lo.
+ */
+function f2aMissingPhrase(s: string): string {
+  return `a F2a do setes-api não está aplicada neste schema — migration "${F2A_MIGRATION_NAME}" (F2a do setes-api) ausente em ${s}._migrations; `
+    + 'a tela antiga do Emissor fiscal reviveria a habilitação SE aposentada — aplique a F2a antes da virada (D-F50)'
+}
+
+function freezeMissingPhrase(s: string, missing: string[]): string {
+  return `gatilhos de TRAVA da F2a faltando ou diferentes em ${s} (${missing.join('; ')}) — "${F2A_MIGRATION_NAME}" consta em _migrations, `
+    + 'mas o ERP não está congelado (DROP TRIGGER/dump sem gatilhos/restauração, ou o usuário do ato sem o privilégio TRIGGER — sem ele os '
+    + 'gatilhos não aparecem: confira o privilégio antes de reaplicar); reaplique a trava antes da virada — '
+    + '`scripts/f2a-reapply-freeze.ts <schema> --vai` a partir da WORKTREE da F2a do setes-api (D-F152; D-F110)'
+}
+
+/**
  * A LÁPIDE da F2a abortada (D-F153/D-F162) no schema. Gate socrático da Rodada 7 (R7-SOC-05): o ato RECUSA sempre que ela existir — mesmo
  * com a linha da migration junto (estado que o aborto, o `--retirar-lapide` e o runner da F2a recusam: só nasce de SQL à mão) — a MESMA
  * resposta dos outros leitores. Por isso falha FECHADO como a leitura da F2a (só "sem controle de migrations" vira "sem lápide").
@@ -471,24 +487,16 @@ async function cutover(pool: ReturnType<typeof createFiscalPool>, keyring: Maste
   // R7-SOC-05 (linha + lápide), R7-ADV-04 (pela metade), D-F153 (abortada) — a MESMA frase no ato e no ensaio (R9-ADV-04)
   const tombState: TombstoneState | null = f2aAborted ? (f2aApplied ? 'both' : abortHalfway > 0 ? 'halfway' : 'aborted') : null
   if (tombState && !DRY) throw new Error(`${s}: ${tombstonePhrase(s, tombState, abortHalfway)}`)
-  if (f2aMissing && !DRY) {
-    throw new Error(`${s}: a F2a do setes-api não está aplicada neste schema (migration "${F2A_MIGRATION_NAME}" ausente em _migrations) — `
-      + 'a tela antiga do Emissor fiscal reviveria a habilitação SE aposentada; aplique a F2a antes da virada (D-F50)')
-  }
+  if (f2aMissing && !DRY) throw new Error(`${s}: ${f2aMissingPhrase(s)}`)
   // D-F110 + F2A3-ADV-04: o nome da migration não basta — os 9 gatilhos de TRAVA conferidos pelo NOME (autocommit, ANTES da transação);
   // faltando = BLOQUEIO no ensaio, recusa no ato (sem eles o ERP antigo voltaria a escrever a voz e a reviver a SE aposentada)
   const triggersMissing = f2aMissing ? [] : await f2aFreezeTriggersMissing(pool, s)
-  if (triggersMissing.length && !DRY) {
-    throw new Error(`${s}: gatilhos de TRAVA da F2a faltando ou diferentes (${triggersMissing.join('; ')}) — "${F2A_MIGRATION_NAME}" consta em `
-      + '_migrations, mas o ERP não está congelado (DROP TRIGGER/dump sem gatilhos/restauração, ou o usuário do ato sem o privilégio TRIGGER); '
-      + 'reaplique a trava antes da virada — `scripts/f2a-reapply-freeze.ts <schema> --vai` no setes-api (D-F152; D-F110)')
-  }
+  if (triggersMissing.length && !DRY) throw new Error(`${s}: ${freezeMissingPhrase(s, triggersMissing)}`)
   const bloqueios = [
-    // R8-SOC-03: o ENSAIO distingue os MESMOS três estados do ato real (é o leitor que o roteiro da janela consulta antes do ato)
-    ...(f2aMissing ? [tombState
-      ? `D-F50: a virada REAL seria recusada — ${tombstonePhrase(s, tombState, abortHalfway)}`
-      : `D-F50: a virada REAL seria recusada — migration "${F2A_MIGRATION_NAME}" (F2a do setes-api) ausente em ${s}._migrations`] : []),
-    ...(triggersMissing.length ? [`D-F110: a virada REAL seria recusada — gatilhos de TRAVA faltando/diferentes em ${s}: ${triggersMissing.join('; ')} (sem o privilégio TRIGGER o usuário do ato não os VÊ — confira o privilégio antes de reaplicar a trava)`] : []),
+    // R8-SOC-03: o ENSAIO distingue os MESMOS estados do ato real (é o leitor que o roteiro da janela consulta antes do ato) — com a MESMA
+    // frase (R9-ADV-04 na lápide; R10-SOC-05 no "sem F2a" e no D-F110)
+    ...(f2aMissing ? [`D-F50: a virada REAL seria recusada — ${tombState ? tombstonePhrase(s, tombState, abortHalfway) : f2aMissingPhrase(s)}`] : []),
+    ...(triggersMissing.length ? [`D-F110: a virada REAL seria recusada — ${freezeMissingPhrase(s, triggersMissing)}`] : []),
   ]
   const c = await pool.getConnection()
   try {
