@@ -168,8 +168,10 @@ describe('R11-ADV-05 (nfse-api, analisado) — o "de onde rodar" das frases depo
     const r = await runScript([...CUT, '--vai'], db([F2A], { triggers: half() }))
     expect(realPhrase(r.errors)).toContain('a partir da árvore do setes-api com a F2a (a worktree até a janela; a árvore principal depois)')
     const src = fs.readFileSync(path.join(__dirname, '../../scripts/migrate-from-setes-api.ts'), 'utf8')
-    expect(src).not.toContain('WORKTREE da F2a')
-    expect((src.match(/\bF2A_TREE\b/g) ?? []).length).toBeGreaterThanOrEqual(5)   // a declaração + lápide (3) + D-F110 (1), um texto só
+    // D-F190 (= Q-F195-SOC-04 (a)) reviu a lápide: o aborto só existe antes da 1ª janela — as frases dela citam a WORKTREE (F2A_WORKTREE);
+    // o D-F110 segue com o texto neutro (F2A_TREE)
+    expect((src.match(/\bF2A_TREE\b/g) ?? []).length).toBeGreaterThanOrEqual(2)       // a declaração + o D-F110
+    expect((src.match(/\bF2A_WORKTREE\b/g) ?? []).length).toBeGreaterThanOrEqual(3)   // a declaração + a lápide (metade, abortada)
   })
 })
 

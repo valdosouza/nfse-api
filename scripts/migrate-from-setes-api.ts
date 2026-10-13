@@ -419,6 +419,13 @@ type TombstoneState = 'both' | 'halfway' | 'aborted'
 const F2A_TREE = 'a partir da árvore do setes-api com a F2a (a worktree até a janela; a árvore principal depois)'
 
 /**
+ * D-F190 (= Q-F195-SOC-04 (a), Valdo 2026-10-13 — R12-SOC-08): o ABORTO da F2a só existe ANTES da 1ª janela (o script recusa quando qualquer
+ * institution da instalação já virou — depois do merge, a lápide num schema derrubaria o boot de TODOS). Então as frases da LÁPIDE citam a
+ * WORKTREE da F2a (onde o script e a migration vivem enquanto o aborto é possível); o D-F110 (reaplicar a trava) segue com [F2A_TREE].
+ */
+const F2A_WORKTREE = 'a partir da WORKTREE da F2a do setes-api'
+
+/**
  * Gate adversarial da Rodada 9 (R9-ADV-04): UMA frase por estado da lápide — o ato REAL recusa com ela e o ENSAIO a mostra como bloqueio
  * (o roteiro da janela consulta o ensaio antes do ato: os dois dizem a MESMA coisa, com o comando que resolve e de ONDE rodá-lo).
  */
@@ -430,13 +437,13 @@ function tombstonePhrase(s: string, state: TombstoneState, standing: number): st
   if (state === 'halfway') {
     return `a F2a do setes-api foi ABORTADA em ${s}, mas o aborto ficou PELA METADE (${standing} gatilho(s) de trava de pé, lápide `
       + `"${F2A_TOMBSTONE_NAME}") — termine o aborto: \`scripts/f2a-abort-before-cutover.ts <schema> <institutionId> --vai `
-      + '--confirmo-setes-api-parado` ' + F2A_TREE + ' (onde o script e a migration existem — rodá-lo de novo termina '
+      + '--confirmo-setes-api-parado` ' + F2A_WORKTREE + ' (onde o script e a migration existem — rodá-lo de novo termina '
       + 'o serviço); só depois, se for o caso, volte à F2a (`--retirar-lapide --vai`) (D-F153/D-F162)'
   }
   return `a F2a do setes-api foi ABORTADA em ${s} (lápide "${F2A_TOMBSTONE_NAME}" — D-F153/D-F162) — voltar à F2a = `
-    + `\`scripts/f2a-abort-before-cutover.ts <schema> <institutionId> --retirar-lapide --vai\` ${F2A_TREE} e o `
+    + `\`scripts/f2a-abort-before-cutover.ts <schema> <institutionId> --retirar-lapide --vai\` ${F2A_WORKTREE} e o `
     + 'merge de novo, antes da virada (D-F50). Se o usuário do ato não tem o privilégio TRIGGER, gatilhos de pé não aparecem aqui — o ensaio '
-    + `do aborto (sem --vai), ${F2A_TREE}, diz o estado real`
+    + 'do aborto (sem --vai), a partir da WORKTREE da F2a, diz o estado real'
 }
 
 /**

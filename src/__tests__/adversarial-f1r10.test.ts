@@ -410,7 +410,7 @@ describe('D-F50 — a virada confere `_migrations.name = f2a_fiscal_passivo` no 
     const dry = await runScript([...CUT, '--dry-run'], abortedDb())
     expect(dry.exitCode).toBeNull()
     expect(dry.logs.join(' ')).toMatch(/"bloqueios"[\s\S]*ABORTADA/)
-    expect(real.errors.join(' ')).toMatch(/árvore do setes-api com a F2a/)                      // R8-SOC-03 + D-F186: de onde rodar
+    expect(real.errors.join(' ')).toMatch(/WORKTREE da F2a/)                                    // R8-SOC-03 + D-F190: de onde rodar (a lápide: só antes da 1ª janela)
   })
 
   it('R8-SOC-03 (gate socrático da Rodada 8): o ENSAIO distingue os mesmos três estados do ato real — linha + lápide, aborto pela METADE, ABORTADA', async () => {

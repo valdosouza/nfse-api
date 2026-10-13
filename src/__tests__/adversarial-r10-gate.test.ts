@@ -156,6 +156,6 @@ describe('tombstonePhrase — o ato e o ensaio dizem a MESMA frase', () => {
 
   it('[FATO] com a lápide e o usuário SEM o privilégio TRIGGER (o information_schema esconde os gatilhos — 0 visíveis) o ato e o ensaio dizem "abortada" — e a MESMA frase manda conferir pelo ensaio do aborto a partir da WORKTREE da F2a (o leitor que distingue "abortada" de "metade" sem o privilégio)', async () => {
     const real = await runScript([...CUT, '--vai'], db([TOMB], []))
-    expect(realPhrase(real.errors)).toMatch(/Se o usuário do ato não tem o privilégio TRIGGER, gatilhos de pé não aparecem aqui — o ensaio do aborto \(sem --vai\), a partir da árvore do setes-api com a F2a \(a worktree até a janela; a árvore principal depois\), diz o estado real$/)   // D-F186
+    expect(realPhrase(real.errors)).toMatch(/Se o usuário do ato não tem o privilégio TRIGGER, gatilhos de pé não aparecem aqui — o ensaio do aborto \(sem --vai\), a partir da WORKTREE da F2a, diz o estado real$/)   // D-F190: a lápide cita a worktree
   })
 })
