@@ -409,6 +409,29 @@ async function setesApiF2aApplied(q: { query: (sql: string, p?: unknown[]) => Pr
   }
 }
 
+type TombstoneState = 'both' | 'halfway' | 'aborted'
+
+/**
+ * Gate adversarial da Rodada 9 (R9-ADV-04): UMA frase por estado da lápide — o ato REAL recusa com ela e o ENSAIO a mostra como bloqueio
+ * (o roteiro da janela consulta o ensaio antes do ato: os dois dizem a MESMA coisa, com o comando que resolve e de ONDE rodá-lo).
+ */
+function tombstonePhrase(s: string, state: TombstoneState, standing: number): string {
+  if (state === 'both') {
+    return `a linha "${F2A_MIGRATION_NAME}" E a lápide "${F2A_TOMBSTONE_NAME}" juntas em ${s}._migrations — estado que o aborto e o runner `
+      + 'da F2a recusam (SQL à mão?); confira antes — nada foi feito (D-F162)'
+  }
+  if (state === 'halfway') {
+    return `a F2a do setes-api foi ABORTADA em ${s}, mas o aborto ficou PELA METADE (${standing} gatilho(s) de trava de pé, lápide `
+      + `"${F2A_TOMBSTONE_NAME}") — termine o aborto: \`scripts/f2a-abort-before-cutover.ts <schema> <institutionId> --vai `
+      + '--confirmo-setes-api-parado` a partir da WORKTREE da F2a do setes-api (onde o script e a migration existem — rodá-lo de novo termina '
+      + 'o serviço); só depois, se for o caso, volte à F2a (`--retirar-lapide --vai`) (D-F153/D-F162)'
+  }
+  return `a F2a do setes-api foi ABORTADA em ${s} (lápide "${F2A_TOMBSTONE_NAME}" — D-F153/D-F162) — voltar à F2a = `
+    + '`scripts/f2a-abort-before-cutover.ts <schema> <institutionId> --retirar-lapide --vai` a partir da WORKTREE da F2a do setes-api e o '
+    + 'merge de novo, antes da virada (D-F50). Se o usuário do ato não tem o privilégio TRIGGER, gatilhos de pé não aparecem aqui — o ensaio '
+    + 'do aborto (sem --vai), a partir da WORKTREE da F2a, diz o estado real'
+}
+
 /**
  * A LÁPIDE da F2a abortada (D-F153/D-F162) no schema. Gate socrático da Rodada 7 (R7-SOC-05): o ato RECUSA sempre que ela existir — mesmo
  * com a linha da migration junto (estado que o aborto, o `--retirar-lapide` e o runner da F2a recusam: só nasce de SQL à mão) — a MESMA
@@ -445,25 +468,12 @@ async function cutover(pool: ReturnType<typeof createFiscalPool>, keyring: Maste
   const abortHalfway = f2aAborted && !f2aApplied
     ? Object.keys(F2A_FREEZE_TRIGGERS).length - (await f2aFreezeTriggersMissing(pool, s)).filter(m => m.endsWith(' ausente')).length
     : 0
-  if (f2aAborted && f2aApplied && !DRY) {
-    // R7-SOC-05: a linha E a lápide juntas — o aborto e o runner da F2a recusam esse estado; o ato também (a mesma resposta)
-    throw new Error(`${s}: a linha "${F2A_MIGRATION_NAME}" E a lápide "${F2A_TOMBSTONE_NAME}" juntas no _migrations — estado que o aborto `
-      + 'e o runner da F2a recusam (SQL à mão?); confira antes — nada foi feito (D-F162)')
-  }
-  if (f2aMissing && !DRY && abortHalfway > 0) {
-    throw new Error(`${s}: a F2a do setes-api foi ABORTADA neste schema, mas o aborto ficou PELA METADE (lápide "${F2A_TOMBSTONE_NAME}" + `
-      + `${abortHalfway} gatilho(s) de trava de pé) — termine o aborto: \`scripts/f2a-abort-before-cutover.ts <schema> <institutionId> --vai `
-      + '--confirmo-setes-api-parado` a partir da WORKTREE da F2a do setes-api (onde o script e a migration existem — rodá-lo de novo termina '
-      + 'o serviço); só depois, se for o caso, volte à F2a (`--retirar-lapide --vai`) (D-F153/D-F162)')
-  }
+  // R7-SOC-05 (linha + lápide), R7-ADV-04 (pela metade), D-F153 (abortada) — a MESMA frase no ato e no ensaio (R9-ADV-04)
+  const tombState: TombstoneState | null = f2aAborted ? (f2aApplied ? 'both' : abortHalfway > 0 ? 'halfway' : 'aborted') : null
+  if (tombState && !DRY) throw new Error(`${s}: ${tombstonePhrase(s, tombState, abortHalfway)}`)
   if (f2aMissing && !DRY) {
-    throw new Error(f2aAborted
-      ? `${s}: a F2a do setes-api foi ABORTADA neste schema (lápide "${F2A_TOMBSTONE_NAME}" em _migrations — D-F153/D-F162) — voltar à F2a = `
-        + '`scripts/f2a-abort-before-cutover.ts <schema> <institutionId> --retirar-lapide --vai` a partir da WORKTREE da F2a do setes-api e o '
-        + 'merge de novo, antes da virada (D-F50). Se o usuário do ato não tem o privilégio TRIGGER, gatilhos de pé não aparecem aqui — o '
-        + 'ensaio do aborto (sem --vai) no setes-api diz o estado real'
-      : `${s}: a F2a do setes-api não está aplicada neste schema (migration "${F2A_MIGRATION_NAME}" ausente em _migrations) — `
-        + 'a tela antiga do Emissor fiscal reviveria a habilitação SE aposentada; aplique a F2a antes da virada (D-F50)')
+    throw new Error(`${s}: a F2a do setes-api não está aplicada neste schema (migration "${F2A_MIGRATION_NAME}" ausente em _migrations) — `
+      + 'a tela antiga do Emissor fiscal reviveria a habilitação SE aposentada; aplique a F2a antes da virada (D-F50)')
   }
   // D-F110 + F2A3-ADV-04: o nome da migration não basta — os 9 gatilhos de TRAVA conferidos pelo NOME (autocommit, ANTES da transação);
   // faltando = BLOQUEIO no ensaio, recusa no ato (sem eles o ERP antigo voltaria a escrever a voz e a reviver a SE aposentada)
@@ -475,14 +485,10 @@ async function cutover(pool: ReturnType<typeof createFiscalPool>, keyring: Maste
   }
   const bloqueios = [
     // R8-SOC-03: o ENSAIO distingue os MESMOS três estados do ato real (é o leitor que o roteiro da janela consulta antes do ato)
-    ...(f2aMissing ? [f2aAborted && f2aApplied
-      ? `D-F50: a virada REAL seria recusada — a linha "${F2A_MIGRATION_NAME}" E a lápide "${F2A_TOMBSTONE_NAME}" juntas em ${s}._migrations (estado que o aborto e o runner da F2a recusam — D-F162)`
-      : f2aAborted && abortHalfway > 0
-        ? `D-F50: a virada REAL seria recusada — a F2a do setes-api foi ABORTADA em ${s}, mas o aborto ficou PELA METADE (${abortHalfway} gatilho(s) de trava de pé) — termine o aborto (D-F153/D-F162)`
-        : f2aAborted
-          ? `D-F50: a virada REAL seria recusada — a F2a do setes-api foi ABORTADA em ${s} (lápide "${F2A_TOMBSTONE_NAME}" — D-F153/D-F162)`
-          : `D-F50: a virada REAL seria recusada — migration "${F2A_MIGRATION_NAME}" (F2a do setes-api) ausente em ${s}._migrations`] : []),
-    ...(triggersMissing.length ? [`D-F110: a virada REAL seria recusada — gatilhos de TRAVA faltando/diferentes em ${s}: ${triggersMissing.join('; ')}`] : []),
+    ...(f2aMissing ? [tombState
+      ? `D-F50: a virada REAL seria recusada — ${tombstonePhrase(s, tombState, abortHalfway)}`
+      : `D-F50: a virada REAL seria recusada — migration "${F2A_MIGRATION_NAME}" (F2a do setes-api) ausente em ${s}._migrations`] : []),
+    ...(triggersMissing.length ? [`D-F110: a virada REAL seria recusada — gatilhos de TRAVA faltando/diferentes em ${s}: ${triggersMissing.join('; ')} (sem o privilégio TRIGGER o usuário do ato não os VÊ — confira o privilégio antes de reaplicar a trava)`] : []),
   ]
   const c = await pool.getConnection()
   try {
