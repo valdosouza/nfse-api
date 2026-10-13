@@ -195,13 +195,13 @@ describe('2 — R6-SOC-10: o ato da virada e a lápide da F2a abortada', () => {
     expect(r.errors.join(' ')).toMatch(/lápide|ABORTADA/)
   })
 
-  it('[CORRIGIDO — era o FATO base do R7-ADV-03] linha + lápide + 9 gatilhos: o ato REAL não vira (nada aposentado, sem commit); o --dry-run acusa o bloqueio ABORTADA', async () => {
+  it('[CORRIGIDO — era o FATO base do R7-ADV-03] linha + lápide + 9 gatilhos: o ato REAL não vira (nada aposentado, sem commit); o --dry-run acusa o bloqueio "juntas" (R8-SOC-03: o ensaio diz o mesmo que o ato real)', async () => {
     const r = await runScript([...CUT, '--vai'], db([F2A, TOMB]))
     expect(r.exitCode).toBe(1)
     expect(r.sqls.some(s => /UPDATE `setes_x`\.tb_establishment_issuer SET deleted = 'S'/.test(s.sql))).toBe(false)
     expect(r.conn.commit).not.toHaveBeenCalled()
     const dry = await runScript([...CUT, '--dry-run'], db([F2A, TOMB]))
-    expect(dry.logs.join(' ')).toMatch(/"bloqueios"[\s\S]*ABORTADA/)
+    expect(dry.logs.join(' ')).toMatch(/"bloqueios"[\s\S]*E a lápide[\s\S]*juntas/)
   })
 
   it('[CORRIGIDO R7-ADV-04 LOW] ABORTO INTERROMPIDO (a lápide nasce ANTES dos DROPs — R5-SOC-05 — e a conexão cai: lápide + 4 dos 9 gatilhos, sem a linha): o ato REAL recusa (certo), mas a frase manda "voltar à F2a = `--retirar-lapide --vai`" — e o `--retirar-lapide` do setes-api RECUSA exatamente esse estado ("lápide COM gatilho … estado que o aborto não deixa; confira antes" — o próprio aborto, interrompido, o deixa). O operador na JANELA segue a frase e bate noutra recusa enganosa; o caminho certo é rodar o ABORTO de novo (ele termina o serviço) e só então decidir voltar. Correção sugerida: com a lápide, o ato lê os gatilhos também e, sobrando algum, a frase diz "aborto incompleto — rode `f2a-abort-before-cutover.ts <schema> <id> --vai` de novo"', async () => {

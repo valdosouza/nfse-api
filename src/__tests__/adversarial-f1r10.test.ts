@@ -410,6 +410,29 @@ describe('D-F50 — a virada confere `_migrations.name = f2a_fiscal_passivo` no 
     const dry = await runScript([...CUT, '--dry-run'], abortedDb())
     expect(dry.exitCode).toBeNull()
     expect(dry.logs.join(' ')).toMatch(/"bloqueios"[\s\S]*ABORTADA/)
+    expect(real.errors.join(' ')).toMatch(/WORKTREE da F2a/)                                    // R8-SOC-03: de onde rodar
+  })
+
+  it('R8-SOC-03 (gate socrático da Rodada 8): o ENSAIO distingue os mesmos três estados do ato real — linha + lápide, aborto pela METADE, ABORTADA', async () => {
+    const withState = (names: string[], triggers: object[]): Handler => {
+      const base = cutoverDb(() => [[{ x: 1 }]])
+      return (sql, p) => {
+        if (/\._migrations WHERE name = \?/.test(sql)) {
+          const asked = String((p as any[])?.[0])
+          return [names.includes(asked) ? [{ x: 1, name: asked }] : []]
+        }
+        if (FREEZE_TRIGGERS_SQL.test(sql)) return [triggers]
+        return base(sql, p)
+      }
+    }
+    const F2A = 'f2a_fiscal_passivo', TOMB = 'f2a_fiscal_passivo_abortada'
+    const both = await runScript([...CUT, '--dry-run'], withState([F2A, TOMB], freezeTriggerRows()))
+    expect(both.logs.join(' ')).toMatch(/"bloqueios"[\s\S]*E a lápide[\s\S]*juntas/)
+    const half = await runScript([...CUT, '--dry-run'], withState([TOMB], freezeTriggerRows().slice(0, 3)))
+    expect(half.logs.join(' ')).toMatch(/"bloqueios"[\s\S]*PELA METADE \(3 gatilho/)
+    const done = await runScript([...CUT, '--dry-run'], withState([TOMB], []))
+    expect(done.logs.join(' ')).toMatch(/"bloqueios"[\s\S]*foi ABORTADA em setes_x \(lápide/)
+    for (const r of [both, half, done]) expect([r.exitCode, r.conn.commit.mock.calls.length]).toEqual([null, 0])
   })
 
   it('R7-SOC-05 (gate socrático da Rodada 7): a linha da F2a E a lápide juntas (só nasce de SQL à mão) → o ato RECUSA como abortada (a mesma resposta do aborto e do runner)', async () => {
