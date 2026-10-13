@@ -12,7 +12,7 @@ describe('D-F146 — CORS_ORIGINS explícita por ambiente', () => {
   })
   it('"*", caminho, curinga no host, esquema estranho ou lixo → RECUSA (o token do usuário no navegador falaria com qualquer site)', () => {
     for (const bad of ['*', 'http://localhost:5051/', 'https://app.setes.com.br/app', 'https://*.setes.com.br', 'ftp://x', 'localhost:5051', 'http://a b']) {
-      expect(() => assertCorsOrigins(['http://localhost:5051', bad])).toThrow(/fora da forma de ORIGEM/)
+      expect(() => assertCorsOrigins(['http://localhost:5051', bad])).toThrow(/ORIGEM canônica/)
     }
   })
   it('origens na forma do navegador (esquema://host[:porta]) → passa e o boot as registra', () => {

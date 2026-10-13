@@ -122,6 +122,12 @@ export function mapTx(r: any): TransmissionRow {
   if ((r.authorityRecorded === 'S') !== (r.accessKey != null)) {
     throw new Error(`Linha de tentativa INCOERENTE: authorityRecorded=${r.authorityRecorded} com chave ${r.accessKey == null ? 'ausente' : 'presente'} (NFS-e: registro ⇔ chave)`)
   }
+  // D-F136 também AQUI (gate socrático do delta da Rodada 4 — F2AR4-SOC-06): o mesmo invariante do mapa comum do núcleo — voz A/N ⇒
+  // registro. Antes a mesma linha torta dava 503 no setes-api e `state: authorized` + `currentAttempt` na nfse-api, com a barreira de
+  // nova tentativa livre. Dois leitores, uma resposta.
+  if (AUTHORIZED_KINDS.has(r.lastKind ?? '') && r.authorityRecorded !== 'S') {
+    throw new Error(`Linha de tentativa INCOERENTE: voz ${r.lastKind} (autorizada) SEM registro — a família publica a autorizada sempre registrada (D-F136)`)
+  }
   return {
     institutionId: Number(r.institutionId), invoiceId: Number(r.invoiceId), attempt: Number(r.attempt),
     lifeEvent: Number(r.lifeEvent), environment: r.environment,

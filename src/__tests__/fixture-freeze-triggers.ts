@@ -3,11 +3,9 @@
 // motor devolve para o dono do ERP (tabela, evento, BEFORE, corpo que recusa).
 import { F2A_FREEZE_TRIGGERS } from '../../scripts/cutover-erp'
 
-export const FREEZE_TRIGGERS_SQL = /FROM information_schema\.TRIGGERS WHERE TRIGGER_SCHEMA = \?/
+export const FREEZE_TRIGGERS_SQL = /FROM information_schema\.TRIGGERS WHERE EVENT_OBJECT_SCHEMA = \?/
 
-/** Os 9 gatilhos como o `information_schema` os mostra a quem tem o privilégio TRIGGER. */
+/** Os 9 gatilhos como o `information_schema` os mostra a quem tem o privilégio TRIGGER — com o CORPO da migration (F2AR4-ADV-02). */
 export function freezeTriggerRows(): object[] {
-  return Object.entries(F2A_FREEZE_TRIGGERS).map(([name, [tbl, ev]]) => ({
-    name, tbl, ev, timing: 'BEFORE', body: "BEGIN\n  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'F2a (D-F110): ...';\nEND",
-  }))
+  return Object.entries(F2A_FREEZE_TRIGGERS).map(([name, [tbl, ev, body]]) => ({ name, tbl, ev, timing: 'BEFORE', body }))
 }

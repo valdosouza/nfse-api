@@ -5,12 +5,10 @@
 // quando a F2a está no SETES_API_DIR — D-F117).
 import fs from 'fs'
 import path from 'path'
-import { F2A_FREEZE_TRIGGERS, f2aFreezeTriggersMissing } from '../../scripts/cutover-erp'
+import { F2A_FREEZE_TRIGGERS, f2aFreezeTriggersMissing, normalizeTriggerBody } from '../../scripts/cutover-erp'
 import { SETES_API_DIR, setesApiF2aApplied } from './voice-kind-fence'
 
-const ALL = Object.entries(F2A_FREEZE_TRIGGERS).map(([name, [tbl, ev]]) => ({
-  name, tbl, ev, timing: 'BEFORE', body: "BEGIN\n  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'F2a (D-F110): …';\nEND",
-}))
+const ALL = Object.entries(F2A_FREEZE_TRIGGERS).map(([name, [tbl, ev, body]]) => ({ name, tbl, ev, timing: 'BEFORE', body }))
 const qOf = (rows: object[]) => ({ query: jest.fn(async () => [rows, []]) })
 
 describe('F2A3-ADV-04 — o ato confere os 9 gatilhos de TRAVA pelo nome', () => {
@@ -18,7 +16,7 @@ describe('F2A3-ADV-04 — o ato confere os 9 gatilhos de TRAVA pelo nome', () =>
     const q = qOf(ALL)
     expect(await f2aFreezeTriggersMissing(q, 'setes_setes')).toEqual([])
     const [sql, params] = (q.query.mock.calls[0] as unknown) as [string, unknown[]]
-    expect(sql).toMatch(/FROM information_schema\.TRIGGERS WHERE TRIGGER_SCHEMA = \? AND TRIGGER_NAME IN \(\?\)/)
+    expect(sql).toMatch(/FROM information_schema\.TRIGGERS WHERE EVENT_OBJECT_SCHEMA = \? AND TRIGGER_NAME IN \(\?\)/)   // F2AR4-SOC-04
     expect(params).toEqual(['setes_setes', Object.keys(F2A_FREEZE_TRIGGERS)])
   })
   it('DROP TRIGGER (um some) → acusado pelo nome; nenhum visível (usuário sem o privilégio TRIGGER) → os 9 (falha FECHADA)', async () => {
@@ -32,6 +30,20 @@ describe('F2A3-ADV-04 — o ato confere os 9 gatilhos de TRAVA pelo nome', () =>
       expect(out).toHaveLength(1); expect(out[0]).toMatch(/^tg_f2a_freeze_voice_bu diferente/)
     }
   })
+  it('F2AR4-ADV-02: o CORPO é o da migration — SIGNAL sob IF que nunca vale, SIGNAL em comentário e a trava da SE de versão ANTERIOR (sem o dono/contador) → diferentes; espaços e comentários a mais NÃO contam', async () => {
+    const se = 'tg_f2a_freeze_issuer_se_bu'
+    const swap = (name: string, body: string) => ALL.map(t => (t.name === name ? { ...t, body } : t))
+    for (const body of [
+      "BEGIN\n  IF OLD.`model` = 'XX' THEN\n    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'x';\n  END IF;\nEND",
+      "BEGIN\n  /* SIGNAL SQLSTATE '45000' */ SET @adv = 1;\nEND",
+      "BEGIN\n  IF OLD.`model` = 'SE' OR NEW.`model` = 'SE' THEN\n    IF NOT (NEW.`model` <=> OLD.`model`) THEN\n      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'x';\n    END IF;\n  END IF;\nEND",
+    ]) {
+      expect(await f2aFreezeTriggersMissing(qOf(swap(se, body)), 's')).toEqual([`${se} diferente (o corpo não é o da migration)`])
+    }
+    const [, , real] = F2A_FREEZE_TRIGGERS[se]
+    const reformatted = `/* re-indentado */\n${real.replace(/ THEN /g, ' THEN\n      ').replace(/; END/g, ';\n  END')} -- fim\n`
+    expect(await f2aFreezeTriggersMissing(qOf(swap(se, reformatted)), 's')).toEqual([])
+  })
 })
 
 describe('cerca D-F117 — a lista do ato é a da migration do setes-api (quando a F2a está no SETES_API_DIR)', () => {
@@ -44,5 +56,15 @@ describe('cerca D-F117 — a lista do ato é a da migration do setes-api (quando
       .map(m => [m[1], m[3], m[2]] as const).sort()
     const expected = Object.entries(F2A_FREEZE_TRIGGERS).map(([name, [tbl, ev]]) => [name, tbl, ev] as const).sort()
     expect(created).toEqual(expected)
+  })
+  it('F2AR4-ADV-02: o CORPO de cada gatilho da migration (pelo divisor do runner — tira as linhas `--` e corta no `END;`) normalizado = o da lista do ato', () => {
+    if (!setesApiF2aApplied()) return
+    const dir = path.join(SETES_API_DIR, 'src', 'migrations', 'sql')
+    const file = fs.readdirSync(dir).find(f => /^\d{3}_f2a_fiscal_passivo\.sql$/.test(f))!
+    const sql = fs.readFileSync(path.join(dir, file), 'utf8').replace(/\r\n/g, '\n').replace(/--[^\n]*\n/g, '\n')
+    const bodies = Object.fromEntries([...sql.matchAll(/CREATE TRIGGER `(tg_f2a_freeze_\w+)` BEFORE \w+ ON `\w+`\s+FOR EACH ROW\s+([\s\S]+?\nEND;)/g)]
+      .map(m => [m[1], normalizeTriggerBody(m[2])]))
+    expect(Object.keys(bodies).sort()).toEqual(Object.keys(F2A_FREEZE_TRIGGERS).sort())
+    for (const [name, [, , body]] of Object.entries(F2A_FREEZE_TRIGGERS)) expect([name, bodies[name]]).toEqual([name, body])
   })
 })
