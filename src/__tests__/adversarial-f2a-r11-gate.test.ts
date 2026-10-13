@@ -164,11 +164,12 @@ describe('R11-ADV-01 (nfse-api) — a frase única do ato × ensaio quando o ENS
 })
 
 describe('R11-ADV-05 (nfse-api, analisado) — o "de onde rodar" das frases depois da janela', () => {
-  it('[FATO — prova do R11-ADV-05 LOW (analisado); base da Q-F190-ADV-05] as frases que mandam rodar um script do setes-api (o reaplicar da trava — D-F110, NOVA neste delta; terminar o aborto e o `--retirar-lapide` — R9) dizem "a partir da WORKTREE da F2a": vale até a janela; depois do merge da F2a na árvore principal, a virada das PRÓXIMAS institutions (o ato é por institution — D-F3, alvo 1000 clientes) chega com a frase apontando para uma worktree que já não é a árvore em produção (ou nem existe) — rodar dali usaria a migration/conferência de uma cópia possivelmente velha', async () => {
+  it('[DECIDIDO D-F186 — era o FATO do R11-ADV-05 (analisado); o texto virou NEUTRO no tempo: "a partir da árvore do setes-api com a F2a (a worktree até a janela; a árvore principal depois)", numa constante só] as frases que mandam rodar um script do setes-api (o reaplicar da trava — D-F110, NOVA neste delta; terminar o aborto e o `--retirar-lapide` — R9) dizem "a partir da WORKTREE da F2a": vale até a janela; depois do merge da F2a na árvore principal, a virada das PRÓXIMAS institutions (o ato é por institution — D-F3, alvo 1000 clientes) chega com a frase apontando para uma worktree que já não é a árvore em produção (ou nem existe) — rodar dali usaria a migration/conferência de uma cópia possivelmente velha', async () => {
     const r = await runScript([...CUT, '--vai'], db([F2A], { triggers: half() }))
-    expect(realPhrase(r.errors)).toContain('a partir da WORKTREE da F2a do setes-api')
+    expect(realPhrase(r.errors)).toContain('a partir da árvore do setes-api com a F2a (a worktree até a janela; a árvore principal depois)')
     const src = fs.readFileSync(path.join(__dirname, '../../scripts/migrate-from-setes-api.ts'), 'utf8')
-    expect((src.match(/a partir da WORKTREE da F2a/g) ?? []).length).toBeGreaterThanOrEqual(3)
+    expect(src).not.toContain('WORKTREE da F2a')
+    expect((src.match(/\bF2A_TREE\b/g) ?? []).length).toBeGreaterThanOrEqual(5)   // a declaração + lápide (3) + D-F110 (1), um texto só
   })
 })
 
