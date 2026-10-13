@@ -398,6 +398,7 @@ describe('D-F50 — a virada confere `_migrations.name = f2a_fiscal_passivo` no 
       const base = cutoverDb(() => [[]])                                           // UM banco falso por execução (ele guarda estado)
       return (sql, p) => (/\._migrations WHERE name = \?/.test(sql)
         ? ((p as any[])?.[0] === 'f2a_fiscal_passivo_abortada' ? [[{ name: 'f2a_fiscal_passivo_abortada' }]] : [[]])
+        : FREEZE_TRIGGERS_SQL.test(sql) ? [[]]                                    // o aborto COMPLETO derrubou os 9 gatilhos
         : base(sql, p))
     }
     const aborted = abortedDb()
@@ -409,6 +410,20 @@ describe('D-F50 — a virada confere `_migrations.name = f2a_fiscal_passivo` no 
     const dry = await runScript([...CUT, '--dry-run'], abortedDb())
     expect(dry.exitCode).toBeNull()
     expect(dry.logs.join(' ')).toMatch(/"bloqueios"[\s\S]*ABORTADA/)
+  })
+
+  it('R7-SOC-05 (gate socrático da Rodada 7): a linha da F2a E a lápide juntas (só nasce de SQL à mão) → o ato RECUSA como abortada (a mesma resposta do aborto e do runner)', async () => {
+    const bothDb = (): Handler => {
+      const base = cutoverDb(() => [[{ x: 1 }]])
+      return (sql, p) => (/\._migrations WHERE name = \?/.test(sql) && (p as any[])?.[0] === 'f2a_fiscal_passivo_abortada'
+        ? [[{ name: 'f2a_fiscal_passivo_abortada' }]]
+        : base(sql, p))
+    }
+    const real = await runScript([...CUT, '--vai'], bothDb())
+    expect(real.exitCode).toBe(1)
+    expect(real.errors.join(' ')).toMatch(/E a lápide[\s\S]*juntas/)
+    expect(real.conn.beginTransaction).not.toHaveBeenCalled()
+    expect(real.sqls.some(s => isWrite(s.sql))).toBe(false)
   })
 
   it('[CORRIGIDO — gates da A3, F2A3-ADV-04] F2a aplicada mas um gatilho de TRAVA faltando (DROP TRIGGER) ou sem nenhum visível (usuário sem TRIGGER) → o ato REAL recusa antes da transação; o --dry-run reporta o bloqueio D-F110', async () => {

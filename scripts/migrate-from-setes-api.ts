@@ -58,7 +58,7 @@ import {
 } from 'fiscal-api'
 import { SERVICE_MODEL } from '../src/facts/service-facts'
 import { SERVICE_VOICE_WRITE_KINDS } from '../src/nfse/voice-family'
-import { assertNoteSerieKept, retireErpServiceIssuer, f2aFreezeTriggersMissing } from './cutover-erp'
+import { assertNoteSerieKept, retireErpServiceIssuer, f2aFreezeTriggersMissing, F2A_FREEZE_TRIGGERS } from './cutover-erp'
 import { argumentErrors, npmSwallowedFlags } from './migrate-args'
 
 const ARGS = process.argv.slice(2)
@@ -410,14 +410,18 @@ async function setesApiF2aApplied(q: { query: (sql: string, p?: unknown[]) => Pr
 }
 
 /**
- * Sem a F2a, a LÁPIDE diz se ela foi ABORTADA aqui (D-F153/D-F162) — só muda a FRASE (como voltar), a recusa já está decidida pela
- * ausência; por isso uma falha desta leitura não muda nada (gate socrático da Rodada 6, R6-SOC-10).
+ * A LÁPIDE da F2a abortada (D-F153/D-F162) no schema. Gate socrático da Rodada 7 (R7-SOC-05): o ato RECUSA sempre que ela existir — mesmo
+ * com a linha da migration junto (estado que o aborto, o `--retirar-lapide` e o runner da F2a recusam: só nasce de SQL à mão) — a MESMA
+ * resposta dos outros leitores. Por isso falha FECHADO como a leitura da F2a (só "sem controle de migrations" vira "sem lápide").
  */
 async function setesApiF2aAborted(q: { query: (sql: string, p?: unknown[]) => Promise<any> }, s: string): Promise<boolean> {
   try {
     const [rows] = await q.query(`SELECT name FROM \`${s}\`._migrations WHERE name = ? LIMIT 1`, [F2A_TOMBSTONE_NAME])
     return Array.isArray(rows) && rows.some((r: any) => r?.name === F2A_TOMBSTONE_NAME)
-  } catch { return false }
+  } catch (err: any) {
+    if (err?.errno === 1146 || err?.code === 'ER_NO_SUCH_TABLE') return false
+    throw err
+  }
 }
 
 async function cutover(pool: ReturnType<typeof createFiscalPool>, keyring: MasterKeyRing, storage: FsFiscalStorage, institutionId: number): Promise<void> {
@@ -431,9 +435,27 @@ async function cutover(pool: ReturnType<typeof createFiscalPool>, keyring: Maste
   // gravaria a SE (upsert com deleted='N') e REVIVERIA a linha que o ato aposenta (o contador congelado do ERP voltaria a
   // cunhar nDPS já usados — R2-2). Leitura em autocommit, ANTES da transação. No --dry-run vira BLOQUEIO no relatório (o
   // ensaio segue); no ato real, recusa. O rollback do DEPLOY do setes-api depois da virada continua proibido por procedimento.
-  const f2aMissing = !(await setesApiF2aApplied(pool, s))
-  // a LÁPIDE (D-F153/D-F162) = a F2a foi ABORTADA aqui: a mesma recusa, com a frase de COMO voltar (R6-SOC-10)
-  const f2aAborted = f2aMissing && (await setesApiF2aAborted(pool, s))
+  const f2aApplied = await setesApiF2aApplied(pool, s)
+  // a LÁPIDE (D-F153/D-F162) = a F2a foi ABORTADA aqui: a mesma recusa, com a frase de COMO voltar (R6-SOC-10) — SEMPRE que ela existir,
+  // mesmo com a linha junto (R7-SOC-05)
+  const f2aAborted = await setesApiF2aAborted(pool, s)
+  const f2aMissing = !f2aApplied || f2aAborted
+  // gate adversarial da Rodada 7 (R7-ADV-04): lápide COM gatilhos de trava ainda de pé = o aborto ficou PELA METADE (a lápide nasce antes dos
+  // DROPs — R5-SOC-05) — o `--retirar-lapide` recusa esse estado; o caminho é terminar o aborto (rodá-lo de novo termina o serviço)
+  const abortHalfway = f2aAborted && !f2aApplied
+    ? Object.keys(F2A_FREEZE_TRIGGERS).length - (await f2aFreezeTriggersMissing(pool, s)).filter(m => m.endsWith(' ausente')).length
+    : 0
+  if (f2aAborted && f2aApplied && !DRY) {
+    // R7-SOC-05: a linha E a lápide juntas — o aborto e o runner da F2a recusam esse estado; o ato também (a mesma resposta)
+    throw new Error(`${s}: a linha "${F2A_MIGRATION_NAME}" E a lápide "${F2A_TOMBSTONE_NAME}" juntas no _migrations — estado que o aborto `
+      + 'e o runner da F2a recusam (SQL à mão?); confira antes — nada foi feito (D-F162)')
+  }
+  if (f2aMissing && !DRY && abortHalfway > 0) {
+    throw new Error(`${s}: a F2a do setes-api foi ABORTADA neste schema, mas o aborto ficou PELA METADE (lápide "${F2A_TOMBSTONE_NAME}" + `
+      + `${abortHalfway} gatilho(s) de trava de pé) — termine o aborto: \`scripts/f2a-abort-before-cutover.ts <schema> <institutionId> --vai `
+      + '--confirmo-setes-api-parado` no setes-api (rodá-lo de novo termina o serviço); só depois, se for o caso, volte à F2a '
+      + '(`--retirar-lapide --vai`) (D-F153/D-F162)')
+  }
   if (f2aMissing && !DRY) {
     throw new Error(f2aAborted
       ? `${s}: a F2a do setes-api foi ABORTADA neste schema (lápide "${F2A_TOMBSTONE_NAME}" em _migrations — D-F153/D-F162) — voltar à F2a = `

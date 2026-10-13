@@ -104,11 +104,6 @@ const TX_SELECT = `
 function n(v: unknown): number | null { return v === null || v === undefined ? null : Number(v) }
 
 /**
- * Linha interna da família (tabelas do `fiscal_api`). Gates da NE-1a parte 1 (NE1A-08 / D-NE68 (b)): ESTRITO como o mapa do núcleo — a
- * coluna do registro tem de vir ('S'/'N') e COERENTE com a chave (na NFS-e registro ⇔ chave, pela definição da view 004): linha sem a
- * coluna (SELECT novo que a esqueça) ou incoerente falha ALTO, nunca vira "não registrada" calada.
- */
-/**
  * A linha de tentativa é INCOERENTE (registro ⇔ chave; D-F136 A/N ⇒ registro; D-F154 C/K ⇒ registro) — dado torto, não projeção torta.
  * Tipada para o rodízio pular SÓ ela (D-F164); erro ESTRUTURAL (SELECT sem a definição da família) relança — senão uma regressão do
  * `TX_SELECT` faria o rodízio "pular" e carimbar TODAS as linhas (gate socrático da Rodada 6, R6-SOC-07).
@@ -117,6 +112,12 @@ export class IncoherentTransmissionError extends Error {
   constructor(message: string) { super(message); this.name = 'IncoherentTransmissionError' }
 }
 
+/**
+ * Linha interna da família (tabelas do `fiscal_api`). Gates da NE-1a parte 1 (NE1A-08 / D-NE68 (b)): ESTRITO como o mapa do núcleo — a
+ * coluna do registro tem de vir ('S'/'N') e COERENTE com a chave (na NFS-e registro ⇔ chave, pela definição da view 004): linha sem a
+ * coluna (SELECT novo que a esqueça) falha ALTO (`Error`); a incoerente falha com `IncoherentTransmissionError` — nunca vira "não
+ * registrada" calada.
+ */
 export function mapTx(r: any): TransmissionRow {
   if (r.authorityRecorded !== 'S' && r.authorityRecorded !== 'N') {
     throw new Error(`Linha de tentativa sem authorityRecorded ('S'/'N') — SELECT sem a definição da família? (recebido: ${JSON.stringify(r.authorityRecorded)})`)
