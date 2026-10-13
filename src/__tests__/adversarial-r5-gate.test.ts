@@ -54,13 +54,13 @@ describe('D-F154 nos fluxos LEGÍTIMOS da família (nenhum produz C/K sem regist
 })
 
 describe('o RAIO de uma linha incoerente', () => {
-  it('[FATO — R5-ADV-05 LOW, Q-F168-ADV-03] UMA tentativa K sem registro (justo a classe que o rodízio existe para resolver — K → C ou N) faz `listRefreshCandidates` LANÇAR inteira: a consulta ativa do estabelecimento para para TODAS as notas (a lista é lida fora do try por candidata) até alguém consertar a linha à mão — o D-F136 já fazia isso com A/N; a D-F154 estende a C/K', async () => {
+  it('[DECIDIDO D-F164 (= Q-F172 (a))] sem o aviso, o leitor segue falhando alto; o RODÍZIO passa o aviso — antes, UMA tentativa K sem registro (justo a classe que o rodízio existe para resolver — K → C ou N) faz `listRefreshCandidates` LANÇAR inteira: a consulta ativa do estabelecimento para para TODAS as notas (a lista é lida fora do try por candidata) até alguém consertar a linha à mão — o D-F136 já fazia isso com A/N; a D-F154 estende a C/K', async () => {
     const rows = [raw({ invoiceId: 7401, lastKind: 'A' }), raw({ invoiceId: 7402, lastKind: 'K', accessKey: null, authorityRecorded: 'N', nfseNumber: null })]
     const q = { query: jest.fn().mockResolvedValue([rows, []]) }
     await expect(listRefreshCandidates(q as any, 'setes_setes', { institutionId: 1, terminal: 0 }, 10, 10, 50)).rejects.toThrow(/D-F154/)
-    const pass = fnBody('refreshOpenServiceTransmissions')
-    const list = pass.indexOf('await listRefreshCandidates(')
-    const perCandidateTry = pass.indexOf('report.checked += 1')
-    expect([list > 0, perCandidateTry > list]).toEqual([true, true])
+    const seen: { invoiceId: number; attempt: number }[] = []
+    const ok = await listRefreshCandidates(q as any, 'setes_setes', { institutionId: 1, terminal: 0 }, 10, 10, 50, {}, row => { seen.push(row) })
+    expect([ok.map(t => t.invoiceId), seen]).toEqual([[7401], [{ invoiceId: 7402, attempt: 1 }]])
+    expect(fnBody('refreshOpenServiceTransmissions')).toMatch(/INCOERENTE pulada[\s\S]*touchQueriedAt/)
   })
 })

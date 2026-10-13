@@ -1002,7 +1002,7 @@ export async function refreshOpenServiceTransmissions(
   // NE-1a parte 2 (D-NE12): o terminal das notas desta passada vem da borda — a referência de cada candidata é montada com ele
   const scope = scopeOf(actor, opts.terminal)
   // a candidata é DESTE escopo (o SQL filtrou por ele): estabelecimento e terminal do escopo, o id da linha
-  const refOfTx = (tx: TransmissionRow): InvoiceRef => invoiceRef(scope.institutionId, tx.invoiceId, scope.terminal)
+  const refOfTx = (tx: Pick<TransmissionRow, 'invoiceId'>): InvoiceRef => invoiceRef(scope.institutionId, tx.invoiceId, scope.terminal)
   let lease = await leaseCommand(deps, actor, 'tomar', q => acquireRefreshLease(q, actor.institutionId, SERVICE_MODEL, REFRESH_LEASE_SECONDS))
   if (!lease) {
     // sem aluguel: dizer "outra passada em curso" só quando for verdade (gates R2/R4). D-F39 PRIMEIRO, pelo predicado
@@ -1024,9 +1024,23 @@ export async function refreshOpenServiceTransmissions(
     const authorizedMaxDays = ceiling.days + REFRESH_AUTHORIZED_MARGIN_DAYS
     report.authorizedMaxDays = authorizedMaxDays
     report.ceilingSource = ceiling.source
+    // D-F164 (= Q-F172 (a)): a linha INCOERENTE é pulada COM alarme (ref no log e no relatório) e marcada como olhada — senão voltaria no
+    // topo de toda passada (sem `last_queried_at`); o leitor da nota segue falhando alto até corrigirem a linha
+    const incoherent: { invoiceId: number; attempt: number }[] = []
     const list = await listRefreshCandidates(deps.pool, actor.schemaName, scope,
       opts.minMinutes ?? REFRESH_MIN_MINUTES, IN_FLIGHT_MINUTES, opts.limit ?? REFRESH_MAX_PER_RUN,
-      opts.interfaces ? { authorizedMaxDays, interfaces: opts.interfaces, liveOnlyInterfaces: opts.liveOnlyInterfaces ?? [] } : { authorizedMaxDays })
+      opts.interfaces ? { authorizedMaxDays, interfaces: opts.interfaces, liveOnlyInterfaces: opts.liveOnlyInterfaces ?? [] } : { authorizedMaxDays },
+      (row, err) => {
+        const ref = newCrashRef()
+        logger.error(`Consulta ativa: tentativa INCOERENTE pulada [ref ${ref}] — o leitor da nota segue falhando até corrigirem a linha (D-F164)`,
+          { institutionId: actor.institutionId, invoiceId: row.invoiceId, attempt: row.attempt, err: err.message })
+        report.errors.push({ invoiceId: row.invoiceId, code: ErrorCodes.INTERNAL, message: `Tentativa incoerente — pulada (ref ${ref})` })
+        incoherent.push(row)
+      })
+    for (const row of incoherent) {
+      try { await touchQueriedAt(deps.pool, refOfTx(row), row.attempt) }
+      catch (touchErr) { logger.warn('Consulta ativa: não marcou last_queried_at da linha incoerente', { institutionId: actor.institutionId, invoiceId: row.invoiceId, err: errMsg(touchErr) }) }
+    }
     for (const tx of list) {
       if (Date.now() >= deadline) { report.stoppedEarly = true; break }
       // o aluguel cobre UMA candidata: renovado antes de cada uma; perdido (outra passada o tomou) = esta para

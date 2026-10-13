@@ -173,6 +173,23 @@ describe('[MEDIUM — D-F38, corrigido nos gates R4] o prazo do PAM fica FORA do
 })
 
 // ===========================================================================
+describe('D-F164 (= Q-F172 (a), Valdo 2026-10-13 — R5-ADV-05): a linha INCOERENTE é pulada COM alarme na passada do rodízio', () => {
+  it('as coerentes seguem; a torta vai ao relatório (INTERNAL + ref) e ao log de erro, e ganha last_queried_at (não volta no topo de toda passada)', async () => {
+    fM.openIssuer.mockResolvedValue(openedVirada())
+    fM.acquireRefreshLease.mockResolvedValue('2026-10-04 12:01:00')
+    fM.releaseRefreshLease.mockResolvedValue(true)
+    repoM.listRefreshCandidates.mockImplementation(async (...a: any[]) => {
+      a[7]({ invoiceId: 7402, attempt: 3 }, new Error('Linha de tentativa INCOERENTE: voz K (pressupõe a autorização) SEM registro (D-F154)'))
+      return [tx()]
+    })
+    const r = await refreshOpenServiceTransmissions(deps, ACTOR, { terminal: WEB, budgetMs: 1000 })
+    expect(r.checked).toBe(1)
+    expect(r.errors).toEqual([{ invoiceId: 7402, code: actualFiscal.ErrorCodes.INTERNAL, message: expect.stringMatching(/incoerente — pulada \(ref /) }])
+    expect(repoM.touchQueriedAt).toHaveBeenCalledWith(pool, expect.objectContaining({ invoiceId: 7402 }), 3)
+    expect((fiscal as any).logger.error).toHaveBeenCalledWith(expect.stringMatching(/INCOERENTE pulada/), expect.objectContaining({ invoiceId: 7402, attempt: 3 }))
+  })
+})
+
 describe('[LOW — D-F38, corrigido nos gates R4] prazo do PAM implausível é descartado (nunca vira DATE_SUB fora do domínio)', () => {
   it('a heurística [INCERTO] do convênio lê uma DATA aaaammdd como "dias" — a passada DESCARTA o valor e usa o padrão (60 + 30)', async () => {
     expect(findCancelDays({ convenio: { dataLimiteCancelamento: 20261231 } })).toBe(20261231)

@@ -586,7 +586,7 @@ describe('consulta ativa — ALUGUEL na linha do emissor, candidatas filtradas n
   it('D-F46: os ramos de quem pede descem até o SQL das candidatas (o filtro é antes do LIMIT, nunca em JS)', async () => {
     ;(repo.listRefreshCandidates as jest.Mock).mockResolvedValue([])
     await refreshOpenServiceTransmissions(deps, A, { terminal: WEB, minMinutes: 7, limit: 3, interfaces: ['service-orders'], liveOnlyInterfaces: ['orders'] })
-    expect(repo.listRefreshCandidates).toHaveBeenCalledWith(pool, 'setes_setes', webScope(1), 7, 10, 3, { authorizedMaxDays: 90, interfaces: ['service-orders'], liveOnlyInterfaces: ['orders'] })
+    expect(repo.listRefreshCandidates).toHaveBeenCalledWith(pool, 'setes_setes', webScope(1), 7, 10, 3, { authorizedMaxDays: 90, interfaces: ['service-orders'], liveOnlyInterfaces: ['orders'] }, expect.any(Function))   // D-F164: o aviso da linha incoerente
   })
 
   it('consulta CADA candidata que o SQL devolveu (o filtro da vida vigente é do SQL) e devolve o aluguel no fim', async () => {
@@ -598,7 +598,7 @@ describe('consulta ativa — ALUGUEL na linha do emissor, candidatas filtradas n
     adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'authorized', nfseXml: NFSE_XML, dhProc: null })
     const r = await refreshOpenServiceTransmissions(deps, A, { terminal: WEB, minMinutes: 7, limit: 3 })
     expect(r).toMatchObject({ checked: 2, skipped: false })
-    expect(repo.listRefreshCandidates).toHaveBeenCalledWith(pool, 'setes_setes', webScope(1), 7, 10, 3, { authorizedMaxDays: 90 })   // D-F38: sem PAM = 60 + 30
+    expect(repo.listRefreshCandidates).toHaveBeenCalledWith(pool, 'setes_setes', webScope(1), 7, 10, 3, { authorizedMaxDays: 90 }, expect.any(Function))   // D-F38: sem PAM = 60 + 30; D-F164: o aviso da linha incoerente
     expect(fiscal.acquireRefreshLease).toHaveBeenCalledWith(conn, 1, 'SE', 210)        // pela conexão curta (D-F41)
     expect(fiscal.renewRefreshLease).toHaveBeenCalledTimes(2)                // renovado antes de CADA candidata (gates R4)
     expect(fiscal.releaseRefreshLease).toHaveBeenCalledWith(conn, 1, 'SE', '2026-10-04 12:01:00')   // devolve SÓ o próprio

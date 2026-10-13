@@ -366,6 +366,7 @@ const clampDays = (d: number) => (Number.isFinite(d) ? Math.min(Math.max(Math.tr
 export async function listRefreshCandidates(
   q: Q, schemaName: string, scope: InvoiceScope, minMinutes: number, inFlightMinutes: number, limit: number,
   opts: { authorizedHours?: number; authorizedMaxDays?: number; interfaces?: readonly string[]; liveOnlyInterfaces?: readonly string[] } = {},
+  onIncoherent?: (row: { invoiceId: number; attempt: number }, err: Error) => void,
 ): Promise<TransmissionRow[]> {
   const s = assertSchema(schemaName)
   const interfaces = opts.interfaces
@@ -413,7 +414,17 @@ export async function listRefreshCandidates(
     [scope.institutionId, scope.terminal, inFlightMinutes, minMinutes, minMinutes,
       clampDays(opts.authorizedMaxDays ?? DEFAULT_CANCEL_DAYS + REFRESH_AUTHORIZED_MARGIN_DAYS), opts.authorizedHours ?? REFRESH_AUTHORIZED_HOURS,
       ...branchParams, limit])
-  return (rows as any[]).map(mapTx)
+  // D-F164 (= Q-F172 (a), Valdo 2026-10-13 — gate adversarial da Rodada 5, R5-ADV-05): UMA linha incoerente (D-F136/D-F154 no `mapTx`)
+  // não derruba a lista INTEIRA do rodízio — quem passa [onIncoherent] recebe a linha (para o alarme) e a lista segue com as coerentes.
+  // Sem ele, falha alto como sempre (o leitor da NOTA nunca a engole — dois leitores, uma resposta).
+  if (!onIncoherent) return (rows as any[]).map(mapTx)
+  const out: TransmissionRow[] = []
+  for (const r of rows as any[]) {
+    try { out.push(mapTx(r)) } catch (err) {
+      onIncoherent({ invoiceId: Number(r.invoiceId), attempt: Number(r.attempt) }, err instanceof Error ? err : new Error(String(err)))
+    }
+  }
+  return out
 }
 
 // As tentativas VIVAS do emissor (guarda da habilitação e do A1) são contadas pelo EMITTER do núcleo pelas leituras PUBLICADAS de
