@@ -25,7 +25,30 @@ const CENTRAL_WATCH = ['setes_central.tb_institution', 'setes_central.tb_company
 export const FISCAL_COPY_TABLES = [
   'tb_establishment_issuer', 'tb_establishment_certificate', 'tb_invoice_service_dps',
   'tb_invoice_service_transmission', 'tb_invoice_service_transmission_event',
+  'tb_invoice_service_transmission_ibscbs',
 ]
+
+/**
+ * Gate socrático da IB-3 (L1, 2026-10-15): tabela nova da família entrava na cópia (pelas migrations) mas ficava FORA do CHECKSUM que vigia o
+ * `fiscal_api` REAL — "incluir depois do deploy" dependia de alguém lembrar. Agora: (1) a cerca `copy-tables-fence.test.ts` exige toda tabela
+ * criada pelas migrations da família na lista (ou numa exceção NOMEADA); (2) a cópia tolera a ausência no REAL só da tabela cuja migration
+ * ainda NÃO foi aplicada nele (`_migrations`) — tabela da lista ausente com a migration aplicada segue falhando alto (schema errado).
+ */
+export const FISCAL_COPY_EXCEPTIONS: Readonly<Record<string, string>> = Object.freeze({})
+
+/** Tabelas que cada migration da família CRIA (`CREATE TABLE …` fora de comentário), com o projeto e a versão. */
+export function tablesByMigration(): { project: string; version: string; table: string }[] {
+  const out: { project: string; version: string; table: string }[] = []
+  for (const set of MIGRATION_SETS) {
+    for (const file of fs.readdirSync(set.dir).filter(f => f.endsWith('.sql')).sort()) {
+      const sql = fs.readFileSync(path.join(set.dir, file), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/--[^\n]*/g, '')
+      for (const m of sql.matchAll(/CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?\s+`?([A-Za-z0-9_]+)`?/gi)) {
+        out.push({ project: set.project, version: file.split('_')[0], table: m[1] })
+      }
+    }
+  }
+  return out
+}
 
 export interface DisposableFiscalDb {
   cfg:      FiscalDbConfig
@@ -52,8 +75,13 @@ export async function disposableFiscalDb(root: string, name: string, opts: { tur
   }
   const admin = createFiscalPool({ ...base, user, password })
   const erpSchema = process.env.ADV_ERP_SCHEMA ?? 'setes_setes'
+  // a tabela da lista cuja migration o REAL ainda não aplicou (antes do deploy) fica fora da cópia e da vigilância — só ela
+  const [appliedRows] = await admin.query(`SELECT project, version FROM \`${real}\`._migrations`)
+  const applied = new Set((appliedRows as any[]).map(r => `${r.project}/${r.version}`))
+  const pendingInReal = new Set(tablesByMigration().filter(t => !applied.has(`${t.project}/${t.version}`)).map(t => t.table))
+  const copyTables = FISCAL_COPY_TABLES.filter(t => !pendingInReal.has(t))
   const realSums = async () => JSON.stringify((await admin.query(
-    `CHECKSUM TABLE ${[...FISCAL_COPY_TABLES, '_migrations'].map(t => `\`${real}\`.${t}`).join(', ')}, ${ERP_WATCH.map(t => `\`${erpSchema}\`.${t}`).join(', ')}, ${CENTRAL_WATCH.join(', ')}`))[0])
+    `CHECKSUM TABLE ${[...copyTables, '_migrations'].map(t => `\`${real}\`.${t}`).join(', ')}, ${ERP_WATCH.map(t => `\`${erpSchema}\`.${t}`).join(', ')}, ${CENTRAL_WATCH.join(', ')}`))[0])
   // cópias que sobraram de execução MORTA (nunca a de outra suíte em paralelo — rodar com --runInBand)
   // a varredura casa EXATAMENTE o que o validador aceita (re-prova R4: `fiscal_api_adv4` da r4 escapava)
   const [left] = await admin.query(`SHOW DATABASES LIKE 'fiscal\\_api\\_adv%'`)
@@ -67,7 +95,7 @@ export async function disposableFiscalDb(root: string, name: string, opts: { tur
   if (nulls.length) throw new Error(`Vigilância do harness com tabela inexistente: ${nulls.join(', ')} (ADV_ERP_SCHEMA?)`)
   await admin.query(`DROP DATABASE IF EXISTS \`${name}\``)
   await runMigrations({ ...base, database: name }, MIGRATION_SETS)        // como o serviço faz no boot (D-F53)
-  for (const t of FISCAL_COPY_TABLES) await admin.query(`INSERT INTO \`${name}\`.${t} SELECT * FROM \`${real}\`.${t}`)
+  for (const t of copyTables) await admin.query(`INSERT INTO \`${name}\`.${t} SELECT * FROM \`${real}\`.${t}`)
   if (opts.turned) await admin.query(`UPDATE \`${name}\`.tb_establishment_issuer SET cutover_at = NOW() WHERE cutover_at IS NULL`)
   const cfg: FiscalDbConfig = { ...base, database: name }              // D-F53: o ataque com o usuário do SERVIÇO
   const pool = createFiscalPool(cfg)

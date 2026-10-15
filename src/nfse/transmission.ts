@@ -7,10 +7,12 @@ import {
   ServiceFiscalState, TransmissionEventKind, TransmissionSource, AuthorityEnvironment, AuthorityContext, Queryable, runShortCommand,
   tagAmbiguous, ambiguousCauseOf, invoiceRef, InvoiceRef, InvoiceScope, InvoiceTx, withInvoiceTx as withLockedInvoice,
   classifyAuthorityError, OUTCOME_KIND, EMITTER_FAILURE_CODES, unhandledOutcome, recordVoiceOnce, recordKindOnce, reserveCancelRequest, releaseCancelRequest,
+  parseXml,
 } from 'fiscal-api'
 import type { TaxAuthorityAdapter, NfseQuery, MunicipalTerms } from '../authority/types'
 import fs from 'fs'
-import { buildDpsId, buildDpsXml, buildCancelEventXml, buildEventId, parseNfseXml, parseEventXml } from '../authority/dps-builder'
+import { buildDpsId, buildDpsXml, buildCancelEventXml, buildEventId, parseNfseXml, parseEventXml, parseNfseDeclaration, nfseDpsHasIbscbs } from '../authority/dps-builder'
+import type { NfseDeclaredIbscbs, NfseIbscbsValues } from '../authority/types'
 import { ADN_SIGN_ALGORITHM } from '../authority/adn'
 import {
   SERVICE_MODEL, VER_APLIC, ServiceInvoiceHeader, DpsBase, EmitterIdentity,
@@ -20,9 +22,10 @@ import {
   TransmissionRow, TransmissionEventRow, getLifeDps, insertLifeDps, getTransmission, latestTransmission,
   findTransmissionByDpsId, findKeyHolder, listLifeTransmissions, insertTransmission, fillAuthorityData, insertTransmissionEvent,
   hasTransmissionEvent, findTransmissionEventByKind, touchQueriedAt, recordNfseNotGenerated, listRefreshCandidates,
-  DEFAULT_CANCEL_DAYS, REFRESH_AUTHORIZED_MARGIN_DAYS,
+  DEFAULT_CANCEL_DAYS, REFRESH_AUTHORIZED_MARGIN_DAYS, getIbscbsValues,
 } from './repository'
 import { toTsString } from '../authority/dps-builder'
+import { readFiscalIbscbs, recordIbscbsValues } from './ibscbs-values'
 
 /**
  * COMPOSIÇÃO DA NFS-e na nfse-api (F1 da extração fiscal — prompt_apis_fiscais_isoladas.md §12/§14).
@@ -385,6 +388,8 @@ export async function transmitServiceInvoice(deps: NfseDeps, actor: Actor, ref: 
 
   // (g) AUTORIZADA: write-once do fisco + voz A + XML da NFS-e
   const dh = toDbDateTime(outcome.dhProc)
+  // IB-3 (D-IB80): os valores IBS/CBS do fisco lidos FORA da transação (pura); a voz A nunca espera por eles
+  const fiscalIbscbs = readFiscalIbscbs(outcome.nfseXml, outcome.accessKey)
   const holderAttempt = await withInvoiceTx(deps, 'voz do fisco (autorizada)', actor, ref, async itx => {
     const { conn } = itx
     // gate socrático M-5: a consulta (rodízio/outra tela) pode ter pousado ESTA chave numa irmã durante o
@@ -400,6 +405,7 @@ export async function transmitServiceInvoice(deps: NfseDeps, actor: Actor, ref: 
       return holder.attempt
     }
     await fillAuthorityData(itx, reserved.attempt, { accessKey: outcome.accessKey, nfseNumber: outcome.nfseNumber, dhProc: dh })
+    await recordIbscbsValues(itx, reserved.attempt, fiscalIbscbs, { institutionId, invoiceId, origin: 'transmissao', accessKey: outcome.accessKey })
     await recordVoiceOnce({ insertTransmissionEvent, hasTransmissionEvent }, itx, reserved.attempt, userId, {
       kind: 'A', source: 'P', dh, message: `NFS-e ${outcome.nfseNumber ?? ''} chave ${outcome.accessKey}`.trim(),
     })
@@ -582,6 +588,8 @@ async function refreshServiceTransmissionInner(
       undefined, ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE), 'nfse-de-outro-dps')
   }
   const dhA = toDbDateTime(nfse.dhProc ?? parsed.dhProc)
+  // IB-3 (D-IB80): os valores IBS/CBS do fisco lidos FORA da transação (pura); a consulta seguinte preenche o que faltar
+  const fiscalIbscbs = readFiscalIbscbs(nfse.nfseXml, nfse.accessKey)
 
   const result = await withInvoiceTx(deps, 'voz do fisco (consulta)', actor, ref, async (itx): Promise<RefreshResult> => {
     const { conn, locked } = itx
@@ -604,6 +612,7 @@ async function refreshServiceTransmissionInner(
         undefined, ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE), nfse.unknownCause ?? 'situacao-ilegivel')   // gate R19 (S3)
     }
     await fillAuthorityData(itx, tx.attempt, { accessKey: nfse.accessKey, nfseNumber: parsed.nNFSe, dhProc: dhA })
+    await recordIbscbsValues(itx, tx.attempt, fiscalIbscbs, { institutionId, invoiceId, origin: 'consulta', accessKey: nfse.accessKey })
     let changed = false
     let kind: TransmissionEventKind | null = tx.lastKind
     // A: quando a tentativa ainda não a tem — inclusive depois de R/F (MEDIUM-1); nunca depois de C/K
@@ -1114,6 +1123,12 @@ export interface ServiceFiscalView {
   substitution:       { substituteAccessKey: string | null } | null
   xmlAvailable:       boolean
   danfseAvailable:    boolean
+  /**
+   * IB-3 (D-IB76/D-IB77): a declaração IBS/CBS ENVIADA (lida do DPS embutido no XML autorizado — D-F76) e os VALORES que o fisco calculou
+   * (gravados uma vez na tentativa que detém a chave). null = a vida ainda não tem NFS-e. Cada parte null = indisponível (XML ausente,
+   * DPS sem o grupo, valores ainda não gravados). Só exibição: nada aqui decide estado. Aditivo.
+   */
+  ibscbs:             { declared: NfseDeclaredIbscbs | null; groupInDps: boolean | null; values: NfseIbscbsValues | null } | null
 }
 
 export async function getServiceFiscalView(deps: NfseDeps, actor: Actor, ref: InvoiceRef): Promise<ServiceFiscalView> {
@@ -1141,7 +1156,33 @@ export async function getServiceFiscalView(deps: NfseDeps, actor: Actor, ref: In
     localCancelPending: localCancelPending(current, life.lastKind),
     substitution: isSubstitutionCancel(current) ? { substituteAccessKey: await substituteKeyOf(deps, institutionId, current!, zone) } : null,
     xmlAvailable, danfseAvailable: xmlAvailable,
+    ibscbs: withKey ? await ibscbsViewOf(deps, ref, institutionId, withKey, zone) : null,
   }
+}
+
+/**
+ * IB-3: valores (tabela, da tentativa que detém a chave) + declaração ENVIADA (XML arquivado) — SÓ EXIBIÇÃO: falha de leitura = null, nunca 500
+ * (gate socrático da IB-3, L2). D-IB90 (gates do app): `groupInDps` separa "o DPS autorizado NÃO levou o grupo" (false) de "XML indisponível"
+ * (null) — o app mostra a divergência "congelada no ERP × enviada" sem decidir nada. Um parse por documento.
+ */
+async function ibscbsViewOf(
+  deps: NfseDeps, ref: InvoiceRef, institutionId: number, tx: TransmissionRow, zone: string,
+): Promise<{ declared: NfseDeclaredIbscbs | null; groupInDps: boolean | null; values: NfseIbscbsValues | null }> {
+  let values: NfseIbscbsValues | null = null
+  try { values = await getIbscbsValues(deps.pool, ref, tx.attempt) } catch { values = null }
+  let declared: NfseDeclaredIbscbs | null = null
+  let groupInDps: boolean | null = null
+  try {
+    const file = tx.accessKey
+      ? deps.storage.find(await emitterCnpj(deps.pool, institutionId), nfseFileName(tx.accessKey), [tx.dhProc, tx.createdAt], tx.environment, zone)
+      : null
+    if (file) {
+      const doc = parseXml(deps.storage.read(file))
+      groupInDps = nfseDpsHasIbscbs(doc)
+      declared = groupInDps ? parseNfseDeclaration(doc) : null
+    }
+  } catch { declared = null; groupInDps = null }
+  return { declared, groupInDps, values }
 }
 
 /**

@@ -1,9 +1,10 @@
 import {
   PoolConnection, Queryable, TransmissionEventKind, TransmissionSource, TransmissionEnvironment,
   assertSchema, InvoiceRef, InvoiceScope, LIVE_VOICE_KINDS, AUTHORIZED_KINDS, AUTHORIZATION_PRESUPPOSED_KINDS, FINAL_TRANSMISSION_KINDS, sqlKindList,
-  InvoiceTx, assertInvoiceTx,
+  InvoiceTx, assertInvoiceTx, isDeadlock,
 } from 'fiscal-api'
 import { SERVICE_VOICE_FAMILY } from './voice-family'
+import type { NfseIbscbsValues } from '../authority/types'
 
 /**
  * SQL da FAMÍLIA NFS-e no `fiscal_api` (migration 001 da nfse-api — D-F30/D-F35): o DPS de cada vida,
@@ -280,6 +281,88 @@ export async function insertTransmission(
      VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), 'N')`,
     [ref.institutionId, ref.invoiceId, ref.terminal, attempt, lifeEvent, environment, userId])
   return attempt
+}
+
+/** Os valores IBS/CBS gravados da tentativa (tela "No fisco" — só leitura; texto exato do DECIMAL, nunca número do JS). */
+export async function getIbscbsValues(q: Queryable, ref: InvoiceRef, attempt: number): Promise<NfseIbscbsValues | null> {
+  const [rows] = await q.query(
+    `SELECT CAST(total_invoice_value AS CHAR) AS t, CAST(ibs_total_value AS CHAR) AS i, CAST(cbs_value AS CHAR) AS c
+       FROM tb_invoice_service_transmission_ibscbs
+      WHERE tb_institution_id = ? AND tb_invoice_id = ? AND terminal = ? AND attempt = ? AND deleted = 'N'`,
+    [ref.institutionId, ref.invoiceId, ref.terminal, attempt])
+  const r = (rows as any[])[0]
+  return r ? { totalInvoiceValue: String(r.t), ibsTotalValue: String(r.i), cbsValue: String(r.c) } : null
+}
+
+/** Decimal do TSDec15V2 normalizado para comparar ('0' ≡ '0.00'). */
+const dec = (v: string): string => (v.includes('.') ? v : `${v}.00`)
+
+/**
+ * WRITE-ONCE dos VALORES IBS/CBS do fisco (IB-3 — D-IB77/D-IB80; migration 007) — ESCRITOR ÚNICO (cerca: ibscbs-ib3.test.ts). Só na tentativa
+ * que DETÉM a chave DESTA NFS-e (D-N26 — `access_key = ?`, nunca "tem alguma chave"), sob a nota TRAVADA (`InvoiceTx`), com o TEXTO já conferido
+ * no TSDec15V2 (nunca número do JS).
+ * Gates da IB-3 (socrático M1/M2 + adversarial MEDIUM, 2026-10-15 — 1213 PROVADO entre vozes A de notas DIFERENTES com o INSERT … SELECT …
+ * NOT EXISTS: o SELECT de um INSERT … SELECT trava o INTERVALO do índice; notas novas caem no mesmo intervalo):
+ *  - a trava da NOTA já serializa todo escritor da MESMA nota (D-F27) — o write-once não precisa de trava própria: leitura de existência SEM
+ *    trava (o snapshot nasce depois da trava da nota — PADROES §11 regra 12) + `INSERT … VALUES` (só intenção de inserção, compatível entre
+ *    notas). Corrida sem a trava (não existe na produção) = 1062 → releitura TRAVANTE da linha que existe (registro, nunca intervalo);
+ *  - COMPARTIMENTO: um SAVEPOINT em volta. Deadlock (1213) = o InnoDB desfez a transação INTEIRA → repassa (o `withTransaction` reexecuta; seguir
+ *    adiante rodaria a voz A em AUTOCOMMIT, fora da trava da nota). Qualquer outro erro do banco (1205, 1146/1142, FK…) = ROLLBACK TO SAVEPOINT
+ *    e `failed` — a voz A segue (D-IB80: a A nunca espera os valores); se nem o savepoint existe mais (transação morta), repassa.
+ * `inserted` = gravou · `same` = já estava igual · `divergent` = já havia OUTRO valor (fica o 1º — quem chama alarma) · `no-key` = a tentativa
+ * não detém ESTA chave (nada gravado) · `failed` = erro do banco isolado (nada gravado; quem chama alarma com o código).
+ */
+export async function fillAuthorityIbscbs(
+  itx: InvoiceTx, attempt: number, accessKey: string, v: NfseIbscbsValues,
+): Promise<{ result: 'inserted' | 'same' | 'divergent' | 'no-key' } | { result: 'failed'; code: string }> {
+  assertInvoiceTx(itx)
+  const { conn, ref } = itx
+  const key = [ref.institutionId, ref.invoiceId, ref.terminal, attempt]
+  const compare = (cur: { t: unknown; i: unknown; c: unknown }) =>
+    dec(String(cur.t)) === dec(v.totalInvoiceValue) && dec(String(cur.i)) === dec(v.ibsTotalValue) && dec(String(cur.c)) === dec(v.cbsValue)
+      ? 'same' as const : 'divergent' as const
+  const current = async (lock: boolean) => {
+    const [rows] = await conn.query(
+      `SELECT CAST(total_invoice_value AS CHAR) AS t, CAST(ibs_total_value AS CHAR) AS i, CAST(cbs_value AS CHAR) AS c
+         FROM tb_invoice_service_transmission_ibscbs
+        WHERE tb_institution_id = ? AND tb_invoice_id = ? AND terminal = ? AND attempt = ?${lock ? ' LOCK IN SHARE MODE' : ''}`, key)
+    return (rows as any[])[0] as { t: unknown; i: unknown; c: unknown } | undefined
+  }
+  await conn.query('SAVEPOINT ibscbs_values')
+  try {
+    const [holder] = await conn.query(
+      `SELECT 1 AS ok FROM tb_invoice_service_transmission
+        WHERE tb_institution_id = ? AND tb_invoice_id = ? AND terminal = ? AND attempt = ? AND access_key = ?`, [...key, accessKey])
+    let out: 'inserted' | 'same' | 'divergent' | 'no-key'
+    if (!(holder as any[]).length) out = 'no-key'
+    else {
+      const cur = await current(false)
+      if (cur) out = compare(cur)
+      else {
+        try {
+          // ADV-IB3Y-01 (gate do delta): a trava da nota é conferida de NOVO logo antes de escrever — chamada sem await que sobrevivesse ao
+          // COMMIT gravaria em AUTOCOMMIT, fora da trava (regra NE1A2-02 da família)
+          assertInvoiceTx(itx)
+          await conn.query(
+            `INSERT INTO tb_invoice_service_transmission_ibscbs
+               (tb_institution_id, tb_invoice_id, terminal, attempt, total_invoice_value, ibs_total_value, cbs_value, created_at, updated_at, deleted)
+             VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), 'N')`, [...key, v.totalInvoiceValue, v.ibsTotalValue, v.cbsValue])
+          out = 'inserted'
+        } catch (e) {
+          if ((e as any)?.code !== 'ER_DUP_ENTRY') throw e
+          const raced = await current(true)
+          if (!raced) throw e
+          out = compare(raced)
+        }
+      }
+    }
+    await conn.query('RELEASE SAVEPOINT ibscbs_values')
+    return { result: out }
+  } catch (e) {
+    if (isDeadlock(e)) throw e
+    try { await conn.query('ROLLBACK TO SAVEPOINT ibscbs_values') } catch { throw e }
+    return { result: 'failed', code: String((e as any)?.code ?? (e as any)?.errno ?? 'erro') }
+  }
 }
 
 /** WRITE-ONCE (D-I6 espelhada): só preenche o que ainda é NULL — chave/número/dhProc do fisco. */

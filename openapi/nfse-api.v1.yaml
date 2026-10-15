@@ -604,6 +604,31 @@ components:
             substituteAccessKey: { type: string, nullable: true, description: 'chave da substituta lida do XML do evento (null = XML ausente)' }
         xmlAvailable: { type: boolean }
         danfseAvailable: { type: boolean }
+        ibscbs:
+          type: object
+          nullable: true
+          description: 'IB-3 (D-IB76/D-IB77 — fase IBS/CBS): a declaração IBS/CBS ENVIADA (lida do DPS embutido no XML autorizado) e os VALORES que o fisco calculou (gravados uma vez na tentativa que detém a chave). null = a vida ainda não tem NFS-e; cada parte null = indisponível. Só exibição — nada aqui decide estado'
+          properties:
+            declared:
+              type: object
+              nullable: true
+              properties:
+                cst: { type: string, description: '3 dígitos (prefixo do cClassTrib)' }
+                classificationCode: { type: string, description: 'cClassTrib (6 dígitos)' }
+                placeIndicatorCode: { type: string, description: 'cIndOp (6 dígitos)' }
+                nbs: { type: string, nullable: true, description: 'cNBS (9 dígitos)' }
+            groupInDps:
+              type: boolean
+              nullable: true
+              description: 'D-IB90 (gates da IB-3): o DPS autorizado LEVOU o grupo IBS/CBS? true = levou · false = a NFS-e autorizada NÃO leva o grupo (o app mostra a divergência com a declaração congelada no ERP) · null = XML indisponível'
+            values:
+              type: object
+              nullable: true
+              description: 'texto decimal exato (TSDec15V2 — até 15 inteiros; nunca número de ponto flutuante)'
+              properties:
+                totalInvoiceValue: { type: string, description: 'vTotNF (= vLiq em 2026; vLiq + vCBS + vIBSTot a partir de 2027)' }
+                ibsTotalValue: { type: string, description: 'vIBSTot' }
+                cbsValue: { type: string, description: 'vCBS' }
     TransmitResult:
       type: object
       properties:

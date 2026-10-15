@@ -146,6 +146,8 @@ async function main(): Promise<void> {
       const pdf = await renderDanfse(xml.xml, { issuerName: name, municipality, cancelled: xml.cancelled })
       fs.writeFileSync(path.join(storageRoot, `${xml.accessKey}-danfse.pdf`), pdf)
       step('3. XML + DANFSe', { chave: xml.accessKey, danfse: path.join(storageRoot, `${xml.accessKey}-danfse.pdf`) })
+      // IB-3 (D-IB82): o que a NFS-e autorizada levou e o que o fisco calculou — a prova da fase IBS/CBS em H
+      step('3b. IBS/CBS (declaração enviada × valores do fisco)', (await getServiceFiscalView(deps, actor, webRef(INVOICE))).ibscbs)
       step('4. CANCELAR NO FISCO (e101101)', await cancelServiceInvoiceAtAuthority(deps, actor, webRef(INVOICE), MOTIVE).catch(e => ({ code: e.code, message: e.message })))
       step('5. CONSULTAR (voz C)', await refreshServiceTransmission(deps, actor, webRef(INVOICE), 'Q').catch(e => ({ code: e.code, message: e.message })))
     } else {

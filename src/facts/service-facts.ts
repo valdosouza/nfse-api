@@ -2,7 +2,7 @@ import {
   HttpError, FieldError, ErrorCodes, Queryable, assertSchema, erp, nowIsoIn, InvoiceRef, InvoiceScope,
   LIVE_VOICE_KINDS, AUTHORIZED_KINDS, sqlKindList,
 } from 'fiscal-api'
-import type { DpsInput, DpsToma, DpsTotTrib, AuthorityEnvironment } from '../authority/types'
+import type { DpsInput, DpsIbscbs, DpsToma, DpsTotTrib, AuthorityEnvironment } from '../authority/types'
 
 /**
  * FONTE DE FATOS DO RAMO DE SERVIÇO (D-F10) — o que a nfse-api lê do ERP para montar o DPS. Com a
@@ -34,6 +34,9 @@ export interface ServiceBranchRow {
   liability:     '1' | '2' | '3' | '4'
   description:   string | null
   totalValue:    number
+  /** IB-3 (D-IB41/D-IB76…): a DECLARAÇÃO IBS/CBS que o ERP CONGELOU no ramo (IB-2 — escritor único `issueInvoice`), lida CRUA; a forma é
+   *  conferida só por quem monta o DPS (`buildDpsBase`). A nfse-api NUNCA re-deriva pela presunção do serviço nem consulta o catálogo. */
+  declaration: { classificationCode: string | null; placeIndicatorCode: string | null; nbs: string | null }
 }
 
 export interface ServiceInvoiceHeader {
@@ -71,7 +74,8 @@ export async function readServiceInvoice(q: Queryable, schemaName: string, ref: 
             sv.id AS branchId, sv.tb_service_list_id AS serviceListId, sv.national_code AS nationalCode,
             sv.municipal_code AS municipalCode, sv.tb_city_id AS cityId, sv.base_iss_value AS baseIss,
             sv.aliq_iss AS aliqIss, sv.iss_value AS issValue, sv.iss_withheld AS issWithheld, sv.liability,
-            CONVERT(sv.description USING utf8mb4) AS description, sv.total_value AS totalValue
+            CONVERT(sv.description USING utf8mb4) AS description, sv.total_value AS totalValue,
+            sv.classification_code AS classificationCode, sv.place_indicator_code AS placeIndicatorCode, sv.nbs AS nbs
        FROM \`${s}\`.tb_invoice i
        LEFT JOIN \`${s}\`.vw_invoice_life l
          ON l.tb_institution_id = i.tb_institution_id AND l.tb_invoice_id = i.id AND l.terminal = i.terminal
@@ -98,7 +102,61 @@ export async function readServiceInvoice(q: Queryable, schemaName: string, ref: 
       issValue: Number(r.issValue ?? 0), issWithheld: r.issWithheld === 'S' ? 'S' : 'N',
       liability: (['1', '2', '3', '4'].includes(String(r.liability)) ? String(r.liability) : '1') as ServiceBranchRow['liability'],
       description: r.description ?? null, totalValue: Number(r.totalValue ?? 0),
+      declaration: {
+        classificationCode: r.classificationCode ?? null, placeIndicatorCode: r.placeIndicatorCode ?? null, nbs: r.nbs ?? null,
+      },
     },
+  }
+}
+
+/**
+ * A DECLARAÇÃO IBS/CBS do ramo na forma do DPS (IB-3 — D-IB62/D-IB76…): o par completo vira o grupo (`DpsIbscbs`), a NBS vai como `cNBS`
+ * (com o grupo sempre — E0322; sem ele, sozinha — D-IB62). Quem lê dado de OUTRO serviço confere antes de mandar ao fisco: par incompleto,
+ * grupo sem NBS ou forma fora de 6/6/9 dígitos = 422 `FISCAL_DPS_INVALID` com o campo — nunca "descartar o grupo calado" (um envio
+ * obrigatório perdido sem ninguém ver). O ERP já tem os CHECKs (066/070); isto é a borda da nfse-api.
+ */
+export function declarationForDps(d: ServiceBranchRow['declaration']): { ibscbs?: DpsIbscbs; cNBS?: string } {
+  const cls = d.classificationCode?.trim() || null
+  const place = d.placeIndicatorCode?.trim() || null
+  const nbs = d.nbs?.trim() || null
+  const fields: FieldError[] = []
+  if ((cls === null) !== (place === null)) fields.push({ field: 'ibscbs', message: 'Declaração IBS/CBS incompleta no ramo (cClassTrib e cIndOp vêm juntos)' })
+  if (cls !== null && nbs === null) fields.push({ field: 'nbs', message: 'Grupo IBS/CBS sem NBS (E0322)' })
+  if (cls !== null && !/^\d{6}$/.test(cls)) fields.push({ field: 'ibscbs.classificationCode', message: 'cClassTrib fora da forma (6 dígitos)' })
+  if (place !== null && !/^\d{6}$/.test(place)) fields.push({ field: 'ibscbs.placeIndicatorCode', message: 'cIndOp fora da forma (6 dígitos)' })
+  if (nbs !== null && !/^\d{9}$/.test(nbs)) fields.push({ field: 'nbs', message: 'NBS fora da forma (9 dígitos)' })
+  if (fields.length) {
+    throw new HttpError(422, 'Declaração IBS/CBS congelada na nota fora da forma do DPS — cancele e refature a nota no ERP',
+      fields, ErrorCodes.FISCAL_DPS_INVALID)
+  }
+  return {
+    ...(cls !== null && place !== null ? { ibscbs: { cIndOp: place, cClassTrib: cls } } : {}),
+    ...(nbs !== null ? { cNBS: nbs } : {}),
+  }
+}
+
+/**
+ * Rejeições do Anexo I que o GRUPO IBS/CBS abre e que se sabem NA MONTAGEM (gate adversarial da IB-3, MEDIUM — molde da E0322 e das
+ * E0166/E0712 da Onda 3): 422 local com o campo, nunca um DPS que o fisco vai rejeitar. Sem o grupo, a mesma nota segue como antes.
+ *  - RN 255 / E0234: com estes cIndOp o ENDEREÇO do tomador é obrigatório (`buildRecipient` omite `toma.end` quando o cadastro está
+ *    incompleto — o XSD o deixa opcional) — Anexo I, aba "RN DPS_NFS-e", regra 255;
+ *  - RN 547 / E0903: serviço dos subitens 25.05 / 15.09 / 17.12 / 10.05 (cTribNac) exige `tpOper` no grupo — o montador não o emite
+ *    (fora do 1º release da IB-3): recusa "ainda não suportado" em vez de rejeição do fisco — Anexo I, regra 547.
+ */
+export const CIND_OP_REQUIRES_RECIPIENT_ADDRESS: ReadonlySet<string> = new Set([
+  '030102', '050102', '100101', '100301', '100501', '030103', '050103', '100102', '100201', '100302', '100401', '100502', '100601',
+])
+export const TP_OPER_SERVICE_SUBITEMS: ReadonlySet<string> = new Set(['2505', '1509', '1712', '1005'])
+
+export function assertIbscbsGroupDeliverable(g: DpsIbscbs, toma: DpsToma, nationalCode: string): void {
+  if (CIND_OP_REQUIRES_RECIPIENT_ADDRESS.has(g.cIndOp) && !toma.end) {
+    throw new HttpError(422, `O indicador de operação IBS/CBS ${g.cIndOp} exige o endereço completo do tomador (E0234) — complete o cadastro (CEP, logradouro, número, bairro e cidade)`,
+      [{ field: 'recipient.address', message: 'Endereço completo obrigatório para o grupo IBS/CBS (E0234)' }], ErrorCodes.FISCAL_RECIPIENT_INCOMPLETE)
+  }
+  const subitem = String(nationalCode ?? '').slice(0, 4)
+  if (TP_OPER_SERVICE_SUBITEMS.has(subitem)) {
+    throw new HttpError(422, `Serviço do subitem ${subitem.slice(0, 2)}.${subitem.slice(2)} exige o tipo de operação (tpOper) no grupo IBS/CBS (E0903) — ainda não suportado pela NFS-e do sistema`,
+      [{ field: 'nationalCode', message: 'tpOper obrigatório para este serviço no grupo IBS/CBS (E0903) — não suportado' }], ErrorCodes.FISCAL_DPS_INVALID)
   }
 }
 
@@ -279,6 +337,9 @@ export async function buildDpsBase(
     throw new HttpError(422, `Base do ISS (${b.baseIss}) diferente do valor do serviço (${b.totalValue}) — o DPS não tem campo de base; confira a nota`,
       [{ field: 'baseIss', message: 'Base do ISS ≠ valor do serviço' }], ErrorCodes.FISCAL_DPS_INVALID)
   }
+  // IB-3: a declaração IBS/CBS do ramo (forma conferida ANTES de tocar o fisco) + as rejeições que o grupo abre (E0234/E0903)
+  const declared = declarationForDps(b.declaration)
+  if (declared.ibscbs) assertIbscbsGroupDeliverable(declared.ibscbs, toma, b.nationalCode)
   const zone = await erp.institutionZone(q, schemaName, institutionId)
   const input: Omit<DpsInput, 'serie' | 'nDps'> = {
     environment, dhEmi: nowIsoIn(zone), verAplic: VER_APLIC, dCompet: header.dtEmission,
@@ -289,6 +350,7 @@ export async function buildDpsBase(
         cTribNac: b.nationalCode,
         ...(municipalDigits ? { cTribMun: municipalDigits } : {}),
         xDescServ: (b.description ?? '').trim() || 'Serviços',
+        ...(declared.cNBS ? { cNBS: declared.cNBS } : {}),
       },
     },
     valores: {
@@ -298,6 +360,7 @@ export async function buildDpsBase(
         totTrib,
       },
     },
+    ...(declared.ibscbs ? { ibscbs: declared.ibscbs } : {}),
   }
   return { input, emitter: identity }
 }

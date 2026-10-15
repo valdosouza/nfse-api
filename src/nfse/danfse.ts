@@ -1,6 +1,6 @@
 import PDFDocument from 'pdfkit'
-import { parseXml, firstElement, firstText, XmlNode, XmlUnreadableError, HttpError, ErrorCodes } from 'fiscal-api'
-import { parseNfseXml, NFSE_XML } from '../authority/dps-builder'
+import { parseXml, firstElement, firstText, textOf, XmlNode, XmlUnreadableError, HttpError, ErrorCodes } from 'fiscal-api'
+import { parseNfseXml, parseNfseDeclaration, childOf, pathOf, NFSE_XML } from '../authority/dps-builder'
 
 /**
  * PEÇA @shared/danfse — Documento Auxiliar da NFS-e renderizado POR NÓS a partir
@@ -43,6 +43,24 @@ const fmtMoney = (v: string | null): string => {
 }
 const fmtKey = (k: string): string => k.replace(/(\d{4})(?=\d)/g, '$1 ')
 
+/**
+ * IB-3 (gates socrático L2 + adversarial): valor do FISCO no bloco IBS/CBS como TEXTO exato — nunca `Number` (TSDec15V2 tem até 15 inteiros:
+ * acima de ~1e13 o ponto flutuante perde centavos) e nunca "0,00" onde o fisco não mandou o valor (ausente/fora da forma = "—").
+ */
+const DEC_TEXT = /^(0|[1-9]\d{0,14})(\.\d{1,2})?$/
+export const fmtDecText = (v: string | null): string => {
+  if (v === null || !DEC_TEXT.test(v)) return '—'
+  const [i, f = ''] = v.split('.')
+  return `${i.replace(/\B(?=(\d{3})+(?!\d))/g, '.')},${(f + '00').slice(0, 2)}`
+}
+/** Soma EXATA de dois valores do fisco em centavos (BigInt); qualquer parte ausente/fora da forma = null. */
+export const addDecText = (a: string | null, b: string | null): string | null => {
+  if (a === null || b === null || !DEC_TEXT.test(a) || !DEC_TEXT.test(b)) return null
+  const cents = (x: string) => { const [i, f = ''] = x.split('.'); return BigInt(i) * BigInt(100) + BigInt((f + '00').slice(0, 2)) }
+  const t = cents(a) + cents(b)
+  return `${t / BigInt(100)}.${String(t % BigInt(100)).padStart(2, '0')}`
+}
+
 export interface DanfseFields {
   accessKey:   string
   nNFSe:       string | null
@@ -54,6 +72,20 @@ export interface DanfseFields {
   toma:        { doc: string | null; xNome: string | null; address: string | null }
   serv:        { cTribNac: string | null; cLocPrestacao: string | null; xDescServ: string | null }
   valores:     { vServ: string | null; pAliq: string | null; vISSQN: string | null; tpRetISSQN: string | null; vLiq: string | null }
+  /** IB-3 (NT 008 — D-IB76/D-IB77): o bloco IBS/CBS — declaração ENVIADA (DPS embutido) + valores do FISCO (`infNFSe/IBSCBS`), POR CAMINHO
+   *  (dois IBSCBS no XML — T2). AUSENTE = nem a declaração nem o grupo do fisco (o oráculo do N17 não tem o campo — paridade).
+   *  D-IB86 (= Q-IB86 (a), gates da IB-3): o bloco aparece com a declaração OU com o grupo do fisco — o que faltar sai "não informado"
+   *  (o documento legal nunca omite o que a tela "No fisco" mostra). `fiscal` null = o fisco não devolveu o grupo dele; `cst` null = sem a
+   *  declaração legível no DPS embutido. */
+  ibscbs?:     {
+    cst: string | null; cClassTrib: string | null; cIndOp: string | null; nbs: string | null
+    fiscal: {
+      localidade: string | null; vBC: string | null
+      pIBSUF: string | null; pAliqEfetUF: string | null; pIBSMun: string | null; pAliqEfetMun: string | null
+      pCBS: string | null; pAliqEfetCBS: string | null
+      vIBSUF: string | null; vIBSMun: string | null; vIBSTot: string | null; vCBS: string | null; vTotNF: string | null
+    } | null
+  }
   cancelled:   boolean
 }
 
@@ -97,7 +129,35 @@ function readDanfseFields(nfseXml: string): DanfseFields {
       vISSQN: text(valNfse, 'vISSQN') ?? text(val, 'vISSQN'), tpRetISSQN: text(val, 'tpRetISSQN'),
       vLiq: text(valNfse, 'vLiq'),
     },
+    ...ibscbsField(readIbscbsBlock(doc, inf)),
     cancelled: !!parsed.cancelled,
+  }
+}
+
+const ibscbsField = (b: DanfseFields['ibscbs'] | null) => (b ? { ibscbs: b } : {})
+
+/** NT 008: declaração do DPS embutido + valores do grupo do FISCO (filho DIRETO de `infNFSe`), sempre por caminho. */
+function readIbscbsBlock(doc: XmlNode, inf: XmlNode | null): DanfseFields['ibscbs'] | null {
+  const declared = parseNfseDeclaration(doc)
+  const g = inf ? childOf(inf, 'IBSCBS') : null
+  if (!declared && !g) return null                                       // D-IB86: com a declaração OU com o grupo do fisco
+  const at = (...p: string[]): string | null => {
+    const e = g ? pathOf(g, ...p) : null
+    const v = e ? textOf(e) : ''
+    return v === '' ? null : v
+  }
+  const localidade = [at('cLocalidadeIncid'), at('xLocalidadeIncid')].filter(Boolean).join(' — ') || null
+  return {
+    cst: declared?.cst ?? null, cClassTrib: declared?.classificationCode ?? null, cIndOp: declared?.placeIndicatorCode ?? null,
+    nbs: declared?.nbs ?? null,
+    fiscal: g ? {
+      localidade, vBC: at('valores', 'vBC'),
+      pIBSUF: at('valores', 'uf', 'pIBSUF'), pAliqEfetUF: at('valores', 'uf', 'pAliqEfetUF'),
+      pIBSMun: at('valores', 'mun', 'pIBSMun'), pAliqEfetMun: at('valores', 'mun', 'pAliqEfetMun'),
+      pCBS: at('valores', 'fed', 'pCBS'), pAliqEfetCBS: at('valores', 'fed', 'pAliqEfetCBS'),
+      vIBSUF: at('totCIBS', 'gIBS', 'gIBSUFTot', 'vIBSUF'), vIBSMun: at('totCIBS', 'gIBS', 'gIBSMunTot', 'vIBSMun'),
+      vIBSTot: at('totCIBS', 'gIBS', 'vIBSTot'), vCBS: at('totCIBS', 'gCBS', 'vCBS'), vTotNF: at('totCIBS', 'vTotNF'),
+    } : null,
   }
 }
 
@@ -165,6 +225,38 @@ export async function renderDanfse(nfseXml: string, opts: DanfseOptions): Promis
   label('Valor do ISSQN (R$):', fmtMoney(f.valores.vISSQN))
   label('ISSQN retido:', f.valores.tpRetISSQN === '2' ? 'Sim (pelo tomador)' : f.valores.tpRetISSQN === '3' ? 'Sim (pelo intermediário)' : 'Não')
   if (f.valores.vLiq) label('Valor líquido (R$):', fmtMoney(f.valores.vLiq))
+
+  // IB-3 — bloco IBS/CBS (NT 008): declaração enviada + o que o FISCO calculou; total "Valor Líquido + IBS/CBS" (vTotNF)
+  if (f.ibscbs) {
+    const b = f.ibscbs
+    section('IBS / CBS')
+    const ni = 'não informado'
+    label('CST / Classificação tributária:', b.cst !== null ? `${b.cst} / ${b.cClassTrib}` : ni)
+    label('Indicador da operação (cIndOp):', b.cIndOp ?? ni)
+    label('NBS:', b.nbs ?? ni)
+    if (b.fiscal) {
+      const v = b.fiscal
+      const pct = (x: string | null) => (x ? fmtMoney(x) : null)
+      label('Localidade de incidência:', v.localidade)
+      label('Base de cálculo IBS/CBS (R$):', fmtDecText(v.vBC))
+      label('Alíquota IBS UF / efetiva (%):', `${pct(v.pIBSUF) ?? '—'} / ${pct(v.pAliqEfetUF) ?? '—'}`)
+      label('Alíquota IBS Município / efetiva (%):', `${pct(v.pIBSMun) ?? '—'} / ${pct(v.pAliqEfetMun) ?? '—'}`)
+      label('Alíquota CBS / efetiva (%):', `${pct(v.pCBS) ?? '—'} / ${pct(v.pAliqEfetCBS) ?? '—'}`)
+      label('IBS UF (R$):', fmtDecText(v.vIBSUF))
+      label('IBS Município (R$):', fmtDecText(v.vIBSMun))
+      label('Total do IBS (R$):', fmtDecText(v.vIBSTot))
+      label('CBS (R$):', fmtDecText(v.vCBS))
+      label('Total do IBS/CBS (R$):', fmtDecText(addDecText(v.vIBSTot, v.vCBS)))
+      if (v.vTotNF) {
+        const y = doc.y
+        doc.rect(40, y - 1, W, 14).fillColor('#e6e6e6').fill().fillColor('#000')
+        doc.y = y
+        label('Valor Líquido + IBS/CBS (R$):', fmtDecText(v.vTotNF))
+      }
+    } else {
+      doc.font('Helvetica').fontSize(8).text('Valores IBS/CBS não devolvidos pelo fisco neste documento.')
+    }
+  }
 
   section('Consulta pública')
   doc.font('Helvetica').fontSize(8).text('Confira a autenticidade desta NFS-e em:')

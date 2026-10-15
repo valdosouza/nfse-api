@@ -15,8 +15,9 @@ export type { AuthorityEnvironment, AuthorityContext }
 
 // ---------------------------------------------------------------------------
 // DPS v1.01 — só o subconjunto do caso "prestador PJ, tomador PJ/PF, UM
-// serviço, ISS tributável, sem IBS/CBS, sem dedução". A ORDEM dos elementos
-// no XML segue TCInfDPS; a obrigatoriedade segue o XSD (não a tela).
+// serviço, ISS tributável, sem dedução" + o grupo IBS/CBS DECLARADO (fase IBS/CBS, IB-3 —
+// D-IB2/D-IB62/D-IB76…D-IB84). A ORDEM dos elementos no XML segue TCInfDPS; a obrigatoriedade
+// segue o XSD (não a tela).
 // ---------------------------------------------------------------------------
 
 /** TCRegTrib: opSimpNac 1 não optante · 2 MEI · 3 ME/EPP; regEspTrib 0 nenhum … 6. */
@@ -84,6 +85,17 @@ export interface DpsValores {
   }
 }
 
+/**
+ * TCRTCInfoIBSCBS — a DECLARAÇÃO que o ERP congelou no ramo (IB-2: `classification_code`, `place_indicator_code`). SÓ os dois códigos
+ * ESCOLHIDOS: `finNFSe` (0 — D-IB17), `indDest` (0 — o próprio tomador) e o CST (prefixo do cClassTrib — E0959) são DERIVADOS pelo
+ * montador, por construção (nunca entrada — maquete nº 3 do §3.1). Nunca `tpRetPisCofins` (D-IB19) nem `cCredPres`/`gTribRegular`/
+ * `gDif` (§5 da fase). O grupo EXIGE a NBS (`serv.cServ.cNBS` — E0322): quem monta confere.
+ */
+export interface DpsIbscbs {
+  cIndOp:     string                          // 6 dígitos (Anexo VII)
+  cClassTrib: string                          // 6 dígitos (IT 2025.002)
+}
+
 export interface DpsInput {
   environment: AuthorityEnvironment           // vira tpAmb (H→2, P→1)
   dhEmi:       string                         // ISO com fuso; normalizado para AAAA-MM-DDThh:mm:ss±hh:00
@@ -97,6 +109,8 @@ export interface DpsInput {
   toma?:       DpsToma
   serv:        DpsServ
   valores:     DpsValores
+  /** Grupo IBS/CBS declarado — presente = vai (D-IB13: a presença É o envio; o calendário de LEIAUTE não o liga nem desliga). */
+  ibscbs?:     DpsIbscbs
 }
 
 /** Tipo de inscrição no Id do DPS/chave: 1 CPF · 2 CNPJ (manual v1.2 §1.4.1). */
@@ -132,6 +146,30 @@ export interface ParsedNfse {
   dpsId:      string | null                   // infDPS/@Id embutido na NFS-e
   /** Presente só se o texto trouxer um e101101 junto (respostas agregadas). */
   cancelled:  { dhEvento: string | null; cMotivo: string | null; xMotivo: string | null } | null
+}
+
+/** D-IB77/D-IB80: os valores IBS/CBS que o FISCO calculou (`infNFSe/IBSCBS/totCIBS`) — TEXTO no formato TSDec15V2 (até 15 inteiros: o
+ *  número do JS perderia precisão — vão ao DECIMAL(17,2) como texto). */
+export interface NfseIbscbsValues {
+  totalInvoiceValue: string                   // vTotNF
+  ibsTotalValue:     string                   // gIBS/vIBSTot
+  cbsValue:          string                   // gCBS/vCBS
+}
+
+/** A declaração IBS/CBS que FOI ENVIADA, lida do DPS embutido na NFS-e autorizada (D-F76: o enviado se lê do documento, nunca do ramo). */
+export interface NfseDeclaredIbscbs {
+  cst:                string
+  classificationCode: string
+  placeIndicatorCode: string
+  nbs:                string | null
+}
+
+/** Leitura dos valores do fisco na NFS-e autorizada (D-IB80 — nunca decide estado): o DPS embutido declarou o grupo? os valores? */
+export interface ParsedNfseIbscbs {
+  /** `infNFSe/DPS/infDPS/IBSCBS` presente — pela E1515 o fisco TEM de devolver os valores. */
+  declaredInDps: boolean
+  /** null = o fisco não devolveu o grupo (`infNFSe/IBSCBS` ausente); 'unreadable' = grupo presente com valor obrigatório ausente/fora da forma. */
+  values: NfseIbscbsValues | null | 'unreadable'
 }
 
 export interface ParsedEvent {

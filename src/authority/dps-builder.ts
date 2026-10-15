@@ -1,7 +1,9 @@
 import { toUtcDb, nowIsoIn, DEFAULT_TIME_ZONE, parseXml, firstElement, firstText as readFirstText, textOf, attrOf as readAttr, attributeCount, childElementCount, XmlUnreadableError, elementsOf, nameIs, contains, XmlNode, XmlReadOptions } from 'fiscal-api'
 import {
-  AuthorityEnvironment, CancelEventInput, DpsInput, DpsTpInsc, ParsedEvent, ParsedNfse,
+  AuthorityEnvironment, CancelEventInput, DpsIbscbs, DpsInput, DpsTpInsc, NfseDeclaredIbscbs, NfseIbscbsValues, ParsedEvent, ParsedNfse,
+  ParsedNfseIbscbs,
 } from './types'
+import { layoutAt } from './layout-calendar'
 
 /**
  * Montagem do XML do DPS v1.01 e do pedido de registro de evento (cancelamento
@@ -13,7 +15,7 @@ import {
  */
 
 export const NFSE_NS      = 'http://www.sped.fazenda.gov.br/nfse'
-export const LAYOUT_VERSION = '1.01'
+// a versão do leiaute vem do CALENDÁRIO do adaptador (`layout-calendar.ts` — D-IB81), pelo instante e pelo ambiente — nunca constante global
 export const EVENT_CANCEL = '101101'
 /**
  * R3-3: tiposEventos_v1.01.xsd tem QUATRO cancelamentos — e101101 (contribuinte) · e105102 (por
@@ -165,7 +167,7 @@ function servXml(s: DpsInput['serv']): string {
     el('cTribNac', digits(s.cServ.cTribNac, 'cTribNac', 6)) +
     el('cTribMun', s.cServ.cTribMun ? digits(s.cServ.cTribMun, 'cTribMun', 3) : null) +
     el('xDescServ', cut(text(s.cServ.xDescServ, true), 2000)) +
-    el('cNBS', s.cServ.cNBS ? digits(s.cServ.cNBS, 'cNBS', 9) : null))
+    el('cNBS', s.cServ.cNBS ? exactDigits(s.cServ.cNBS, 'cNBS', 9) : null))
   if (s.infoCompl && (s.infoCompl.docRef || s.infoCompl.xPed || s.infoCompl.xInfComp)) {
     inner += grp('infoCompl',
       el('docRef', s.infoCompl.docRef ? cut(text(s.infoCompl.docRef), 255) : null) +
@@ -192,6 +194,28 @@ function valoresXml(v: DpsInput['valores']): string {
 }
 
 /**
+ * TCRTCInfoIBSCBS (IB-3 — D-IB2/D-IB62): o grupo IBS/CBS DECLARADO, ÚLTIMO filho de `infDPS`, na ordem do XSD (`finNFSe`, `indFinal`?,
+ * `cIndOp`, `tpOper`?, `gRefNFSe`?, `tpEnteGov`?, `indDest`, `dest`?, `imovel`?, `valores`). Derivados por construção: `finNFSe` = 0 (NFS-e
+ * regular — D-IB17), `indDest` = 0 (o destinatário é o próprio tomador; quando o ERP tiver o conceito, vira fato da NOTA) e `CST` = os 3
+ * primeiros dígitos do cClassTrib (E0959). Opcionais fora do 1º release (§5 da fase) nunca saem.
+ */
+/** Cinto ESTRITO (gate adversarial da IB-3, LOW): o código do grupo é CONFERIDO, nunca normalizado — `digits()` descartava o que não é
+ *  dígito ("000-001" saía 000001). A fonte de fatos já recusa com 422; aqui é erro de programação de outro chamador. */
+function exactDigits(s: string, label: string, len: number): string {
+  if (typeof s !== 'string' || !new RegExp(`^\\d{${len}}$`).test(s)) throw new Error(`${label} fora da forma (exatamente ${len} dígitos)`)
+  return s
+}
+
+function ibscbsXml(g: DpsIbscbs): string {
+  const cClassTrib = exactDigits(g.cClassTrib, 'cClassTrib', 6)
+  return grp('IBSCBS',
+    el('finNFSe', '0') +
+    el('cIndOp', exactDigits(g.cIndOp, 'cIndOp', 6)) +
+    el('indDest', '0') +
+    grp('valores', grp('trib', grp('gIBSCBS', el('CST', cClassTrib.slice(0, 3)) + el('cClassTrib', cClassTrib)))))
+}
+
+/**
  * XML do DPS pronto para assinar: `<DPS xmlns versao="1.01"><infDPS Id="…">…</infDPS></DPS>`,
  * com a declaração `<?xml …?>` (Manual 2022 §6.1 a). Sem Signature — quem assina é `signXml`.
  */
@@ -200,9 +224,12 @@ export function buildDpsXml(input: DpsInput, id: string): string {
   if (input.tpEmit !== '1') throw new Error('tpEmit: só o prestador emite nesta onda (E9996)')
   const serie = Number(input.serie), nDps = Number(input.nDps)
   if (!Number.isInteger(serie) || serie < 1 || !Number.isInteger(nDps) || nDps < 1) throw new Error('serie/nDPS inválidos')
+  // E0322: o grupo IBS/CBS EXIGE a NBS — a fonte de fatos confere antes (422); aqui é cinto (erro de programação)
+  if (input.ibscbs && !input.serv.cServ.cNBS) throw new Error('Grupo IBS/CBS sem cNBS (E0322) — a fonte de fatos deveria ter recusado')
+  const dhEmi = formatDateTimeTz(input.dhEmi)
   const inf =
     el('tpAmb', tpAmbOf(input.environment)) +
-    el('dhEmi', formatDateTimeTz(input.dhEmi)) +
+    el('dhEmi', dhEmi) +
     el('verAplic', cut(text(input.verAplic), 20)) +
     // [INCERTO] série SEM zero à esquerda no elemento (o Id leva 5 posições); TSSerieDPS aceita ambos
     el('serie', String(serie)) +
@@ -213,8 +240,10 @@ export function buildDpsXml(input: DpsInput, id: string): string {
     prestXml(input.prest) +
     (input.toma ? tomaXml(input.toma) : '') +
     servXml(input.serv) +
-    valoresXml(input.valores)
-  return XML_DECLARATION + grp('DPS', grp('infDPS', inf, ` Id="${id}"`), ` xmlns="${NFSE_NS}" versao="${LAYOUT_VERSION}"`)
+    valoresXml(input.valores) +
+    (input.ibscbs ? ibscbsXml(input.ibscbs) : '')
+  const versao = layoutAt('DPS', input.environment, new Date(dhEmi))
+  return XML_DECLARATION + grp('DPS', grp('infDPS', inf, ` Id="${id}"`), ` xmlns="${NFSE_NS}" versao="${versao}"`)
 }
 
 // ---------------------------------------------------------------------------
@@ -237,14 +266,16 @@ export function buildCancelEventXml(input: CancelEventInput): string {
   if (motive.length < 15 || motive.length > 255) throw new Error('xMotivo do cancelamento deve ter 15 a 255 caracteres')
   if (!['1', '2', '9'].includes(input.cMotivo)) throw new Error(`cMotivo inválido: ${input.cMotivo}`)
   const chave = digits(input.accessKey, 'chave de acesso', 50)
+  const dhEvento = formatDateTimeTz(input.dhEvento)
   const inf =
     el('tpAmb', tpAmbOf(input.environment)) +
     el('verAplic', cut(text(input.verAplic), 20)) +
-    el('dhEvento', formatDateTimeTz(input.dhEvento)) +
+    el('dhEvento', dhEvento) +
     (input.cnpjAutor ? el('CNPJAutor', digits(input.cnpjAutor, 'CNPJ do autor', 14)) : el('CPFAutor', digits(input.cpfAutor!, 'CPF do autor', 11))) +
     el('chNFSe', chave) +
     grp(`e${EVENT_CANCEL}`, el('xDesc', 'Cancelamento de NFS-e') + el('cMotivo', input.cMotivo) + el('xMotivo', motive))
-  return XML_DECLARATION + grp('pedRegEvento', grp('infPedReg', inf, ` Id="${buildEventId(chave, EVENT_CANCEL)}"`), ` xmlns="${NFSE_NS}" versao="${LAYOUT_VERSION}"`)
+  const versao = layoutAt('EVENT', input.environment, new Date(dhEvento))
+  return XML_DECLARATION + grp('pedRegEvento', grp('infPedReg', inf, ` Id="${buildEventId(chave, EVENT_CANCEL)}"`), ` xmlns="${NFSE_NS}" versao="${versao}"`)
 }
 
 // ---------------------------------------------------------------------------
@@ -305,6 +336,12 @@ function headerElements(doc: XmlNode): XmlNode[] {
   return all.slice(inf + 1, stop).filter(e => !contains(e, all[stop]))
 }
 
+/** A chave da NFS-e DESTE documento (`infNFSe/@Id` sem "NFS") — null sem o atributo. */
+export function nfseAccessKeyOf(doc: XmlNode): string | null {
+  const rawId = attrOfFirst(doc, 'infNFSe', 'Id')
+  return rawId ? rawId.replace(/^NFS/, '') : null
+}
+
 /** NFS-e autorizada: chave (infNFSe/@Id sem "NFS"), número, dhProc, cStat, id do DPS embutido. */
 export function parseNfseXml(xml: string): ParsedNfse {
   const doc = parseXml(xml)
@@ -321,6 +358,75 @@ export function parseNfseXml(xml: string): ParsedNfse {
     dpsId:  attrOfFirst(doc, 'infDPS', 'Id'),
     cancelled: cancelBlock(doc),
   }
+}
+
+/** Filho DIRETO de [parent] com o nome (a busca por caminho — nunca "o 1º elemento com o nome no documento"). */
+export function childOf(parent: XmlNode, name: string): XmlNode | null {
+  return firstElement(parent, name, NFSE_XML, e => e.parentNode === parent)
+}
+export function pathOf(root: XmlNode, ...names: string[]): XmlNode | null {
+  let cur: XmlNode | null = root
+  for (const n of names) { if (!cur) return null; cur = childOf(cur, n) }
+  return cur
+}
+/** TSDec15V2 do XSD (`0|0\.[0-9]{2}|[1-9]{1}[0-9]{0,14}(\.[0-9]{2})?`) — texto, nunca número do JS. */
+const TS_DEC15V2 = /^(0|0\.[0-9]{2}|[1-9][0-9]{0,14}(\.[0-9]{2})?)$/
+
+/**
+ * Os valores IBS/CBS que o FISCO calculou (IB-3 — D-IB77/D-IB80), lidos por CAMINHO: só o `IBSCBS` filho DIRETO de `infNFSe` (o grupo do
+ * fisco, `TCRTCIBSCBS`) — a NFS-e autorizada também traz o NOSSO grupo declarado dentro do DPS embutido (`infNFSe/DPS/infDPS/IBSCBS`), e
+ * "o 1º IBSCBS do documento" leria a nossa declaração como voz do fisco quando o dele faltasse. Tudo ou nada: valor obrigatório
+ * ausente ou fora do TSDec15V2 = 'unreadable'. Pura (sem banco) — roda FORA da transação. Documento ilegível = a exceção do leitor.
+ */
+export function parseNfseIbscbs(xml: string | XmlNode): ParsedNfseIbscbs {
+  const doc = typeof xml === 'string' ? parseXml(xml) : xml
+  const inf = firstElement(doc, 'infNFSe', NFSE_XML)
+  if (!inf) return { declaredInDps: false, values: null }
+  const declaredInDps = pathOf(inf, 'DPS', 'infDPS', 'IBSCBS') !== null
+  const group = childOf(inf, 'IBSCBS')
+  if (!group) return { declaredInDps, values: null }
+  const read = (...path: string[]): string | null => {
+    const e = pathOf(group, ...path)
+    const v = e ? textOf(e) : ''
+    return TS_DEC15V2.test(v) ? v : null
+  }
+  const totalInvoiceValue = read('totCIBS', 'vTotNF')
+  const ibsTotalValue = read('totCIBS', 'gIBS', 'vIBSTot')
+  const cbsValue = read('totCIBS', 'gCBS', 'vCBS')
+  const values: NfseIbscbsValues | 'unreadable' = totalInvoiceValue !== null && ibsTotalValue !== null && cbsValue !== null
+    ? { totalInvoiceValue, ibsTotalValue, cbsValue } : 'unreadable'
+  return { declaredInDps, values }
+}
+
+/**
+ * A declaração IBS/CBS que FOI ENVIADA (IB-3 — tela "No fisco" e DANFSe): lida por CAMINHO do DPS embutido na NFS-e autorizada
+ * (`infNFSe/DPS/infDPS/IBSCBS` + `serv/cServ/cNBS`). null = o DPS não levou o grupo; texto fora da forma = null (só exibição).
+ */
+export function parseNfseDeclaration(xml: string | XmlNode): NfseDeclaredIbscbs | null {
+  const doc = typeof xml === 'string' ? parseXml(xml) : xml
+  const inf = firstElement(doc, 'infNFSe', NFSE_XML)
+  const infDps = inf ? pathOf(inf, 'DPS', 'infDPS') : null
+  const group = infDps ? childOf(infDps, 'IBSCBS') : null
+  if (!group) return null
+  const txt = (...p: string[]) => { const e = pathOf(group, ...p); return e ? textOf(e) : '' }
+  const cst = txt('valores', 'trib', 'gIBSCBS', 'CST')
+  const classificationCode = txt('valores', 'trib', 'gIBSCBS', 'cClassTrib')
+  const placeIndicatorCode = txt('cIndOp')
+  if (!/^\d{3}$/.test(cst) || !/^\d{6}$/.test(classificationCode) || !/^\d{6}$/.test(placeIndicatorCode)) return null
+  const nbsEl = pathOf(infDps!, 'serv', 'cServ', 'cNBS')
+  const nbs = nbsEl ? textOf(nbsEl) : ''
+  return { cst, classificationCode, placeIndicatorCode, nbs: /^\d{9}$/.test(nbs) ? nbs : null }
+}
+
+/**
+ * A NFS-e autorizada LEVOU o grupo IBS/CBS no DPS embutido? (D-IB90 — gates da IB-3: "congelada ≠ enviada") true = levou (mesmo que a
+ * forma não seja legível) · false = o DPS autorizado NÃO tem o grupo · null = o documento nem é uma NFS-e (`infNFSe` ausente).
+ */
+export function nfseDpsHasIbscbs(xml: string | XmlNode): boolean | null {
+  const doc = typeof xml === 'string' ? parseXml(xml) : xml
+  const inf = firstElement(doc, 'infNFSe', NFSE_XML)
+  if (!inf) return null
+  return pathOf(inf, 'DPS', 'infDPS', 'IBSCBS') !== null
 }
 
 /** Evento (gerado pelo fisco) ou pedido de registro: ids, código, chave, datas e motivo. */
