@@ -18,7 +18,7 @@ import { parseNfseXml, parseNfseDeclaration, childOf, pathOf, NFSE_XML } from '.
 
 export interface DanfseOptions {
   issuerName:   string
-  municipality: string
+  // D-CJ25 (gates da rodada 4, 2026-10-16): o MUNICÍPIO saiu daqui — vem só do documento (`xLocEmi` + UF do emitente); nunca do cadastro
   /** Estado VIGENTE do fisco (voz C da transmissão que detém a chave) — carimba "NFS-e CANCELADA". */
   cancelled?:   boolean
 }
@@ -48,13 +48,20 @@ function tomaDocKindOf(nfseXml: string): FederalIdKind | null {
 }
 /**
  * D-CJ25 (= Q-CJ25 (a), frente do CNPJ alfanumérico — 2026-10-16): o "Município gerador" é do DOCUMENTO — `infNFSe/xLocEmi` (obrigatório no
- * XSD 1.01: "descrição do código do IBGE do município emissor da NFS-e"), nunca o endereço de HOJE do cadastro (que pode ter mudado depois da
- * emissão). Fora do `DanfseFields` (paridade do N17 com o oráculo); XML sem o campo legível = o recurso que quem chama passa.
+ * XSD 1.01: "descrição do código do IBGE do município emissor da NFS-e") + a UF do emitente (`infNFSe/emit/enderNac/UF`), a composição da
+ * NT 008 §2.4.5 ("Município: CCCC / CC") — nunca o endereço de HOJE do cadastro (que pode ter mudado depois da emissão). Gates da rodada 4:
+ * o documento que não diz (campo ausente, vazio ou que o leitor recusa) sai "—" — nunca o cadastro como recurso. Fora do `DanfseFields`
+ * (paridade do N17 com o oráculo).
  */
-function emitterMunicipalityOf(nfseXml: string): string | null {
+function emitterMunicipalityOf(nfseXml: string): string {
   try {
-    return text(group(parseXml(nfseXml), 'infNFSe'), 'xLocEmi')
-  } catch { return null }
+    const inf = group(parseXml(nfseXml), 'infNFSe')
+    const city = text(inf, 'xLocEmi')?.trim()
+    if (!city) return '—'
+    let uf: string | null = null
+    try { uf = text(group(group(inf, 'emit'), 'enderNac'), 'UF')?.trim() || null } catch { uf = null }
+    return uf ? `${city} / ${uf}` : city
+  } catch { return '—' }
 }
 const fmtMoney = (v: string | null): string => {
   const n = Number(v ?? '')
@@ -221,7 +228,7 @@ export async function renderDanfse(nfseXml: string, opts: DanfseOptions): Promis
   label('Emitida em (dhProc):', f.dhProc)
   label('Competência:', f.dCompet)
   label('DPS (série/número):', `${f.serie ?? '—'} / ${f.nDps ?? '—'}`)
-  label('Município gerador:', emitterMunicipalityOf(nfseXml) ?? opts.municipality)          // D-CJ25: do documento
+  label('Município gerador:', emitterMunicipalityOf(nfseXml))                               // D-CJ25: só do documento
 
   section('Prestador do serviço')
   label('Razão social:', f.prest.xNome ?? opts.issuerName)

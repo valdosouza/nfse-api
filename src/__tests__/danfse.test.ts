@@ -53,7 +53,7 @@ describe('extractDanfseFields', () => {
 
 describe('renderDanfse', () => {
   it('PDF nasce (%PDF-) e traz a chave, o título e a URL de consulta pública no conteúdo', async () => {
-    const pdf = await renderDanfse(NFSE_XML, { issuerName: 'SETES', municipality: 'Curitiba / Paraná' })
+    const pdf = await renderDanfse(NFSE_XML, { issuerName: 'SETES' })
     expect(pdf.subarray(0, 5).toString('latin1')).toBe('%PDF-')
     expect(pdf.length).toBeGreaterThan(1000)
     // o pdfkit comprime os fluxos de página: inflar para procurar o texto
@@ -65,19 +65,23 @@ describe('renderDanfse', () => {
 
   // D-CJ25 (= Q-CJ25 (a), frente do CNPJ alfanumérico — 2026-10-16): o "Município gerador" é o do DOCUMENTO (`infNFSe/xLocEmi`), nunca o
   // endereço de HOJE do cadastro (que pode ter mudado depois da emissão); XML sem o campo = o recurso que quem chama passa
-  it('D-CJ25: "Município gerador" vem do xLocEmi do documento; sem o campo, o recurso de quem chama', async () => {
+  // gates da rodada 4: + a UF do emitente (NT 008 §2.4.5 — "Município: CCCC / CC"); o documento que não diz sai "—" (nunca o cadastro)
+  it('D-CJ25: "Município gerador" vem do documento (xLocEmi / UF do emitente); sem o campo, "—"', async () => {
     const xml = NFSE_XML.replace('<xLocEmi>Curitiba</xLocEmi>', '<xLocEmi>Pinhais</xLocEmi>')
-    const doc = zlibSync(await renderDanfse(xml, { issuerName: 'SETES', municipality: 'Ponta Grossa / Paraná' }))
+    const doc = zlibSync(await renderDanfse(xml, { issuerName: 'SETES' }))
     expect(doc).toContain('Pinhais')
     expect(doc).not.toContain('Ponta Grossa')
-    const fallback = zlibSync(await renderDanfse(xml.replace('<xLocEmi>Pinhais</xLocEmi>', ''), { issuerName: 'SETES', municipality: 'Ponta Grossa / Paraná' }))
-    expect(fallback).toContain('Ponta Grossa')
+    const withUf = zlibSync(await renderDanfse(xml.replace('<xNome>SETES SISTEMAS LTDA</xNome></emit>',
+      '<xNome>SETES SISTEMAS LTDA</xNome><enderNac><UF>PR</UF></enderNac></emit>'), { issuerName: 'SETES' }))
+    expect(withUf).toContain('Pinhais / PR')
+    const missing = zlibSync(await renderDanfse(xml.replace('<xLocEmi>Pinhais</xLocEmi>', ''), { issuerName: 'SETES' }))
+    expect(missing).not.toContain('Pinhais')                      // "—" (o em dash sai em WinAnsi no PDF; a opção do cadastro nem existe mais)
   })
 
   it('NFS-e com e101101 no XML → selo CANCELADA', async () => {
     const xml = NFSE_XML.replace('</infNFSe>', '<e101101><xDesc>Cancelamento de NFS-e</xDesc><cMotivo>1</cMotivo><xMotivo>erro na emissão do documento</xMotivo></e101101></infNFSe>')
     expect(extractDanfseFields(xml).cancelled).toBe(true)
-    const text = zlibSync(await renderDanfse(xml, { issuerName: 'SETES', municipality: 'Curitiba' }))
+    const text = zlibSync(await renderDanfse(xml, { issuerName: 'SETES' }))
     expect(text).toContain('CANCELADA')
   })
 })
@@ -86,7 +90,7 @@ describe('renderDanfse', () => {
 // tirar o que não é dígito — um CNPJ com 3 letras sobrava com 11 dígitos e saía com máscara de CPF; a chave agrupa de 4 em 4 também com letra
 describe('DANFSe — inscrição pelo elemento (D-CJ7)', () => {
   const THREE = (() => { const base = 'ABC123450001'; return base + cnpjCheckDigits(base)! })()
-  const render = async (xml: string) => zlibSync(await renderDanfse(xml, { issuerName: 'SETES', municipality: 'Curitiba' }))
+  const render = async (xml: string) => zlibSync(await renderDanfse(xml, { issuerName: 'SETES' }))
   it('tomador com CNPJ alfanumérico de 3 letras → máscara de CNPJ (nunca a de CPF); os campos extraídos seguem como vieram (paridade N17)', async () => {
     const xml = NFSE_XML.replace('<toma><CNPJ>98765432000198</CNPJ>', `<toma><CNPJ>${THREE}</CNPJ>`)
     expect(extractDanfseFields(xml).toma.doc).toBe(THREE)

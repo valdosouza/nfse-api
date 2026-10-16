@@ -414,7 +414,7 @@ describe('DANFSe com o bloco IBS/CBS (NT 008)', () => {
     expect(f.valores.vLiq).toBe('250.00')
   })
   it('o PDF sai com o bloco (sem erro)', async () => {
-    const pdf = await renderDanfse(full, { issuerName: 'Setes', municipality: 'Curitiba / PR' })
+    const pdf = await renderDanfse(full, { issuerName: 'Setes' })
     expect(pdf.subarray(0, 4).toString()).toBe('%PDF')
   })
 })

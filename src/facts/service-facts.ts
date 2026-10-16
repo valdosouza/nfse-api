@@ -207,7 +207,10 @@ function emitterCnpjProblem(fact: FederalIdFact): FieldError | null {
  * D-CJ16 (= Q-CJ16 (b), 2026-10-16): leitura de documento JÁ autorizado canonicaliza o CNPJ gravado (máscara sai, minúscula sobe, SEM DV,
  * nunca apaga) — a 2ª via não depende de o cadastro de hoje estar na forma; a EMISSÃO (`buildEmitter`) segue estrita.
  * D-CJ19 (= Q-CJ19 (a), 2026-10-16 — supera em parte a D-CJ16): documento JÁ autorizado tem a pasta pelo emitente EMBUTIDO na chave
- * (`cnpjOfAccessKey`, via `documentCnpj` da transmissão); esta leitura do cadastro é só o RECURSO quando a chave não traz CNPJ na forma.
+ * (`cnpjOfAccessKey`, via `documentCnpj` da transmissão).
+ * CONHECIMENTO NEGATIVO (D-CJ23 = Q-CJ23 (a), 2026-10-16): SEM USO em produção — o recurso ao cadastro para documento já autorizado MORREU
+ * (pasta/autor pelo cadastro de HOJE era o que a D-CJ19 proibiu). NÃO religar em leitor/escritor do arquivo fiscal; fica só pelos testes da
+ * D-CJ16 (forma tolerante sem DV, veto dos 14 iguais) até alguém precisar dela de novo — e aí é decisão nova.
  */
 export async function emitterCnpj(q: Queryable, institutionId: number): Promise<string> {
   const cnpj = await erp.establishmentCnpj(q, institutionId)          // VÁLIDO na forma canônica, ou null
@@ -462,12 +465,13 @@ export async function listPendingServiceInvoices(
   }
 }
 
-/** Nome e município do emitente para o DANFSe — LEITURA (L4: nunca exige regime/IBGE de quem só lê). */
-export async function emitterDisplay(q: Queryable, institutionId: number): Promise<{ name: string; municipality: string }> {
+/**
+ * Nome do emitente para o DANFSe (recurso da razão social quando o XML não a traz; rodapé "gerado por") — LEITURA (L4: nunca exige
+ * regime/IBGE de quem só lê). D-CJ25 (2026-10-16): o MUNICÍPIO não sai mais daqui — o do DANFSe é o do documento (`xLocEmi` + UF).
+ */
+export async function emitterDisplay(q: Queryable, institutionId: number): Promise<{ name: string }> {
   const full = await erp.entityFiscal(q, institutionId)
-  const addr = full?.addresses.find(a => a.main === 'S') ?? full?.addresses[0]
   return {
     name: (full?.nameCompany ?? full?.nickTrade ?? 'Emitente').trim() || 'Emitente',
-    municipality: [addr?.cityName, addr?.stateName].filter(Boolean).join(' / ') || '—',
   }
 }

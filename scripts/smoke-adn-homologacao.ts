@@ -142,8 +142,8 @@ async function main(): Promise<void> {
     step('2. CONSULTAR', await refreshServiceTransmission(deps, actor, webRef(INVOICE), 'Q').catch(e => ({ code: e.code, message: e.message })))
     const xml = await readNfseXml(deps, actor, webRef(INVOICE)).catch(() => null)
     if (xml) {
-      const { name, municipality } = await emitterDisplay(realPool, INST)
-      const pdf = await renderDanfse(xml.xml, { issuerName: name, municipality, cancelled: xml.cancelled })
+      const { name } = await emitterDisplay(realPool, INST)
+      const pdf = await renderDanfse(xml.xml, { issuerName: name, cancelled: xml.cancelled })
       fs.writeFileSync(path.join(storageRoot, `${xml.accessKey}-danfse.pdf`), pdf)
       step('3. XML + DANFSe', { chave: xml.accessKey, danfse: path.join(storageRoot, `${xml.accessKey}-danfse.pdf`) })
       // IB-3 (D-IB82): o que a NFS-e autorizada levou e o que o fisco calculou — a prova da fase IBS/CBS em H

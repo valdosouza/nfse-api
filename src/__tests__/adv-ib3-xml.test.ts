@@ -175,7 +175,7 @@ describe('(e) DANFSe / "No fisco" com XML hostil — nunca 500', () => {
     const hostile = nfse({ beforeDps: `<IBSCBS><valores><vBC>abc</vBC></valores>${TOT('NaN', '1e308', '-5')}</IBSCBS>` })
     const f = extractDanfseFields(hostile)
     expect(f.ibscbs?.fiscal?.vTotNF).toBe('NaN')
-    const pdf = await renderDanfse(hostile, { issuerName: 'Setes', municipality: 'Curitiba / PR' })
+    const pdf = await renderDanfse(hostile, { issuerName: 'Setes' })
     expect(pdf.subarray(0, 4).toString()).toBe('%PDF')
   })
   it('nota sem declaração (forma REAL das NFS-e 704–707 de produção): sem o campo ibscbs', () => {

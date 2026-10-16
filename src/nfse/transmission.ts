@@ -234,7 +234,9 @@ export type { AuthorityOutcome } from 'fiscal-api'
  * conferência local da raiz (antes do K) entra junto da leitura do titular por consenso (D-CJ6).
  */
 function cancelRefusalWayOut(err: AuthorityHttpError): string {
-  return firstAuthorityCode(err) === 'E0812'
+  // gates da rodada 4 (LOW): o E0812 em QUALQUER posição da recusa (o fisco pode listar outro código antes) — nos fields ou no corpo
+  const e0812 = /\bE0812\b/
+  return (err.fields ?? []).some(f => e0812.test(f.message)) || e0812.test(err.body ?? '')
     ? ' — o certificado A1 deste estabelecimento não é da raiz de CNPJ do emitente desta nota: envie o A1 do emitente da nota ou cancele pelo Emissor Nacional'
     : ''
 }
@@ -309,9 +311,22 @@ function documentCnpj(doc: KeyedDocument): string {
   const cnpj = cnpjOfAccessKey(doc.accessKey)
   if (!cnpj) {
     throw new HttpError(422, 'A chave de acesso desta NFS-e não traz o CNPJ do emitente — emitente fora do suporte (só pessoa jurídica); '
-      + 'consulte o suporte', [{ field: 'accessKey', message: 'Chave sem CNPJ do emitente' }], ErrorCodes.FISCAL_EMITTER_INCOMPLETE)
+      + 'consulte o suporte', [{ field: 'accessKey', message: 'Chave sem CNPJ do emitente' }], ErrorCodes.FISCAL_EMITTER_UNSUPPORTED)
   }
   return cnpj
+}
+
+/**
+ * Gates da rodada 4 (MEDIUM, 2026-10-16): "esta NFS-e é desta tentativa" — UMA peça para toda GRAVAÇÃO do XML da NFS-e vindo de uma CONSULTA
+ * (o adaptador devolve a chave PERGUNTADA, não a lida — comparar com ela não prova nada). Prova: o Id do DPS embutido no XML é o da tentativa
+ * e a chave do Id do infNFSe, quando vem, é a dela. XML ilegível, sem DPS ou de outro DPS = não grava (nunca o documento de outro cliente na
+ * pasta desta nota).
+ */
+function nfseXmlIsOfAttempt(nfseXml: string, doc: KeyedDocument): boolean {
+  if (!doc.dpsId) return false
+  let parsed: ReturnType<typeof parseNfseXml>
+  try { parsed = parseNfseXml(nfseXml) } catch { return false }
+  return parsed.dpsId === doc.dpsId && (!parsed.accessKey || parsed.accessKey === doc.accessKey)
 }
 
 function assertKeyOfDps(accessKey: string, dpsId: string | null): void {
@@ -698,7 +713,10 @@ async function refreshServiceTransmissionInner(
       const zone = await erp.institutionZone(deps.pool, s, institutionId)
       const when = utcDate(target.dhProc)
       const hints = [target.dhProc, target.createdAt]
-      if (!deps.storage.find(cnpj, nfseFileName(result.accessKey), hints, target.environment, zone)) {
+      // gates da rodada 4: a gravação passa pela MESMA peça da consulta da C — o DPS embutido tem de ser o desta tentativa (o voto da voz
+      // acima é mais tolerante: sem Id do DPS no XML ele segue; gravar no arquivo fiscal de raiz ÚNICA exige a prova)
+      if (!deps.storage.find(cnpj, nfseFileName(result.accessKey), hints, target.environment, zone)
+        && nfseXmlIsOfAttempt(nfse.nfseXml, { accessKey: result.accessKey, dpsId: target.dpsId })) {
         deps.storage.save(cnpj, nfseFileName(result.accessKey), nfse.nfseXml, when, target.environment, zone)
       }
       const eventXml = nfse.cancelled?.eventXml
@@ -735,8 +753,9 @@ async function archiveCancelEventIfMissing(deps: NfseDeps, actor: Actor, ref: In
     if (!missingEvent && !missingNfse) return
     const opened = await openIssuer(estDeps(deps), institutionId, SERVICE_MODEL, { schemaName: s })
     const q = await deps.adapter.queryNfse(ctxFor(opened, tx.environment), tx.accessKey)
-    // a resposta é AO QUE PERGUNTAMOS (a chave da resposta = a desta tentativa) — senão nada se grava
-    if (missingNfse && q.nfseXml && q.accessKey === tx.accessKey) {
+    // a resposta é AO QUE PERGUNTAMOS — gates da rodada 4 (MEDIUM): a chave da resposta é a PERGUNTADA pelo adaptador (comparar com ela
+    // não confere nada); a NFS-e só se grava se o DPS embutido nela é o DESTA tentativa (`nfseXmlIsOfAttempt`, a mesma peça do caminho da A)
+    if (missingNfse && q.nfseXml && nfseXmlIsOfAttempt(q.nfseXml, { accessKey: tx.accessKey, dpsId: tx.dpsId })) {
       deps.storage.save(cnpj, nfseFileName(tx.accessKey), q.nfseXml, when, tx.environment, zone)
     }
     if (!missingEvent) return
@@ -747,7 +766,7 @@ async function archiveCancelEventIfMissing(deps: NfseDeps, actor: Actor, ref: In
     }
     deps.storage.save(cnpj, cancelEventFileName(tx.accessKey), xml, when, tx.environment, zone)
   } catch (err) {
-    logger.warn('XML do evento de cancelamento não arquivado na consulta', { institutionId, invoiceId, attempt: tx.attempt, err: errMsg(err) })
+    logger.warn('XML do evento de cancelamento não arquivado na consulta', { institutionId, invoiceId, attempt: tx.attempt, err: errMsg(err) })   // (e/ou o da NFS-e — D-CJ27)
   }
 }
 

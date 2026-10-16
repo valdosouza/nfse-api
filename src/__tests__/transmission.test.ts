@@ -377,7 +377,7 @@ describe('D-CJ19 — documento JÁ autorizado pela chave dele, nunca pelo cadast
     const t = tx({ lastKind: 'A', accessKey: cpfKey, dpsId: null, dhProc: '2026-08-15 13:00:00', createdAt: '2026-08-15 12:59:00' })
     ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [t], events: [] })
     const err = await readNfseXml(deps, A, webRef(A, INVOICE)).then(() => null, x => x)
-    expect(err).toMatchObject({ statusCode: 422, code: 'FISCAL_EMITTER_INCOMPLETE', message: expect.stringMatching(/fora do suporte/) })
+    expect(err).toMatchObject({ statusCode: 422, code: 'FISCAL_EMITTER_UNSUPPORTED', message: expect.stringMatching(/fora do suporte/) })
   })
 
   // D-CJ25 (= Q-CJ25 (a)): o cancelamento tira da NOTA o que precisa — sem o `buildEmitter` estrito; o prazo do PAM pelo cMun da CHAVE
@@ -418,11 +418,13 @@ describe('D-CJ19 — documento JÁ autorizado pela chave dele, nunca pelo cadast
     deps.storage.save(CNPJ, `${key}-evt101101.xml`, EVT, new Date('2026-08-15T13:00:00Z'), 'H', 'America/Sao_Paulo')
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(c)
     ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [c], events: [] })
-    adapter.queryNfse.mockResolvedValue({ accessKey: key, status: 'cancelled', nfseXml: NFSE_XML, dhProc: null,
+    // o XML que o fisco devolve é o DESTA tentativa (chave e DPS dela — a prova que a gravação exige, gates da rodada 4)
+    const xmlOfKey = NFSE_XML.replace(`NFS${KEY}`, `NFS${key}`)
+    adapter.queryNfse.mockResolvedValue({ accessKey: key, status: 'cancelled', nfseXml: xmlOfKey, dhProc: null,
       cancelled: { dhEvento: '2026-08-20T09:00:00-03:00', motive: 'x', eventCode: '101101', eventXml: EVT } })
     await refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q')
     expect(adapter.queryNfse).toHaveBeenCalledTimes(1)
-    expect((await readNfseXml(deps, A, webRef(A, INVOICE))).xml).toBe(NFSE_XML)
+    expect((await readNfseXml(deps, A, webRef(A, INVOICE))).xml).toBe(xmlOfKey)
     expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()                         // nada de voz: a C é final
     adapter.queryNfse.mockClear()
     await refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q')

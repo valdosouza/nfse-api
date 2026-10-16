@@ -129,7 +129,7 @@ describe('[N17-01] referência inválida escondida → voz', () => {
 // [N17-02] MEDIUM — DANFSe: o leitor recusa um campo que SÓ o DANFSe lê, fora de qualquer `try` → a rota responde 500 "Erro interno"
 // ===========================================================================
 describe('[N17-02] DANFSe de NFS-e AUTORIZADA', () => {
-  const OPTS = { issuerName: 'SETES', municipality: 'Curitiba / Paraná' }
+  const OPTS = { issuerName: 'SETES' }
   const VARIANTS: [string, string][] = [
     ['CDATA no xNome do TOMADOR', nfseXml({ xNomeToma: '<![CDATA[Cliente]]>' })],
     ['comentário dentro do xDescServ', nfseXml({ xDescServ: 'Lic<!-- x -->ença' })],

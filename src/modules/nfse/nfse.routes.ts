@@ -94,8 +94,8 @@ export function nfseRoutes(ctx: AppContext): Router {
     const ref = webRefOf(inst, req.params.invoiceId)
     await requireBranchInterface(ctx, inst, ref)
     const { accessKey, xml, cancelled } = await tx.readNfseXml(ctx, actorOf(inst), ref)
-    const { name, municipality } = await emitterDisplay(ctx.pool, inst.institutionId)
-    const pdf = await renderDanfse(xml, { issuerName: name, municipality, cancelled })
+    const { name } = await emitterDisplay(ctx.pool, inst.institutionId)
+    const pdf = await renderDanfse(xml, { issuerName: name, cancelled })
     sendOk(res, { accessKey, pdfBase64: pdf.toString('base64') })
   }))
 
