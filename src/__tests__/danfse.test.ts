@@ -63,6 +63,17 @@ describe('renderDanfse', () => {
     expect(text).toContain(NFSE_PUBLIC_QUERY_URL.slice(0, 30))
   })
 
+  // D-CJ25 (= Q-CJ25 (a), frente do CNPJ alfanumérico — 2026-10-16): o "Município gerador" é o do DOCUMENTO (`infNFSe/xLocEmi`), nunca o
+  // endereço de HOJE do cadastro (que pode ter mudado depois da emissão); XML sem o campo = o recurso que quem chama passa
+  it('D-CJ25: "Município gerador" vem do xLocEmi do documento; sem o campo, o recurso de quem chama', async () => {
+    const xml = NFSE_XML.replace('<xLocEmi>Curitiba</xLocEmi>', '<xLocEmi>Pinhais</xLocEmi>')
+    const doc = zlibSync(await renderDanfse(xml, { issuerName: 'SETES', municipality: 'Ponta Grossa / Paraná' }))
+    expect(doc).toContain('Pinhais')
+    expect(doc).not.toContain('Ponta Grossa')
+    const fallback = zlibSync(await renderDanfse(xml.replace('<xLocEmi>Pinhais</xLocEmi>', ''), { issuerName: 'SETES', municipality: 'Ponta Grossa / Paraná' }))
+    expect(fallback).toContain('Ponta Grossa')
+  })
+
   it('NFS-e com e101101 no XML → selo CANCELADA', async () => {
     const xml = NFSE_XML.replace('</infNFSe>', '<e101101><xDesc>Cancelamento de NFS-e</xDesc><cMotivo>1</cMotivo><xMotivo>erro na emissão do documento</xMotivo></e101101></infNFSe>')
     expect(extractDanfseFields(xml).cancelled).toBe(true)

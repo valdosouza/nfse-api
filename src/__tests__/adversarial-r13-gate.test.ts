@@ -499,6 +499,8 @@ describe('RESISTIU — D-F68: a substituição nunca manda o app aplicar o C loc
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'C', lastEvent: 2, lastCode: '105102' }))
     fs.rmSync(path.join(storageRoot, CNPJ), { recursive: true, force: true })
     deps.storage.save(CNPJ, `${KEY}-evt101101.xml`, substEventXml(SUBST_KEY), new Date('2026-10-10T21:43:04Z'), 'H', 'America/Sao_Paulo')
+    // D-CJ27 (2026-10-16): a NFS-e também arquivada — faltando ela, a consulta da C volta ao fisco para regravá-la
+    deps.storage.save(CNPJ, `${KEY}-nfse.xml`, '<NFSe/>', new Date('2026-10-10T21:43:04Z'), 'H', 'America/Sao_Paulo')
     sefin()
     expect(await refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q')).toMatchObject({ kind: 'C', changed: false, localCancelPending: false })
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'C', lastEvent: 2, lastCode: '101101' }))

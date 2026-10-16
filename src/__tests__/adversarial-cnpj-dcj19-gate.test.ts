@@ -282,8 +282,10 @@ describe('D-CJ19 / gravação × busca — quem grava e quem procura chegam à M
     expect(folders()).toEqual([ALFA])
   })
 
-  it('cancelar grava o evento na pasta da CHAVE; a consulta da C o acha lá e NÃO volta ao fisco para "arquivar o que falta"', async () => {
+  it('cancelar grava o evento na pasta da CHAVE; a consulta da C o acha lá (com a NFS-e) e NÃO volta ao fisco para "arquivar o que falta"', async () => {
     const key = keyOf(CNPJ_A)
+    // a NFS-e autorizada já está na pasta da chave (o transmitir a gravou) — D-CJ27: faltando ela, a consulta da C volta ao fisco para regravar
+    deps.storage.save(CNPJ_A, `${key}-nfse.xml`, nfseXmlOf(key, DPS_ID_A), new Date('2026-08-15T13:00:00Z'), 'H', ZONE)
     cadastroTrocadoPara(CNPJ_NOVO)
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ accessKey: key }))
     ;(repo.insertTransmissionEvent as jest.Mock).mockResolvedValue(2)
@@ -320,8 +322,8 @@ describe('D-CJ19 / documentos arquivados ANTES da decisão (pasta do cadastro)',
     expect((await readNfseXml(deps, A, webRef(A, INVOICE))).accessKey).toBe(key)
   })
 
-  // PENDENTE de decisão (Q-CJ27 do §8.12 do prompt da frente): buscar também na pasta do cadastro × a consulta da C regravar o XML × limite
-  it.failing('[ACHADO LOW] nota CANCELADA cujo XML a versão anterior arquivou pela pasta do cadastro JÁ trocado: a 2ª via/DANFSe vira 404 e a consulta da C (que recebe o XML da NFS-e do fisco) só arquiva o evento — nunca se recupera', async () => {
+  // CORRIGIDO — D-CJ27 (= Q-CJ27 (b), Valdo 2026-10-16): a consulta da C regrava o XML da NFS-e que o fisco devolve quando falta na pasta da chave
+  it('[CORRIGIDO — D-CJ27, ACHADO LOW] nota CANCELADA cujo XML a versão anterior arquivou pela pasta do cadastro JÁ trocado: a 2ª via/DANFSe vira 404 e a consulta da C (que recebe o XML da NFS-e do fisco) só arquiva o evento — nunca se recupera', async () => {
     // antes da D-CJ19 a consulta gravava em `emitterCnpj` (cadastro de HOJE): cadastro corrigido para CNPJ_NOVO depois da emissão →
     // o XML da nota emitida com CNPJ_A ficou em CNPJ_NOVO/…; agora a busca é só em CNPJ_A/…
     const key = keyOf(CNPJ_A)

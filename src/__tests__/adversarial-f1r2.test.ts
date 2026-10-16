@@ -160,7 +160,7 @@ describe('[LOW — corrigido] CONTRATO (OpenAPI design-first — D-F8): todo sta
   const doc = loadOpenApi()
   const documented = (method: string, yamlPath: string) => Object.keys(doc.paths?.[yamlPath]?.[method]?.responses ?? {})
 
-  it('PUT issuers/55 → 422 · DELETE issuers/SE sem habilitação → 404 · PUT certificate sem chave-mestra → 503 · transmit id 0 → 400 · XML com o cadastro sem CNPJ → 404 (D-CJ19: a pasta é a da CHAVE) · cancel com emitente incompleto → 422', async () => {
+  it('PUT issuers/55 → 422 · DELETE issuers/SE sem habilitação → 404 · PUT certificate sem chave-mestra → 503 · transmit id 0 → 400 · XML com o cadastro sem CNPJ → 404 (D-CJ19: a pasta é a da CHAVE) · cancel em P de nota com CNPJ alfanumérico → 422', async () => {
     const app = appFor()
     erpM.establishmentCnpj.mockImplementation(async () => CNPJ)
     const observed: [string, string, number, string][] = []
@@ -177,10 +177,14 @@ describe('[LOW — corrigido] CONTRATO (OpenAPI design-first — D-F8): todo sta
     // D-CJ19 (2026-10-16): o XML de nota autorizada é procurado pela pasta do emitente EMBUTIDO na chave — o cadastro sem CNPJ não pesa;
     // sem o arquivo arquivado aqui, 404 FISCAL_NFSE_NOT_FOUND (antes: 422 pelo cadastro)
     await hit('get', `/v1/nfse/invoices/${INVOICE}/xml`, '/v1/nfse/invoices/{invoiceId}/xml')       // (o DANFSe idem)
-    // cancelar NFS-e autorizada com o cadastro do emitente incompleto no PREPARO local → 422 (N libera o K)
+    // D-CJ25 (2026-10-16): o cadastro do emitente incompleto NÃO trava mais o cancelamento (o que o pedido precisa vem da nota) — o 422 do
+    // cancelamento agora é o do leiaute do EVENTO: nota de emitente com CNPJ alfanumérico em PRODUÇÃO, recusada ANTES do K
     erpM.lockInvoice.mockResolvedValue({ alive: true, lifeEvent: 1, lastEvent: 1, lastKind: 'E' })
-    repoM.latestTransmission.mockResolvedValue(tx({ accessKey: KEY_OF_DPS, lastKind: 'A', dhProc: '2026-09-21 13:15:30' }))
-    repoM.getTransmission.mockResolvedValue(tx({ accessKey: KEY_OF_DPS, lastKind: 'K' }))
+    const ALFA = 'PC3D315K000193'
+    const keyAlfa = ('4106902' + '2' + '2' + ALFA + '0'.repeat(50)).slice(0, 50)
+    const dpsAlfa = `DPS4106902${'2'}${ALFA}00001${'000000000000042'}`
+    repoM.latestTransmission.mockResolvedValue(tx({ accessKey: keyAlfa, dpsId: dpsAlfa, lastKind: 'A', dhProc: '2026-09-21 13:15:30' }))
+    repoM.getTransmission.mockResolvedValue(tx({ accessKey: keyAlfa, dpsId: dpsAlfa, lastKind: 'K' }))
     repoM.insertTransmissionEvent.mockResolvedValue(2)
     erpM.entityFiscal.mockResolvedValue(null)
     await hit('post', `/v1/nfse/invoices/${INVOICE}/cancel`, '/v1/nfse/invoices/{invoiceId}/cancel', { reason: 'erro na emissão da nota' })

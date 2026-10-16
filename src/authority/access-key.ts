@@ -89,6 +89,14 @@ export function cnpjOfAccessKey(key: string): string | null {
   return i && i.tpInsc === '2' && CNPJ_FORM.test(i.inscricao) ? i.inscricao : null
 }
 
+/**
+ * D-CJ25 (= Q-CJ25 (a), Valdo 2026-10-16): o município do EMITENTE embutido na chave (cMun IBGE, posições 0–6) — o ato sobre documento JÁ
+ * autorizado (o prazo do PAM no cancelamento) usa o da NOTA, nunca o endereço de hoje. null se a chave não tem a forma geral.
+ */
+export function cMunOfAccessKey(key: string): string | null {
+  return NFSE_ACCESS_KEY_FORM.test(key) ? key.slice(0, 7) : null
+}
+
 /** A inscrição embutida como `FederalId` (o tipo vem do tpInsc — o LUGAR); CPF = as 11 últimas das 14. null se não fecha a forma + DV. */
 export function embeddedFederalId(i: EmbeddedIssuer): FederalId | null {
   if (i.tpInsc === '2') return federalIdOf('cnpj', i.inscricao)

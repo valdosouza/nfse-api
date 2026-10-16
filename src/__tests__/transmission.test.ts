@@ -369,12 +369,64 @@ describe('D-CJ19 — documento JÁ autorizado pela chave dele, nunca pelo cadast
     expect(adapter.registerEvent).not.toHaveBeenCalled()
   })
 
-  it('chave sem CNPJ na forma (emitente CPF / fora da forma) → o RECURSO é o cadastro (leitura tolerante da D-CJ16)', async () => {
-    // a chave dos fixtures antigos traz tpInsc 1 (CPF): a pasta segue o cadastro — os testes anteriores à D-CJ19 seguem valendo
-    const t = tx({ lastKind: 'A', accessKey: KEY, dhProc: '2026-08-15 13:00:00', createdAt: '2026-08-15 12:59:00' })
-    deps.storage.save(CNPJ, `${KEY}-nfse.xml`, NFSE_XML, new Date('2026-08-15T13:00:00Z'), 'H', 'America/Sao_Paulo')
+  // D-CJ23 (= Q-CJ23 (a), 2026-10-16): SEM recurso ao cadastro — chave que não traz o CNPJ do emitente (tpInsc 1; sem Id do DPS para conferir)
+  // = 422 "emitente fora do suporte"; antes a pasta saía do cadastro de hoje (o que a D-CJ19 proibiu)
+  it('D-CJ23: chave sem CNPJ do emitente (emitente CPF) → 422 "emitente fora do suporte", nunca a pasta do cadastro', async () => {
+    const cpfKey = keyOf('00052998224725').replace(/^(.{8})2/, '$11')                   // tpInsc 1 (CPF)
+    deps.storage.save(CNPJ, `${cpfKey}-nfse.xml`, NFSE_XML, new Date('2026-08-15T13:00:00Z'), 'H', 'America/Sao_Paulo')
+    const t = tx({ lastKind: 'A', accessKey: cpfKey, dpsId: null, dhProc: '2026-08-15 13:00:00', createdAt: '2026-08-15 12:59:00' })
     ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [t], events: [] })
+    const err = await readNfseXml(deps, A, webRef(A, INVOICE)).then(() => null, x => x)
+    expect(err).toMatchObject({ statusCode: 422, code: 'FISCAL_EMITTER_INCOMPLETE', message: expect.stringMatching(/fora do suporte/) })
+  })
+
+  // D-CJ25 (= Q-CJ25 (a)): o cancelamento tira da NOTA o que precisa — sem o `buildEmitter` estrito; o prazo do PAM pelo cMun da CHAVE
+  it('D-CJ25: cadastro do emitente INCOMPLETO não trava o cancelamento; o prazo do município é perguntado pelo cMun da chave', async () => {
+    const key = keyOf(CNPJ)
+    erpM.entityFiscal.mockResolvedValue(null)                                           // cadastro sem nada
+    erpM.cityIbge.mockResolvedValue(null)
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A', accessKey: key, dhProc: '2026-08-15 13:00:00' }))
+    ;(repo.insertTransmissionEvent as jest.Mock).mockResolvedValue(2)
+    adapter.registerEvent.mockResolvedValue({ dhEvento: '2026-09-22T09:00:00-03:00', protocol: 'EVT1', eventXml: EVT, raw: {} })
+    const r = await cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'cliente desistiu do serviço')
+    expect(r).toMatchObject({ atAuthority: true, nextStep: 'apply-local-cancel' })
+    expect(adapter.municipalTerms).toHaveBeenCalledWith(expect.anything(), '4106902')
+    expect(adapter.registerEvent.mock.calls[0][2]).toContain(`<CNPJAutor>${CNPJ}</CNPJAutor>`)
+  })
+
+  // D-CJ24 (= Q-CJ24 (b)): a recusa E0812 (certificado de OUTRA raiz que o emitente da nota) volta com a SAÍDA
+  it('D-CJ24: fisco recusa o cancelamento com E0812 → 409 com a saída (A1 do emitente da nota ou Emissor Nacional); outra recusa, só o texto do fisco', async () => {
+    const key = keyOf(CNPJ)
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A', accessKey: key, dhProc: '2026-08-15 13:00:00' }))
+    ;(repo.getTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'K', accessKey: key }))
+    ;(repo.insertTransmissionEvent as jest.Mock).mockResolvedValue(2)
+    const refused = (code: string) => new AuthorityHttpError(422, `Fisco rejeitou (400): ${code}: recusa`, 'FISCAL_DPS_REJECTED', 400,
+      `{"erros":[{"codigo":"${code}","descricao":"recusa"}]}`, [{ field: 'evento', message: `${code}: recusa` }])
+    adapter.registerEvent.mockRejectedValueOnce(refused('E0812'))
+    const e1 = await cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'cliente desistiu do serviço').then(() => null, x => x)
+    expect(e1).toMatchObject({ statusCode: 409, code: 'FISCAL_CANCEL_REFUSED', message: expect.stringMatching(/E0812.*envie o A1 do emitente da nota ou cancele pelo Emissor Nacional/) })
+    adapter.registerEvent.mockRejectedValueOnce(refused('E0840'))
+    const e2 = await cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'cliente desistiu do serviço').then(() => null, x => x)
+    expect(e2).toMatchObject({ statusCode: 409, code: 'FISCAL_CANCEL_REFUSED' })
+    expect(e2.message).not.toMatch(/Emissor Nacional/)
+  })
+
+  // D-CJ27 (= Q-CJ27 (b)): a consulta de nota JÁ cancelada regrava o XML da NFS-e que falta na pasta da chave (o fisco o devolve junto)
+  it('D-CJ27: nota em C com o evento arquivado e a NFS-e faltando → a consulta regrava a NFS-e na pasta da chave; com as duas, não volta ao fisco', async () => {
+    const key = keyOf(CNPJ)
+    const c = tx({ lastKind: 'C', lastCode: '101101', accessKey: key, dhProc: '2026-08-15 13:00:00', createdAt: '2026-08-15 12:59:00' })
+    deps.storage.save(CNPJ, `${key}-evt101101.xml`, EVT, new Date('2026-08-15T13:00:00Z'), 'H', 'America/Sao_Paulo')
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(c)
+    ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [c], events: [] })
+    adapter.queryNfse.mockResolvedValue({ accessKey: key, status: 'cancelled', nfseXml: NFSE_XML, dhProc: null,
+      cancelled: { dhEvento: '2026-08-20T09:00:00-03:00', motive: 'x', eventCode: '101101', eventXml: EVT } })
+    await refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q')
+    expect(adapter.queryNfse).toHaveBeenCalledTimes(1)
     expect((await readNfseXml(deps, A, webRef(A, INVOICE))).xml).toBe(NFSE_XML)
+    expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()                         // nada de voz: a C é final
+    adapter.queryNfse.mockClear()
+    await refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q')
+    expect(adapter.queryNfse).not.toHaveBeenCalled()
   })
 })
 

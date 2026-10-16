@@ -46,6 +46,16 @@ function tomaDocKindOf(nfseXml: string): FederalIdKind | null {
     return text(toma, 'CNPJ') ? 'cnpj' : text(toma, 'CPF') ? 'cpf' : null
   } catch { return null }
 }
+/**
+ * D-CJ25 (= Q-CJ25 (a), frente do CNPJ alfanumérico — 2026-10-16): o "Município gerador" é do DOCUMENTO — `infNFSe/xLocEmi` (obrigatório no
+ * XSD 1.01: "descrição do código do IBGE do município emissor da NFS-e"), nunca o endereço de HOJE do cadastro (que pode ter mudado depois da
+ * emissão). Fora do `DanfseFields` (paridade do N17 com o oráculo); XML sem o campo legível = o recurso que quem chama passa.
+ */
+function emitterMunicipalityOf(nfseXml: string): string | null {
+  try {
+    return text(group(parseXml(nfseXml), 'infNFSe'), 'xLocEmi')
+  } catch { return null }
+}
 const fmtMoney = (v: string | null): string => {
   const n = Number(v ?? '')
   if (!Number.isFinite(n)) return '—'
@@ -211,7 +221,7 @@ export async function renderDanfse(nfseXml: string, opts: DanfseOptions): Promis
   label('Emitida em (dhProc):', f.dhProc)
   label('Competência:', f.dCompet)
   label('DPS (série/número):', `${f.serie ?? '—'} / ${f.nDps ?? '—'}`)
-  label('Município gerador:', opts.municipality)
+  label('Município gerador:', emitterMunicipalityOf(nfseXml) ?? opts.municipality)          // D-CJ25: do documento
 
   section('Prestador do serviço')
   label('Razão social:', f.prest.xNome ?? opts.issuerName)

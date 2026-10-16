@@ -17,6 +17,9 @@ const ALLOWED: Record<string, string> = {
     + 'LEIAUTE — `cnpjForLayout`/`cpfForLayout`); a cerca acusa `digits(<inscrição>)` pelo valor (regra 5 do predicado).',
   "src/facts/service-facts.ts: String(v ?? '').replace(/\\D/g, '')":
     'digitsOf do CEP do tomador (8 dígitos) — a inscrição é lida pela peça (readFederalIdFact)',
+  'src/nfse/transmission.ts: Number(terms?.cancelDays)':
+    'prazo de cancelamento do município (DIAS, resposta do PAM) — não é inscrição; o rastreio chega até aqui porque a decisão do cancelamento '
+    + 'cita o autor (`documentCnpj`) e o município vem da chave da tentativa (D-CJ25)',
 }
 
 describe('D-CJ12 — cerca: nunca "tirar o que não é dígito" de inscrição federal ou chave de acesso', () => {
