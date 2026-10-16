@@ -13,9 +13,8 @@ const ROOT = path.resolve(__dirname, '..', '..')
 /** `arquivo: texto do alarme` (espaços colapsados) → motivo. */
 const ALLOWED: Record<string, string> = {
   "src/authority/dps-builder.ts: String(s ?? '').replace(/\\D/g, '')":
-    'digits() do montador: cMun/CEP/fone — e, ATÉ A ONDA 1 (D-CJ7, escritor pelo calendário de LEIAUTE), o CNPJ do prestador/tomador/autor '
-    + 'SEMPRE com tamanho (`digits(…, 14)` LANÇA em vez de mutilar; o CNPJ alfanumérico é recusado ANTES — service-facts `DPS_NUMERIC_CNPJ`). '
-    + 'A inscrição do Id do DPS já saiu daqui (gate socrático da onda 0). A onda 1 tira a inscrição do montador inteiro (Q-CJ15).',
+    'digits() do montador: só cMun/CEP/fone/códigos — a inscrição federal SAIU dele na onda 1 (D-CJ15: CNPJ/CPF pela forma canônica e pelo '
+    + 'LEIAUTE — `cnpjForLayout`/`cpfForLayout`); a cerca acusa `digits(<inscrição>)` pelo valor (regra 5 do predicado).',
   "src/facts/service-facts.ts: String(v ?? '').replace(/\\D/g, '')":
     'digitsOf do CEP do tomador (8 dígitos) — a inscrição é lida pela peça (readFederalIdFact)',
 }

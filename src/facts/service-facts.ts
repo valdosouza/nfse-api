@@ -1,8 +1,9 @@
 import {
   HttpError, FieldError, ErrorCodes, Queryable, assertSchema, erp, nowIsoIn, InvoiceRef, InvoiceScope,
-  LIVE_VOICE_KINDS, AUTHORIZED_KINDS, sqlKindList, readFederalIdFact, FederalIdFact, FederalIdKind,
+  LIVE_VOICE_KINDS, AUTHORIZED_KINDS, sqlKindList, readFederalIdFact, FederalIdFact, FederalIdKind, normalizeCnpj,
 } from 'fiscal-api'
 import type { DpsInput, DpsIbscbs, DpsToma, DpsTotTrib, AuthorityEnvironment } from '../authority/types'
+import { cnpjAlphanumericAccepted } from '../authority/layout-calendar'
 
 /**
  * FONTE DE FATOS DO RAMO DE SERVIÇO (D-F10) — o que a nfse-api lê do ERP para montar o DPS. Com a
@@ -178,11 +179,21 @@ export async function branchUpdatedAt(q: Queryable, schemaName: string, ref: Inv
 const digitsOf = (v: string | null | undefined) => String(v ?? '').replace(/\D/g, '')   // só CEP (D-CJ12: nunca sobre inscrição)
 
 /**
- * D-CJ8 (onda 0 da frente do CNPJ alfanumérico): o ESCRITOR do DPS segue o leiaute oficial de cada ambiente — o calendário por LEIAUTE
- * entra na onda 1 (D-CJ7: homologação já aceita letra, produção ainda numérica). Até lá, o CNPJ alfanumérico VÁLIDO chega aqui e é recusado
- * de forma LEGÍVEL (422, antes de reservar o nDPS) — nunca mutilado (o `digits()` do montador o tiraria ou lançaria um erro cru).
+ * D-CJ7 (onda 1 da frente do CNPJ alfanumérico): o ESCRITOR do DPS segue o LEIAUTE vigente do ambiente (`layout-calendar.ts` — pacote XSD
+ * publicado: produção restrita aceita CNPJ com letra, produção ainda numérica). A fonte de fatos devolve o FATO (alfanumérico incluído); a
+ * recusa legível (422 `FISCAL_DPS_INVALID`, ANTES de reservar o nDPS) é de `buildDpsBase`, que conhece o ambiente e o instante.
  */
-const DPS_NUMERIC_CNPJ = /^[0-9]{14}$/
+function assertCnpjLayout(environment: AuthorityEnvironment, instant: Date, emitter: string, toma: DpsToma): void {
+  if (cnpjAlphanumericAccepted('DPS', environment, instant)) return
+  const fields: FieldError[] = []
+  const hasLetter = (v: string | undefined) => !!v && /[A-Z]/.test(v)
+  if (hasLetter(emitter)) fields.push({ field: 'emitter.cnpj', message: 'CNPJ alfanumérico do estabelecimento: o leiaute da NFS-e deste ambiente ainda não aceita CNPJ com letras' })
+  if (hasLetter(toma.cnpj)) fields.push({ field: 'recipient.document', message: 'CNPJ alfanumérico do tomador: o leiaute da NFS-e deste ambiente ainda não aceita CNPJ com letras' })
+  if (fields.length) {
+    throw new HttpError(422, `O leiaute da NFS-e de ${environment === 'P' ? 'PRODUÇÃO' : 'homologação'} ainda não aceita CNPJ com letras — a nota sai quando o fisco publicar o leiaute novo (nada foi reservado)`,
+      fields, ErrorCodes.FISCAL_DPS_INVALID)
+  }
+}
 
 /** O CNPJ do emitente como fato em TRÊS estados (D-CJ2): ausente ≠ inválido — o diagnóstico diz o que corrigir. */
 function emitterCnpjProblem(fact: FederalIdFact): FieldError | null {
@@ -191,13 +202,21 @@ function emitterCnpjProblem(fact: FederalIdFact): FieldError | null {
   return null
 }
 
-/** L4 do socrático da Onda 3: leituras (XML, DANFSe, tela) só precisam do CNPJ do emitente (válido; alfanumérico serve para LER). */
+/**
+ * L4 do socrático da Onda 3: leituras (XML, DANFSe, tela, arquivamento da voz) só precisam do CNPJ do emitente — a PASTA do arquivo fiscal.
+ * D-CJ16 (= Q-CJ16 (b), 2026-10-16): leitura de documento JÁ autorizado canonicaliza o CNPJ gravado (máscara sai, minúscula sobe, SEM DV,
+ * nunca apaga) — a 2ª via não depende de o cadastro de hoje estar na forma; a EMISSÃO (`buildEmitter`) segue estrita.
+ */
 export async function emitterCnpj(q: Queryable, institutionId: number): Promise<string> {
   const cnpj = await erp.establishmentCnpj(q, institutionId)          // VÁLIDO na forma canônica, ou null
   if (cnpj) return cnpj
   // só no erro: o fato em três estados diz se falta ou se está errado (o caminho feliz segue com UMA leitura)
-  const problem = emitterCnpjProblem(await erp.establishmentCnpjFact(q, institutionId))
-    ?? { field: 'emitter.cnpj', message: 'Estabelecimento sem CNPJ (pessoa jurídica)' }
+  const fact = await erp.establishmentCnpjFact(q, institutionId)
+  if (fact.state === 'invalid') {
+    const canonical = normalizeCnpj(fact.raw)
+    if (canonical) return canonical
+  }
+  const problem = emitterCnpjProblem(fact) ?? { field: 'emitter.cnpj', message: 'Estabelecimento sem CNPJ (pessoa jurídica)' }
   throw new HttpError(422, `${problem.message} — corrija no Meu Estabelecimento`, [problem], ErrorCodes.FISCAL_EMITTER_INCOMPLETE)
 }
 
@@ -221,9 +240,6 @@ export async function buildEmitter(q: Queryable, schemaName: string, institution
   const fact = readFederalIdFact('cnpj', full?.cnpj)
   const problem = emitterCnpjProblem(fact)
   if (problem) missing.push(problem)
-  else if (fact.state === 'valid' && !DPS_NUMERIC_CNPJ.test(fact.id.value)) {
-    missing.push({ field: 'emitter.cnpj', message: 'CNPJ alfanumérico: a NFS-e com CNPJ com letras ainda não é emitida (o leiaute de produção do fisco é numérico)' })
-  }
   const cnpj = fact.state === 'valid' ? fact.id.value : ''
   const addr = full?.addresses.find(a => a.main === 'S') ?? full?.addresses[0]
   const cMun = await erp.cityIbge(q, addr?.cityId)
@@ -293,8 +309,6 @@ export async function buildRecipient(q: Queryable, entityId: number): Promise<Dp
   if (!full || doc.fact.state === 'absent') missing.push({ field: 'recipient.document', message: 'Tomador sem CPF/CNPJ' })
   else if (doc.fact.state === 'invalid') {
     missing.push({ field: 'recipient.document', message: `${doc.kind === 'cnpj' ? 'CNPJ' : 'CPF'} do tomador inválido no cadastro (forma ou dígito verificador)` })
-  } else if (doc.kind === 'cnpj' && !DPS_NUMERIC_CNPJ.test(doc.fact.id.value)) {
-    missing.push({ field: 'recipient.document', message: 'CNPJ alfanumérico do tomador: a NFS-e ainda não é emitida para CNPJ com letras (o leiaute de produção do fisco é numérico)' })
   }
   const xNome = (full?.nameCompany ?? full?.nickTrade ?? '').trim()
   if (!xNome) missing.push({ field: 'recipient.name', message: 'Tomador sem nome' })
@@ -344,6 +358,8 @@ export async function buildDpsBase(
   const { im: _prestIm, ...prestWithoutIm } = prest
   const prestDps = environment === 'H' ? prest : prestWithoutIm
   const toma = await buildRecipient(q, header.entityId)
+  // D-CJ7: CNPJ alfanumérico do emitente ou do tomador só se o LEIAUTE vigente do ambiente aceita — recusa legível ANTES da reserva
+  assertCnpjLayout(environment, new Date(), identity.cnpj, toma)
   const cLocPrestacao = await erp.cityIbge(q, b.cityId)
   if (!cLocPrestacao) {
     throw new HttpError(422, 'Cidade de incidência do serviço sem código IBGE — confira a regra de ISS',

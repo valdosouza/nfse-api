@@ -1,10 +1,10 @@
-import { toUtcDb, nowIsoIn, DEFAULT_TIME_ZONE, parseXml, firstElement, firstText as readFirstText, textOf, attrOf as readAttr, attributeCount, childElementCount, XmlUnreadableError, elementsOf, nameIs, contains, XmlNode, XmlReadOptions } from 'fiscal-api'
+import { CNPJ_FORM, CPF_FORM, toUtcDb, nowIsoIn, DEFAULT_TIME_ZONE, parseXml, firstElement, firstText as readFirstText, textOf, attrOf as readAttr, attributeCount, childElementCount, XmlUnreadableError, elementsOf, nameIs, contains, XmlNode, XmlReadOptions } from 'fiscal-api'
 import {
   AuthorityEnvironment, CancelEventInput, DpsIbscbs, DpsInput, DpsTpInsc, NfseDeclaredIbscbs, NfseIbscbsValues, ParsedEvent, ParsedNfse,
   ParsedNfseIbscbs,
 } from './types'
-import { layoutAt } from './layout-calendar'
-import { asNfseAccessKey } from './access-key'
+import { layoutAt, cnpjAlphanumericAccepted } from './layout-calendar'
+import { asNfseAccessKey, DPS_ID_FORM } from './access-key'
 
 /**
  * Montagem do XML do DPS v1.01 e do pedido de registro de evento (cancelamento
@@ -126,17 +126,17 @@ const grp = (name: string, inner: string, attrs = ''): string => `<${name}${attr
  * "DPS" + cMun(7) + tpInsc(1: 1 CPF · 2 CNPJ) + inscrição(14, zero à esquerda)
  * + série(5) + nDPS(15) = 45 posições (TSIdDPS `DPS[0-9]{42}`).
  *
- * D-CJ8/D-CJ12 (gate socrático da onda 0 do CNPJ alfanumérico): a inscrição entra COMO É — CNPJ de 14 dígitos (tpInsc 2) ou CPF de 11
+ * D-CJ8/D-CJ12 (gate socrático da onda 0 do CNPJ alfanumérico): a inscrição entra COMO É — CNPJ na forma canônica (tpInsc 2) ou CPF de 11
  * (tpInsc 1, zeros à esquerda); qualquer outra coisa LANÇA. Antes `digits(inscricao)` SEM tamanho tirava as letras e completava com zeros:
- * o Id (write-once na vida da nota) nasceria com a inscrição de OUTRO contribuinte. O CNPJ alfanumérico entra aqui pelo calendário de
- * LEIAUTE na onda 1 (D-CJ7) — até lá a fonte de fatos já recusa antes (`DPS_NUMERIC_CNPJ`) e este é o cinto.
+ * o Id (write-once na vida da nota) nasceria com a inscrição de OUTRO contribuinte. Onda 1 (D-CJ7): o CNPJ ALFANUMÉRICO é aceito aqui; quem
+ * decide se o ambiente o aceita é o LEIAUTE — `buildDpsXml` confere o Id contra o calendário e a fonte de fatos recusa legível antes da reserva.
  */
 export function buildDpsId(cMun: string, tpInsc: DpsTpInsc, inscricao: string, serie: number | string, nDps: number | string): string {
   const mun = digits(cMun, 'cMun', 7)
   if (tpInsc !== '1' && tpInsc !== '2') throw new Error(`tpInsc inválido: ${tpInsc}`)
   const insc = String(inscricao ?? '')
-  if (tpInsc === '2' ? !/^[0-9]{14}$/.test(insc) : !/^[0-9]{11}$/.test(insc)) {
-    throw new Error(`inscrição inválida para o Id do DPS (tpInsc ${tpInsc}: esperado ${tpInsc === '2' ? 'CNPJ de 14 dígitos' : 'CPF de 11 dígitos'}, nada é removido): ${inscricao}`)
+  if (tpInsc === '2' ? !CNPJ_FORM.test(insc) : !CPF_FORM.test(insc)) {
+    throw new Error(`inscrição inválida para o Id do DPS (tpInsc ${tpInsc}: esperado ${tpInsc === '2' ? 'CNPJ na forma canônica' : 'CPF de 11 dígitos'}, nada é removido): ${inscricao}`)
   }
   const s = Number(serie), n = Number(nDps)
   // séries do aplicativo próprio = 00001–49999 (50000+ são do emissor nacional — §1 do prompt);
@@ -148,17 +148,36 @@ export function buildDpsId(cMun: string, tpInsc: DpsTpInsc, inscricao: string, s
   return id
 }
 
-function prestXml(p: DpsInput['prest']): string {
+/**
+ * D-CJ7/D-CJ15 (onda 1 da frente do CNPJ alfanumérico): a inscrição federal entra no XML COMO É — CNPJ na forma canônica, com letra SÓ se o
+ * LEIAUTE vigente do ambiente a aceita (`cnpjAlphanumericAccepted`), ou CPF de 11 dígitos; o resto LANÇA (cinto: a fonte de fatos recusa
+ * legível antes de reservar o nDPS). Nunca `digits()` sobre inscrição — a cerca vigia o VALOR.
+ */
+function cnpjForLayout(v: string | null | undefined, label: string, alphanumeric: boolean): string {
+  const s = String(v ?? '')
+  if (!CNPJ_FORM.test(s)) throw new Error(`${label} fora da forma canônica (12 letras ou números + 2 DV, sem máscara): ${v}`)
+  if (!alphanumeric && !/^[0-9]{14}$/.test(s)) {
+    throw new Error(`${label} alfanumérico: o leiaute vigente deste ambiente não aceita CNPJ com letras (D-CJ7 — calendário de leiaute)`)
+  }
+  return s
+}
+function cpfForLayout(v: string | null | undefined, label: string): string {
+  const s = String(v ?? '')
+  if (!CPF_FORM.test(s)) throw new Error(`${label} fora da forma (11 dígitos, sem máscara): ${v}`)
+  return s
+}
+
+function prestXml(p: DpsInput['prest'], alphanumeric: boolean): string {
   const inner =
-    el('CNPJ', digits(p.cnpj, 'CNPJ do prestador', 14)) +
+    el('CNPJ', cnpjForLayout(p.cnpj, 'CNPJ do prestador', alphanumeric)) +
     el('IM', p.im ? text(p.im) : null) +
     grp('regTrib', el('opSimpNac', p.regTrib.opSimpNac) + el('regApTribSN', p.regTrib.regApTribSN) + el('regEspTrib', p.regTrib.regEspTrib))
   return grp('prest', inner)
 }
 
-function tomaXml(t: NonNullable<DpsInput['toma']>): string {
+function tomaXml(t: NonNullable<DpsInput['toma']>, alphanumeric: boolean): string {
   if (!!t.cnpj === !!t.cpf) throw new Error('Tomador exige CNPJ ou CPF (exatamente um)')
-  let inner = t.cnpj ? el('CNPJ', digits(t.cnpj, 'CNPJ do tomador', 14)) : el('CPF', digits(t.cpf!, 'CPF do tomador', 11))
+  let inner = t.cnpj ? el('CNPJ', cnpjForLayout(t.cnpj, 'CNPJ do tomador', alphanumeric)) : el('CPF', cpfForLayout(t.cpf, 'CPF do tomador'))
   inner += el('IM', t.im ? text(t.im) : null) + el('xNome', text(t.xNome))
   if (t.end) {
     inner += grp('end',
@@ -228,13 +247,18 @@ function ibscbsXml(g: DpsIbscbs): string {
  * com a declaração `<?xml …?>` (Manual 2022 §6.1 a). Sem Signature — quem assina é `signXml`.
  */
 export function buildDpsXml(input: DpsInput, id: string): string {
-  if (!/^DPS\d{42}$/.test(id)) throw new Error(`Id do DPS inválido: ${id}`)
+  if (!DPS_ID_FORM.test(id)) throw new Error(`Id do DPS inválido: ${id}`)
   if (input.tpEmit !== '1') throw new Error('tpEmit: só o prestador emite nesta onda (E9996)')
   const serie = Number(input.serie), nDps = Number(input.nDps)
   if (!Number.isInteger(serie) || serie < 1 || !Number.isInteger(nDps) || nDps < 1) throw new Error('serie/nDPS inválidos')
   // E0322: o grupo IBS/CBS EXIGE a NBS — a fonte de fatos confere antes (422); aqui é cinto (erro de programação)
   if (input.ibscbs && !input.serv.cServ.cNBS) throw new Error('Grupo IBS/CBS sem cNBS (E0322) — a fonte de fatos deveria ter recusado')
   const dhEmi = formatDateTimeTz(input.dhEmi)
+  // D-CJ7: o que o LEIAUTE vigente do ambiente aceita no INSTANTE da emissão — o Id, o prestador e o tomador seguem a MESMA linha
+  const alphanumeric = cnpjAlphanumericAccepted('DPS', input.environment, new Date(dhEmi))
+  if (!alphanumeric && /[A-Z]/.test(id.slice(3))) {                 // depois do literal "DPS"
+    throw new Error('Id do DPS com CNPJ alfanumérico: o leiaute vigente deste ambiente não aceita CNPJ com letras (D-CJ7 — calendário de leiaute)')
+  }
   const inf =
     el('tpAmb', tpAmbOf(input.environment)) +
     el('dhEmi', dhEmi) +
@@ -245,8 +269,8 @@ export function buildDpsXml(input: DpsInput, id: string): string {
     el('dCompet', /^\d{4}-\d{2}-\d{2}$/.test(input.dCompet) ? input.dCompet : (() => { throw new Error(`dCompet inválida: ${input.dCompet}`) })()) +
     el('tpEmit', input.tpEmit) +
     el('cLocEmi', digits(input.cLocEmi, 'cLocEmi', 7)) +
-    prestXml(input.prest) +
-    (input.toma ? tomaXml(input.toma) : '') +
+    prestXml(input.prest, alphanumeric) +
+    (input.toma ? tomaXml(input.toma, alphanumeric) : '') +
     servXml(input.serv) +
     valoresXml(input.valores) +
     (input.ibscbs ? ibscbsXml(input.ibscbs) : '')
@@ -289,7 +313,9 @@ export function buildCancelEventXml(input: CancelEventInput): string {
     el('tpAmb', tpAmbOf(input.environment)) +
     el('verAplic', cut(text(input.verAplic), 20)) +
     el('dhEvento', dhEvento) +
-    (input.cnpjAutor ? el('CNPJAutor', digits(input.cnpjAutor, 'CNPJ do autor', 14)) : el('CPFAutor', digits(input.cpfAutor!, 'CPF do autor', 11))) +
+    (input.cnpjAutor
+      ? el('CNPJAutor', cnpjForLayout(input.cnpjAutor, 'CNPJ do autor', cnpjAlphanumericAccepted('EVENT', input.environment, new Date(dhEvento))))
+      : el('CPFAutor', cpfForLayout(input.cpfAutor, 'CPF do autor'))) +
     el('chNFSe', chave) +
     grp(`e${EVENT_CANCEL}`, el('xDesc', 'Cancelamento de NFS-e') + el('cMotivo', input.cMotivo) + el('xMotivo', motive))
   const versao = layoutAt('EVENT', input.environment, new Date(dhEvento))

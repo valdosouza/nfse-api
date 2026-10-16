@@ -191,14 +191,15 @@ describe('D10 — tomador: PF × PJ pelo LUGAR (`tb_company` × `tb_person`), tr
     ['CNPJ numérico válido → <CNPJ>', { cnpj: NUM }, { cnpj: NUM }],
     ['só CPF válido → <CPF>', { cpf: '52998224725' }, { cpf: '52998224725' }],
     ['sentinela "0" no CNPJ = ausente → o CPF', { cnpj: '0', cpf: '52998224725' }, { cpf: '52998224725' }],
+    // onda 1 (D-CJ7, 2026-10-16): a fonte de fatos devolve o FATO — quem recusa pelo leiaute é o `buildDpsBase` (antes da reserva)
+    ['onda 1: CNPJ alfanumérico VÁLIDO → <CNPJ> como é (o leiaute decide depois)', { cnpj: ALFA }, { cnpj: ALFA }],
+    ['onda 1: CNPJ com 3 letras e CPF ao lado → <CNPJ> (NUNCA <CPF> nem 11 dígitos)', { cnpj: THREE_LETTERS, cpf: '52998224725' }, { cnpj: THREE_LETTERS }],
   ] as const)('%s', async (_l, row, expected) => {
     const toma = await buildRecipient(fakeErp(row), 900)
     expect(toma).toMatchObject({ ...expected, xNome: 'Tomador Ltda' })
     expect(Object.keys(toma).filter(k => k === 'cnpj' || k === 'cpf')).toEqual(Object.keys(expected))
   })
   it.each([
-    ['CNPJ alfanumérico VÁLIDO → recusa LEGÍVEL até o calendário de leiaute (onda 1), antes de reservar o nDPS', { cnpj: ALFA }, /CNPJ alfanumérico do tomador/],
-    ['CNPJ com 3 letras (antes virava CPF) → recusa legível, NUNCA <CPF>', { cnpj: THREE_LETTERS, cpf: '52998224725' }, /CNPJ alfanumérico do tomador/],
     ['CNPJ gravado com máscara → inválido no cadastro (o fato gravado é a forma canônica)', { cnpj: '12.345.678/0001-95' }, /CNPJ do tomador inválido no cadastro/],
     ['CNPJ com DV errado → inválido (não "sem documento")', { cnpj: '12345678000199' }, /CNPJ do tomador inválido no cadastro/],
     ['CPF com DV errado → inválido', { cpf: '52998224724' }, /CPF do tomador inválido no cadastro/],
@@ -218,8 +219,13 @@ describe('D8/D9 — emitente: ausente ≠ inválido; o alfanumérico VÁLIDO ser
   it('ausente e inválido dão diagnósticos DIFERENTES (antes os dois eram "Estabelecimento sem CNPJ")', async () => {
     await expect(emitterCnpj(fakeErp({}), 1)).rejects.toMatchObject({ statusCode: 422, message: expect.stringMatching(/sem CNPJ/) })
     await expect(emitterCnpj(fakeErp({ cnpj: '0' }), 1)).rejects.toMatchObject({ message: expect.stringMatching(/sem CNPJ/) })
-    for (const bad of ['12.345.678/0001-95', 'pc3d315k000193', '12345678000199']) {
+    for (const bad of ['12ÁBC34501DE35', 'PC3D315K00019Z', '123']) {
       await expect(emitterCnpj(fakeErp({ cnpj: bad }), 1)).rejects.toMatchObject({ statusCode: 422, message: expect.stringMatching(/CNPJ do estabelecimento inválido/) })
     }
+  })
+  it('D-CJ16 (onda 1): a LEITURA de documento já autorizado canonicaliza o CNPJ gravado fora da forma (sem DV) — a 2ª via não depende do cadastro de hoje', async () => {
+    expect(await emitterCnpj(fakeErp({ cnpj: '12.345.678/0001-95' }), 1)).toBe(NUM)
+    expect(await emitterCnpj(fakeErp({ cnpj: 'pc3d315k000193' }), 1)).toBe('PC3D315K000193')
+    expect(await emitterCnpj(fakeErp({ cnpj: '12345678000199' }), 1)).toBe('12345678000199')   // DV errado: a pasta é a do que foi gravado
   })
 })

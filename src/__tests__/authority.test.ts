@@ -69,8 +69,9 @@ describe('buildDpsId / buildDpsXml', () => {
     expect(() => buildDpsId('4106902', '2', '12345678000195', 0, 1)).toThrow(/série/)
   })
 
-  it('D-CJ8/D-CJ12 (gate socrático da onda 0): a inscrição do Id entra COMO É — letra, máscara ou tamanho errado LANÇAM (antes: letras tiradas + zeros à esquerda)', () => {
-    for (const bad of ['PC3D315K000193', '12.345.678/0001-95', '1234567800019', '123456780001950'])
+  it('D-CJ8/D-CJ12 (gate socrático da onda 0): a inscrição do Id entra COMO É — máscara, minúscula ou tamanho errado LANÇAM (antes: letras tiradas + zeros à esquerda); onda 1: o CNPJ alfanumérico CANÔNICO entra', () => {
+    expect(buildDpsId('4106902', '2', 'PC3D315K000193', 1, 1)).toBe('DPS4106902' + '2' + 'PC3D315K000193' + '00001' + '000000000000001')
+    for (const bad of ['pc3d315k000193', '12.345.678/0001-95', '1234567800019', '123456780001950'])
       expect(() => buildDpsId('4106902', '2', bad, 1, 1)).toThrow(/inscrição inválida para o Id do DPS/)
     for (const bad of ['123.456.789-01', '1234567890', '00012345678901'])
       expect(() => buildDpsId('4106902', '1', bad, 1, 1)).toThrow(/inscrição inválida para o Id do DPS/)

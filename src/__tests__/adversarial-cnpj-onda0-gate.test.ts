@@ -153,13 +153,13 @@ const fakeErp = (row: Row) => ({
 }) as any
 const THREE_LETTERS = (() => { const b = 'ABC123450001'; return b + cnpjCheckDigits(b)! })()
 
-describe('P4 — emitente: CNPJ alfanumérico VÁLIDO é recusado legível (422) ANTES de qualquer outra leitura do DPS (RESISTIU)', () => {
+// ONDA 1 (D-CJ7, 2026-10-16): a recusa do CNPJ alfanumérico saiu da FONTE DE FATOS (que devolve o fato) para o LEIAUTE do ambiente, em
+// `buildDpsBase`, antes da reserva — provado de ponta a ponta em `transmission.test.ts` ("D-CJ7 — CNPJ alfanumérico pelo calendário de LEIAUTE")
+describe('P4 — emitente: o CNPJ alfanumérico VÁLIDO é um FATO — a fonte de fatos o devolve como é (onda 1)', () => {
   beforeEach(() => { sqlSeen.length = 0 })
-  it.each([[ALFA], [THREE_LETTERS], ['PC3D315K000193']])('emitente %s → 422 FISCAL_EMITTER_INCOMPLETE "CNPJ alfanumérico", sem ler a tributação', async cnpj => {
-    const err = await buildEmitter(fakeErp({ cnpj }), 'setes_setes', 1).then(() => null, e => e)
-    expect(err).toMatchObject({ statusCode: 422, code: 'FISCAL_EMITTER_INCOMPLETE' })
-    expect(JSON.stringify(err.fields)).toMatch(/CNPJ alfanumérico/)
-    expect(sqlSeen.some(s => /tb_entity_tax/.test(s))).toBe(false)
+  it.each([[ALFA], [THREE_LETTERS], ['PC3D315K000193']])('emitente %s → identidade e <prest> com o CNPJ intacto', async cnpj => {
+    const r = await buildEmitter(fakeErp({ cnpj }), 'setes_setes', 1)
+    expect([r.identity.cnpj, r.prest.cnpj]).toEqual([cnpj, cnpj])
   })
   it('emitente numérico válido passa e o prest leva o CNPJ intacto', async () => {
     expect((await buildEmitter(fakeErp({ cnpj: NUM }), 'setes_setes', 1)).prest.cnpj).toBe(NUM)
@@ -171,18 +171,22 @@ describe('P4 — emitente: CNPJ alfanumérico VÁLIDO é recusado legível (422)
     }
   })
   it('tomador com CNPJ de 3 letras e CPF válido ao lado: nunca vira <CPF> nem 11 dígitos', async () => {
-    const err = await buildRecipient(fakeErp({ cnpj: THREE_LETTERS, cpf: '52998224725' }), 900).then(() => null, e => e)
-    expect(err).toMatchObject({ statusCode: 422 })
+    const toma = await buildRecipient(fakeErp({ cnpj: THREE_LETTERS, cpf: '52998224725' }), 900)
+    expect(toma).toMatchObject({ cnpj: THREE_LETTERS })
+    expect(toma).not.toHaveProperty('cpf')
   })
 })
 
 describe('P4 — o montador do Id do DPS (defesa em profundidade)', () => {
   // Achado deste gate no snapshot de 22:20 (`digits(inscricao)` SEM comprimento devolvia `DPS…2 00000000000812…` — o Id de OUTRO CNPJ);
   // CORRIGIDO em paralelo pelo gate socrático (22:48, inscrição conferida pela forma). O teste fica como garantia.
-  it.each([[ALFA], [THREE_LETTERS], ['12.345.678/0001-95'], [' 12345678000195'], ['1234567800019']])('buildDpsId com inscrição %j RECUSA (nunca mutila) (RESISTIU após correção)', insc => {
+  it.each([['12.345.678/0001-95'], [' 12345678000195'], ['1234567800019'], ['pc3d315k000193']])('buildDpsId com inscrição %j RECUSA (nunca mutila) (RESISTIU após correção)', insc => {
     let id: string | null = null, err: unknown = null
     try { id = buildDpsId('4106902', '2', insc, 1, 42) } catch (e) { err = e }
     expect({ id, threw: err !== null }).toEqual({ id: null, threw: true })
+  })
+  it.each([[ALFA], [THREE_LETTERS]])('onda 1: buildDpsId com CNPJ alfanumérico %s embute a inscrição EXATA (o leiaute é conferido no buildDpsXml)', insc => {
+    expect(buildDpsId('4106902', '2', insc, 1, 42).slice(11, 25)).toBe(insc)
   })
   it('buildDpsId com CNPJ numérico e CPF: o Id embute a inscrição EXATA (CPF com zeros à esquerda)', () => {
     expect(buildDpsId('4106902', '2', NUM, 1, 42).slice(11, 25)).toBe(NUM)

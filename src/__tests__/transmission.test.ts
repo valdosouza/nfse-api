@@ -278,6 +278,36 @@ describe('D-F59 (= Q-F67 (a), Valdo 2026-10-10) — IM do PRESTADOR no DPS só e
   })
 })
 
+// D-CJ7 (frente do CNPJ alfanumérico, onda 1 — 2026-10-16): o escritor do DPS segue o LEIAUTE vigente do ambiente (calendário por pacote
+// XSD): produção restrita aceita CNPJ com letra; produção ainda é numérica → recusa LEGÍVEL antes de reservar o nDPS (nada gasto no fisco)
+describe('D-CJ7 — CNPJ alfanumérico pelo calendário de LEIAUTE', () => {
+  const ALFA = 'PC3D315K000193'
+  const withCnpj = (emitter: string, toma: string) => async (_q: any, id: number) => ({ ...entity(id), cnpj: id === 1 ? emitter : toma })
+  it.each([
+    ['emitente', ALFA, '98765432000198', 'emitter.cnpj'],
+    ['tomador', '12345678000195', ALFA, 'recipient.document'],
+  ])('PRODUÇÃO: %s alfanumérico → 422 FISCAL_DPS_INVALID com o campo, ANTES de reservar (sem nDPS, sem tentativa, sem fisco)', async (_l, e, t, field) => {
+    erpM.entityFiscal.mockImplementation(withCnpj(e, t))
+    ;(fiscal.openIssuer as jest.Mock).mockResolvedValue(opened('P'))
+    const err = await transmitServiceInvoice(deps, A, webRef(A, INVOICE)).then(() => null, x => x)
+    expect(err).toMatchObject({ statusCode: 422, code: 'FISCAL_DPS_INVALID' })
+    expect(err.fields).toEqual([expect.objectContaining({ field })])
+    expect(fiscal.nextDpsNumber).not.toHaveBeenCalled()
+    expect(repo.insertTransmission).not.toHaveBeenCalled()
+    expect(adapter.transmit).not.toHaveBeenCalled()
+  })
+  it('HOMOLOGAÇÃO: emitente e tomador alfanuméricos vão como são — no <prest>, no <toma> e no Id do DPS', async () => {
+    erpM.entityFiscal.mockImplementation(withCnpj(ALFA, '00000000E08G12'))
+    adapter.transmit.mockResolvedValue({ accessKey: KEY, nfseNumber: '123', dhProc: '2026-10-16T10:15:30-03:00', nfseXml: NFSE_XML, raw: {} })
+    await transmitServiceInvoice(deps, A, webRef(A, INVOICE))
+    const sent = adapter.transmit.mock.calls[0][1] as string
+    expect(sent).toContain(`<prest><CNPJ>${ALFA}</CNPJ>`)
+    expect(sent).toContain('<toma><CNPJ>00000000E08G12</CNPJ>')
+    expect(sent).toContain(`Id="DPS41069022${ALFA}`)
+    expect(repo.insertLifeDps).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ dpsId: expect.stringContaining(ALFA) }), A.userId)
+  })
+})
+
 describe('consultar — a voz do fisco, idempotente, SEM efeito no ERP', () => {
   it('A já gravado e fisco "authorized" → nada novo; last_queried_at marcado', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
