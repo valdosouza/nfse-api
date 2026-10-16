@@ -15,6 +15,7 @@ import { buildDpsId, buildDpsXml, buildCancelEventXml, buildEventId, parseNfseXm
 import type { NfseDeclaredIbscbs, NfseIbscbsValues } from '../authority/types'
 import { ADN_SIGN_ALGORITHM } from '../authority/adn'
 import { asNfseAccessKey, issuerOfAccessKey, sameEmbeddedIssuer } from '../authority/access-key'
+import { cnpjAlphanumericAccepted } from '../authority/layout-calendar'
 import {
   SERVICE_MODEL, VER_APLIC, ServiceInvoiceHeader, DpsBase, EmitterIdentity,
   readServiceInvoice, branchUpdatedAt, buildDpsBase, buildEmitter, emitterCnpj, listPendingServiceInvoices,
@@ -840,6 +841,13 @@ export async function cancelServiceInvoiceAtAuthority(deps: NfseDeps, actor: Act
     // Gates do delta de 2026-10-04: e confere o A1 SOB essa trava, logo ANTES do K (A1 ausente/vencido/ilegível = 409 sem K —
     // o K→N deixava uma janela: processo caído entre os dois = K vivo sem A1, o estado que a guarda do DELETE impede)
     await openIssuer(estDeps(deps), institutionId, SERVICE_MODEL, { conn, forUpdate: true, schemaName: s })
+    // D-CJ7 (gate adversarial da onda 1, LOW): o autor do pedido (CNPJAutor) segue o leiaute do EVENTO do ambiente — CNPJ com letra onde o
+    // leiaute ainda é numérico = 422 legível ANTES do K (antes o cinto do montador lançava Error cru DEPOIS da reserva → N + 500)
+    const author = await erp.establishmentCnpj(conn, institutionId)
+    if (author && /[A-Z]/.test(author) && !cnpjAlphanumericAccepted('EVENT', tx.environment, new Date())) {
+      throw new HttpError(422, `O leiaute do pedido de cancelamento de ${tx.environment === 'P' ? 'PRODUÇÃO' : 'homologação'} ainda não aceita CNPJ com letras — nada foi reservado nem enviado ao fisco`,
+        [{ field: 'emitter.cnpj', message: 'CNPJ alfanumérico do estabelecimento: o leiaute do evento deste ambiente ainda é numérico' }], ErrorCodes.FISCAL_DPS_INVALID)
+    }
     const zone = await erp.institutionZone(conn, s, institutionId)
     const dhEvento = nowIsoIn(zone)
     // a RESERVA (K, fato NOSSO — dh NULL) é peça do núcleo (`reserveCancelRequest`): o escritor desta família cabe nela porque a lista

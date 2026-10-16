@@ -26,6 +26,28 @@ describe('D-CJ7 — o calendário por LEIAUTE (pacote XSD), não só por versão
     expect(Object.isFrozen(LAYOUT_SCHEMAS)).toBe(true)
     expect(() => { (LAYOUT_SCHEMAS['NFSe-1.01-20260209'] as any).cnpjAlphanumeric = true }).toThrow()
   })
+  // gate socrático da onda 1: uma linha NOVA nunca pode ser MENOS permissiva que a anterior do mesmo documento × ambiente — senão a nota
+  // autorizada com letra (DPS) não teria mais leiaute para o PEDIDO DE CANCELAMENTO dela (EVENT), e o "aceita letra" voltaria atrás em
+  // silêncio. Se o fisco algum dia recuar, é DECISÃO (questão ao Valdo), não uma linha a mais no calendário.
+  it('MONOTONIA: por documento × ambiente, aceitar CNPJ com letra nunca volta atrás; e o EVENT aceita sempre que o DPS aceita', () => {
+    const groups = new Map<string, typeof LAYOUT_CALENDAR[number][]>()
+    for (const l of LAYOUT_CALENDAR) groups.set(`${l.document}/${l.environment}`, [...(groups.get(`${l.document}/${l.environment}`) ?? []), l])
+    for (const [key, lines] of groups) {
+      const sorted = [...lines].sort((a, b) => Date.parse(a.validFrom) - Date.parse(b.validFrom))
+      for (let i = 1; i < sorted.length; i++) {
+        const before = LAYOUT_SCHEMAS[sorted[i - 1].schema].cnpjAlphanumeric
+        const after = LAYOUT_SCHEMAS[sorted[i].schema].cnpjAlphanumeric
+        expect([key, sorted[i].validFrom, before && !after]).toEqual([key, sorted[i].validFrom, false])
+      }
+    }
+    // em CADA virada do calendário (e um instante depois de todas), quem aceita no DPS aceita no EVENT do mesmo ambiente
+    const instants = [...new Set(LAYOUT_CALENDAR.map(l => Date.parse(l.validFrom)))].map(t => new Date(t)).concat(NOW)
+    for (const env of ['H', 'P'] as const) {
+      for (const t of instants) {
+        if (cnpjAlphanumericAccepted('DPS', env, t)) expect([env, t.toISOString(), cnpjAlphanumericAccepted('EVENT', env, t)]).toEqual([env, t.toISOString(), true])
+      }
+    }
+  })
 })
 
 const base = (env: 'H' | 'P', prest: string, toma: string): DpsInput => ({

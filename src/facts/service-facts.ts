@@ -214,7 +214,8 @@ export async function emitterCnpj(q: Queryable, institutionId: number): Promise<
   const fact = await erp.establishmentCnpjFact(q, institutionId)
   if (fact.state === 'invalid') {
     const canonical = normalizeCnpj(fact.raw)
-    if (canonical) return canonical
+    // gate adversarial da onda 1 (LOW): a D-CJ16 abre mão do DV, NÃO do veto dos 14 dígitos iguais (o "preenchimento" clássico de lixo)
+    if (canonical && !/^(\d)\1{13}$/.test(canonical)) return canonical
   }
   const problem = emitterCnpjProblem(fact) ?? { field: 'emitter.cnpj', message: 'Estabelecimento sem CNPJ (pessoa jurídica)' }
   throw new HttpError(422, `${problem.message} — corrija no Meu Estabelecimento`, [problem], ErrorCodes.FISCAL_EMITTER_INCOMPLETE)
