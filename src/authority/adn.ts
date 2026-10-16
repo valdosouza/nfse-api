@@ -4,6 +4,7 @@ import {
   AuthorityContext, EventRegisterResult, MunicipalTerms, NfseQuery, TaxAuthorityAdapter, TransmitResult,
 } from './types'
 import { parseEventXml, parseEventDoc, parseNfseXml, firstText, EVENT_CANCEL, CANCEL_EVENT_CODES, NFSE_XML } from './dps-builder'
+import { asNfseAccessKey, findNfseAccessKeyIn, issuerOfAccessKey, issuerOfDpsId, sameEmbeddedIssuer } from './access-key'
 
 /**
  * Adaptador da SEFIN NACIONAL (ADN / Sistema Nacional NFS-e) — API do Emissor
@@ -126,8 +127,7 @@ function sentDpsIdOf(signedDpsXml: string): string | null {
  */
 function isGeneratedEventFor(ev: { eventId: string | null; dhProc: string | null; dhEvento: string | null; accessKey: string | null }, accessKey: string): boolean {
   const generated = !!(ev.eventId || ev.dhProc)
-  const key = String(ev.accessKey ?? '').replace(/\D/g, '')
-  return generated && key === accessKey && !!(ev.dhProc || ev.dhEvento)
+  return generated && looseKeyOf(ev.accessKey) === accessKey && !!(ev.dhProc || ev.dhEvento)
 }
 /**
  * D-F89: o que distingue dois eventos do mesmo tipo — iguais nisso = repetição da mesma voz; diferentes = contradição.
@@ -139,11 +139,18 @@ function isGeneratedEventFor(ev: { eventId: string | null; dhProc: string | null
 const eventSignature = (e: ReturnType<typeof parseEventXml>, doc: XmlNode): string =>
   JSON.stringify([e.eventCode, e.eventId, e.dhProc, e.dhEvento, e.nSeqEvento, e.cMotivo, e.xMotivo, e.substituteKey ?? null,
     firstText(doc, 'nDFSe'), firstText(doc, 'CNPJAutor') ?? firstText(doc, 'CPFAutor'), firstText(doc, 'ambGer'), firstText(doc, 'tpAmb')])
-/** Chave de acesso da NFS-e = EXATAMENTE 50 dígitos (TSChaveAcesso); qualquer outra coisa não é chave. */
-const asAccessKey = (v: unknown): string | null => {
-  const s = str(v)?.replace(/\D/g, '') ?? ''
-  return s.length === 50 ? s : null
-}
+/**
+ * Chave de acesso da NFS-e pela FORMA GERAL (D-CJ7 — peça `./access-key`): 50 posições com a inscrição do emitente nas 10–23 (CNPJ pode
+ * ter letra); qualquer outra coisa não é chave. Antes: "50 dígitos depois de tirar o que não é dígito" — uma NFS-e AUTORIZADA de emitente
+ * com CNPJ alfanumérico virava 502 ambíguo ("nfse-sem-chave") e ficava no fisco sem a voz A (D12 do inventário).
+ */
+const asAccessKey = asNfseAccessKey
+/**
+ * D-F88 × D-CJ7: o `chNFSe` de um evento "é desta chave" também FORMATADO (espaço, ponto, hífen, barra) — contar a mais leva ao ambíguo, o
+ * lado seguro; mas só a FORMATAÇÃO sai: as letras ficam (antes `replace(/\D/g,'')` tirava também as letras do CNPJ alfanumérico embutido e o
+ * cancelamento dessa chave nunca era reconhecido). Minúscula ASCII sobe (conta a mais, nunca a menos).
+ */
+const looseKeyOf = (v: unknown): string => String(v ?? '').replace(/[\s./-]/g, '').replace(/[a-z]/g, c => c.toUpperCase())
 
 /**
  * D-F61 (= Q-F68 (a), Valdo 2026-10-10) — 404 que É a voz da Sefin "não há esse evento": o envelope JSON dela
@@ -333,12 +340,18 @@ export const adnAdapter: TaxAuthorityAdapter = {
   async queryDpsAccessKey(ctx, dpsId): Promise<string | null> {
     try {
       const { status, data, text } = await call<any>(ctx, 'GET', `/dps/${encodeURIComponent(dpsId)}`, undefined, 'dps')
-      const key = asAccessKey(data?.chaveAcesso) ?? asAccessKey(data?.chave) ?? (text.match(/\b\d{50}\b/)?.[0] ?? null)
+      // gate adversarial da onda 0 (LOW): campo DECLARADO manda — presente e fora da forma = fora do contrato (502), nunca "procura outra
+      // chave no corpo" (a busca achava a `chaveSubstituta`, do mesmo emitente); a busca no texto só vale quando o JSON não declara campo
+      const declared = data?.chaveAcesso ?? data?.chave
+      const key = declared !== undefined && declared !== null
+        ? asAccessKey(data?.chaveAcesso) ?? asAccessKey(data?.chave)
+        : findNfseAccessKeyIn(text)
       if (!key) throw unknownResponse('dps-fora-do-contrato', 'dps', status, text)
       // R19-03 do gate da Rodada 19: a chave tem de ser do EMITENTE do Id perguntado — chave 50 = cMun(7) + ambGer(1) + tpInsc(1) +
       // inscrição(14) + …; Id do DPS = "DPS" + cMun(7) + tpInsc(1) + inscrição(14) + … (mesma regra do `sameIssuerKey` da D-F85;
       // conferido nas 3 chaves reais de produção em 2026-10-11). Chave de OUTRO emitente (resposta trocada) nunca vira URL nem voz.
-      if (key.slice(8, 23) !== String(dpsId).slice(10, 25)) throw unknownResponse('dps-fora-do-contrato', 'dps: chave de OUTRO emitente', status, text, { foreign: true })
+      // D-CJ7: o recorte posicional mora numa peça só (`issuerOfAccessKey`/`issuerOfDpsId`), comparado exato
+      if (!sameEmbeddedIssuer(issuerOfAccessKey(key), issuerOfDpsId(String(dpsId)))) throw unknownResponse('dps-fora-do-contrato', 'dps: chave de OUTRO emitente', status, text, { foreign: true })
       return key
     } catch (err) {
       // Q-ADV1a (Valdo 2026-09-30): 404 só é "DPS sem NFS-e" (conclusivo → F) quando é a RESPOSTA do fisco

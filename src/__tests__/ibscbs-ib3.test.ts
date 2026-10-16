@@ -62,13 +62,13 @@ function followsXsd(got: string[], seq: string[], required: string[]): void {
 const base: DpsInput = {
   environment: 'H', dhEmi: '2026-12-20T10:15:30-03:00', verAplic: 'nfse-api', serie: 1, nDps: 42, dCompet: '2026-12-20',
   tpEmit: '1', cLocEmi: '4106902',
-  prest: { cnpj: '12345678000199', regTrib: { opSimpNac: '3', regApTribSN: '1', regEspTrib: '0' } },
-  toma: { cnpj: '98765432000188', xNome: 'Cliente' },
+  prest: { cnpj: '12345678000195', regTrib: { opSimpNac: '3', regApTribSN: '1', regEspTrib: '0' } },
+  toma: { cnpj: '98765432000198', xNome: 'Cliente' },
   serv: { locPrest: { cLocPrestacao: '4106902' }, cServ: { cTribNac: '010201', xDescServ: 'Suporte mensal', cNBS: '115021000' } },
   valores: { vServ: 250, trib: { tribMun: { tribISSQN: '1', tpRetISSQN: '1' }, totTrib: { pTotTribSN: 6 } } },
   ibscbs: { cIndOp: '100301', cClassTrib: '000001' },
 }
-const DPS_ID = buildDpsId('4106902', '2', '12345678000199', 1, 42)
+const DPS_ID = buildDpsId('4106902', '2', '12345678000195', 1, 42)
 
 describe('montador do grupo IBS/CBS (D-IB2/D-IB62 — ordem e forma contra o XSD oficial, D-IB84)', () => {
   const xml = buildDpsXml(base, DPS_ID)
@@ -123,7 +123,7 @@ describe('calendário de leiaute (D-IB81)', () => {
     expect(buildDpsXml(base, DPS_ID)).toContain('versao="1.01"')
     expect(buildCancelEventXml({
       accessKey: '4'.repeat(50), dhEvento: '2026-12-20T10:00:00-03:00', cMotivo: '1', xMotivo: 'Erro na emissao da nota',
-      environment: 'H', verAplic: 'nfse-api', cnpjAutor: '12345678000199',
+      environment: 'H', verAplic: 'nfse-api', cnpjAutor: '12345678000195',
     })).toContain('versao="1.01"')
   })
   it('constante CONGELADA (nunca flag/variável em execução); instante antes de toda linha = falha alta', () => {

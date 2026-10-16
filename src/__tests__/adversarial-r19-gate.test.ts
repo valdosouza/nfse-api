@@ -76,12 +76,12 @@ const deps: NfseDeps = { pool, keyring: MasterKeyRing.of({}), storage: new FsFis
 const A = { schemaName: 'setes_setes', institutionId: 1, userId: 7 }
 const INVOICE = 6200
 const INVOICE_B = 6201
-const CNPJ = '12345678000199'
+const CNPJ = '12345678000195'
 // Gate R19 (R19-03): a chave de teste segue o layout REAL (conferido nas 3 chaves de produção em 2026-10-11) — cMun(7) + ambGer(1) +
 // tpInsc(1) + inscrição(14) + nNFSe(13) + AAMM(4) + código(9) + DV(1); a antiga não tinha o tpInsc e o GET /dps agora confere o emitente
-const KEY = '4106902' + '2' + '2' + '12345678000199' + '0000000000123' + '2609' + '000012345' + '1'
+const KEY = '4106902' + '2' + '2' + '12345678000195' + '0000000000123' + '2609' + '000012345' + '1'
 const KEY_B = `${KEY.slice(0, -1)}8`
-const DPS_ID = 'DPS410690221234567800019900001000000000000042'
+const DPS_ID = 'DPS410690221234567800019500001000000000000042'
 const nfseXmlOf = (key: string) =>
   `<NFSe xmlns="http://www.sped.fazenda.gov.br/nfse"><infNFSe Id="NFS${key}"><nNFSe>123</nNFSe><dhProc>2026-09-21T10:15:30-03:00</dhProc><cStat>100</cStat><emit><CNPJ>${CNPJ}</CNPJ></emit><DPS><infDPS Id="${DPS_ID}"></infDPS></DPS></infNFSe></NFSe>`
 
@@ -224,7 +224,7 @@ const header = (over: any = {}) => ({
 })
 const entity = (id: number) => ({
   id, nameCompany: id === 1 ? 'SETES SISTEMAS LTDA' : 'Cliente Ltda', nickTrade: null,
-  cnpj: id === 1 ? '12.345.678/0001-99' : '98.765.432/0001-88', im: id === 1 ? '777' : null, cpf: null,
+  cnpj: id === 1 ? '12345678000195' : '98765432000198', im: id === 1 ? '777' : null, cpf: null,
   addresses: [{ main: 'S', street: 'Rua A', nmbr: '10', complement: null, neighborhood: 'Centro', zipCode: '80.010-000', cityId: 1, cityName: 'Curitiba', stateName: 'Paraná' }],
 })
 let headerRow: any
@@ -360,7 +360,9 @@ describe('ACHADO R19-03 (LOW, fora do delta — a mesma classe do R18-02, por ou
     expect(JSON.stringify((repo.insertTransmissionEvent as jest.Mock).mock.calls)).not.toContain(FOREIGN_KEY)
   })
   it('contexto: a peça de conferência do emitente pela chave existe (D-F85 — tpInsc + inscrição) e reconhece a chave alheia', () => {
-    expect(uncomment(fs.readFileSync(path.join(SRC_ROOT, 'nfse/transmission.ts'), 'utf8'))).toMatch(/function sameIssuerKey\(a: string, b: string\): boolean \{\s*return a\.length === 50 && b\.length === 50 && a\.slice\(8, 23\) === b\.slice\(8, 23\)/)
+    // D-CJ7 (frente do CNPJ alfanumérico): o recorte posicional saiu de transmission.ts e do adaptador para UMA peça (`authority/access-key.ts`)
+    expect(uncomment(fs.readFileSync(path.join(SRC_ROOT, 'nfse/transmission.ts'), 'utf8'))).toMatch(/function sameIssuerKey\(a: string, b: string\): boolean \{\s*return sameEmbeddedIssuer\(issuerOfAccessKey\(a\), issuerOfAccessKey\(b\)\)/)
+    expect(uncomment(fs.readFileSync(path.join(SRC_ROOT, 'authority/access-key.ts'), 'utf8'))).toMatch(/return \{ tpInsc: key\[8\], inscricao: key\.slice\(9, 23\) \}/)
     expect(sameIssuerOf(KEY, KEY)).toBe(true)
     expect(sameIssuerOf(KEY, FOREIGN_KEY)).toBe(false)
   })

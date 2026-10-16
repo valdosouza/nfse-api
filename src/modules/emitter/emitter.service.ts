@@ -44,8 +44,11 @@ export async function removeIssuer(ctx: AppContext, inst: InstitutionPayload, mo
 }
 
 export async function saveCertificate(ctx: AppContext, inst: InstitutionPayload, input: CertificateDto): Promise<IssuerCertificateStatus> {
-  // D-N29: o A1 tem que ser do CNPJ do emitente — o CNPJ vem do ERP (fonte de fatos), lido aqui na borda
-  const expectedCnpj = await erp.establishmentCnpj(ctx.pool, inst.institutionId)
+  // D-N29: o A1 tem que ser do CNPJ do emitente — o CNPJ vem do ERP (fonte de fatos), lido aqui na borda.
+  // D-CJ2 (gate socrático da onda 0 do CNPJ alfanumérico): o FATO em três estados chega à conferência — com o valor já achatado
+  // (`establishmentCnpj`, válido ou null) um CNPJ com DV errado virava "Estabelecimento sem CNPJ", o diagnóstico enganoso do §4.4
+  // (caminho feliz com UMA leitura — o CNPJ válido; o fato só é lido quando falta ou está errado, para dizer qual dos dois)
+  const expectedCnpj = (await erp.establishmentCnpj(ctx.pool, inst.institutionId)) ?? await erp.establishmentCnpjFact(ctx.pool, inst.institutionId)
   return uploadCertificate(ctx, actorOf(inst), input, { expectedCnpj })
 }
 

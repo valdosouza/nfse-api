@@ -57,9 +57,9 @@ const adapter = { authority: 'ADN', transmit: jest.fn(), queryNfse: jest.fn(), q
 const deps: NfseDeps = { pool, keyring: MasterKeyRing.of({}), storage: new FsFiscalStorage(storageRoot), adapter: adapter as any, fiscalDb: 'fiscal_api' }
 const A = { schemaName: 'setes_setes', institutionId: 1, userId: 7 }
 const INVOICE = 6200
-const CNPJ = '12345678000199'
-const KEY = '4106902212345678000199000000000012320260921000012345'.slice(0, 50)
-const DPS_ID = 'DPS410690221234567800019900001000000000000042'
+const CNPJ = '12345678000195'
+const KEY = '4106902212345678000195000000000012320260921000012345'.slice(0, 50)
+const DPS_ID = 'DPS410690221234567800019500001000000000000042'
 const NFSE_XML = `<NFSe xmlns="http://www.sped.fazenda.gov.br/nfse"><infNFSe Id="NFS${KEY}"><nNFSe>123</nNFSe><dhProc>2026-09-21T10:15:30-03:00</dhProc><cStat>100</cStat><emit><CNPJ>${CNPJ}</CNPJ></emit><DPS><infDPS Id="${DPS_ID}"></infDPS></DPS></infNFSe></NFSe>`
 
 const header = (over: any = {}) => ({
@@ -70,7 +70,7 @@ const header = (over: any = {}) => ({
 })
 const entity = (id: number) => ({
   id, nameCompany: id === 1 ? 'SETES SISTEMAS LTDA' : 'Cliente Ltda', nickTrade: null,
-  cnpj: id === 1 ? '12.345.678/0001-99' : '98.765.432/0001-88', im: id === 1 ? '777' : null, cpf: null,
+  cnpj: id === 1 ? '12345678000195' : '98765432000198', im: id === 1 ? '777' : null, cpf: null,
   addresses: [{ main: 'S', street: 'Rua A', nmbr: '10', complement: null, neighborhood: 'Centro', zipCode: '80.010-000', cityId: 1, cityName: 'Curitiba', stateName: 'Paraná' }],
 })
 const opened = (env = 'H') => ({
@@ -194,7 +194,7 @@ const DPS_BASE: DpsInput = {
   environment: 'H', dhEmi: '2026-10-10T10:15:30-03:00', verAplic: 'nfse-api 1.0', serie: 1, nDps: 42, dCompet: '2026-10-10',
   tpEmit: '1', cLocEmi: '4106902',
   prest: { cnpj: CNPJ, im: '777', regTrib: { opSimpNac: '3', regApTribSN: '1', regEspTrib: '0' } },
-  toma: { cnpj: '98765432000188', xNome: 'Cliente Ltda', end: { cMun: '4106902', cep: '80010000', xLgr: 'Rua A', nro: '10', xBairro: 'Centro' } },
+  toma: { cnpj: '98765432000198', xNome: 'Cliente Ltda', end: { cMun: '4106902', cep: '80010000', xLgr: 'Rua A', nro: '10', xBairro: 'Centro' } },
   serv: { locPrest: { cLocPrestacao: '4106902' }, cServ: { cTribNac: '010201', xDescServ: 'Licença mensal ERP' } },
   valores: { vServ: 100, trib: { tribMun: { tribISSQN: '1', tpRetISSQN: '1' }, totTrib: { pTotTribSN: 6 } } },
 }

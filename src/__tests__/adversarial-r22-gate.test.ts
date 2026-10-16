@@ -513,7 +513,7 @@ describe('ATAQUE 4 — casts e formas de chamada no código REAL', () => {
     }
     const nfseRepo = read(path.join(SRC_ROOT, 'nfse', 'repository.ts'))
     expect(sigs(path.join(SRC_ROOT, 'nfse', 'repository.ts'))).toEqual([])
-    expect(nfseRepo.match(/export const insertTransmissionEvent = [^\n]*/g)).toEqual(['export const insertTransmissionEvent = SERVICE_VOICE_FAMILY.insertTransmissionEvent'])
+    expect(nfseRepo.match(/export const insertTransmissionEvent = [^\r\n]*/g)).toEqual(['export const insertTransmissionEvent = SERVICE_VOICE_FAMILY.insertTransmissionEvent'])   // \r: cópia CRLF no Windows
     const coreTable = path.join(WORKSPACE, 'fiscal-api', 'src', 'voice', 'event-table.ts')
     const sf = ts.createSourceFile(coreTable, read(coreTable), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
     const fam = sf.statements.find((s): s is ts.InterfaceDeclaration => ts.isInterfaceDeclaration(s) && s.name.text === 'VoiceFamily')!

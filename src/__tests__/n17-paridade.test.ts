@@ -79,19 +79,19 @@ describe('N17 — paridade no CORPUS REAL do dev (D-NE72)', () => {
 })
 
 // --- fixtures SINTÉTICAS bem-formadas (nenhum dado real) ---
-const KEY = '41069022212345678000199000000000012326090000123451'
+const KEY = '41069022212345678000195000000000012326090000123451'
 const NFSE = (header = '<nNFSe>12</nNFSe><cStat>100</cStat><dhProc>2026-10-10T18:43:05-03:00</dhProc><nDFSe>7</nDFSe><ambGer>2</ambGer>', emit = '<emit>') =>
   `<?xml version="1.0" encoding="UTF-8"?><NFSe xmlns="http://www.sped.fazenda.gov.br/nfse" versao="1.01"><infNFSe Id="NFS${KEY}">` +
-  `<xLocEmi>Curitiba &amp; Região</xLocEmi>${header}${emit}<CNPJ>12345678000199</CNPJ><xNome>Setes &#38; Cia</xNome></emit>` +
-  `<valores><vLiq>10.00</vLiq><vISSQN>0.20</vISSQN></valores><DPS versao="1.01"><infDPS Id="DPS410690221234567800019900001000000000000042">` +
-  `<nDPS>42</nDPS><serie>1</serie><dCompet>2026-10-01</dCompet><prest><CNPJ>12345678000199</CNPJ></prest><toma><CNPJ>98765432000188</CNPJ>` +
+  `<xLocEmi>Curitiba &amp; Região</xLocEmi>${header}${emit}<CNPJ>12345678000195</CNPJ><xNome>Setes &#38; Cia</xNome></emit>` +
+  `<valores><vLiq>10.00</vLiq><vISSQN>0.20</vISSQN></valores><DPS versao="1.01"><infDPS Id="DPS410690221234567800019500001000000000000042">` +
+  `<nDPS>42</nDPS><serie>1</serie><dCompet>2026-10-01</dCompet><prest><CNPJ>12345678000195</CNPJ></prest><toma><CNPJ>98765432000198</CNPJ>` +
   `<xNome>Cliente "A"</xNome><end><endNac><cMun>4106902</cMun><CEP>80010000</CEP></endNac><xLgr>Rua &lt;X&gt;</xLgr><nro>1</nro></end></toma>` +
   `<serv><locPrest><cLocPrestacao>4106902</cLocPrestacao></locPrest><cServ><cTribNac>010201</cTribNac><xDescServ>Licença &#x2014; mês</xDescServ></cServ></serv>` +
   `<valores><vServPrest><vServ>10.00</vServ></vServPrest><trib><tribMun><tpRetISSQN>1</tpRetISSQN></tribMun></trib></valores><nNFSe>999</nNFSe></infDPS></DPS></infNFSe></NFSe>`
 const EVENT = (code: string, inner: string, id = `EVT${KEY}${code}001`) =>
   `<evento xmlns="http://www.sped.fazenda.gov.br/nfse" versao="1.01"><infEvento Id="${id}"><verAplic>SEFIN</verAplic><ambGer>2</ambGer><nSeqEvento>1</nSeqEvento>` +
   `<dhProc>2026-10-10T18:43:05-03:00</dhProc><nDFSe>1</nDFSe><pedRegEvento versao="1.01"><infPedReg Id="PRE${KEY}${code}"><tpAmb>2</tpAmb>` +
-  `<verAplic>X</verAplic><dhEvento>2026-10-10T18:43:00-03:00</dhEvento><CNPJAutor>12345678000199</CNPJAutor><chNFSe>${KEY}</chNFSe>` +
+  `<verAplic>X</verAplic><dhEvento>2026-10-10T18:43:00-03:00</dhEvento><CNPJAutor>12345678000195</CNPJAutor><chNFSe>${KEY}</chNFSe>` +
   `<nPedRegEvento>1</nPedRegEvento><e${code}>${inner}</e${code}></infPedReg></pedRegEvento></infEvento></evento>`
 
 describe('N17 — paridade nas fixtures BEM-FORMADAS (D-NE72)', () => {
@@ -104,7 +104,7 @@ describe('N17 — paridade nas fixtures BEM-FORMADAS (D-NE72)', () => {
     ['substituição e105102 (chave substituta)', EVENT('105102', `<xDesc>Cancelamento por Substituição</xDesc><cMotivo>01</cMotivo><chSubstituta>${KEY.replace(/1$/, '2')}</chSubstituta>`)],
     ['pedido ECOADO (sem Id EVT, sem dhProc no evento)', EVENT('101101', '<cMotivo>1</cMotivo><xMotivo>x</xMotivo>', '').replace(' Id=""', '').replace('<dhProc>2026-10-10T18:43:05-03:00</dhProc>', '')],
     ['tipo de evento fora do domínio de cancelamento (e101103)', EVENT('101103', '<xDesc>Outro</xDesc>')],
-    ['autor por CPF', EVENT('101101', '<cMotivo>1</cMotivo>').replace('<CNPJAutor>12345678000199</CNPJAutor>', '<CPFAutor>12345678909</CPFAutor>')],
+    ['autor por CPF', EVENT('101101', '<cMotivo>1</cMotivo>').replace('<CNPJAutor>12345678000195</CNPJAutor>', '<CPFAutor>12345678909</CPFAutor>')],
     ['prefixo de namespace num campo (o nome QUALIFICADO não casa — os dois ignoram)', EVENT('101101', '<cMotivo>1</cMotivo>').replace(`<chNFSe>${KEY}</chNFSe>`, `<n:chNFSe xmlns:n="urn:x">${KEY}</n:chNFSe>`)],
   ]
   it.each(WELL_FORMED)('IDÊNTICA: %s', (_l, xml) => {

@@ -60,7 +60,7 @@ function capture() {
   return { q, calls }
 }
 
-const KEY = '41069022123456780001990000000000123202609210000123'.slice(0, 50)
+const KEY = '41069022123456780001950000000000123202609210000123'.slice(0, 50)
 /** Linha CRUA do `TX_SELECT` (como o banco a entrega): `authorityRecorded` pela MESMA definição da família (`access_key` não nula). */
 const rawTx = (attempt: number, accessKey: string | null, over: Record<string, unknown> = {}) => ({
   institutionId: 1, invoiceId: 6200, attempt, lifeEvent: 1, environment: 'P', serie: '1', dpsNumber: 42, dpsId: 'DPS1',
@@ -129,7 +129,7 @@ describe('B — D-NE56 na nfse-api: uma definição, várias leituras', () => {
   it('resistiu: a composição da tela "No fisco" (`getServiceFiscalView`) com linhas na forma de PRODUÇÃO (`mapTx` com o fato) — a NFS-e pousou na tentativa 1 (reconciliada depois) e a 2 fechou F: a vigente é a 1 e o estado é "authorized" (D-N26 mantida)', async () => {
     ;(fiscal.erp.invoiceLife as jest.Mock).mockResolvedValue({ invoiceId: 6200, invoiceDeleted: false, lifeEvent: 1, lastEvent: 1, lastKind: 'E' })
     ;(fiscal.erp.institutionZone as jest.Mock).mockResolvedValue('America/Sao_Paulo')
-    ;(fiscal.erp.establishmentCnpj as jest.Mock).mockResolvedValue('12345678000199')
+    ;(fiscal.erp.establishmentCnpj as jest.Mock).mockResolvedValue('12345678000195')
     ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [rawTx(1, KEY), rawTx(2, null)].map(mapTx), events: [] })
     const deps: any = { pool: { query: jest.fn(async () => [[]]) }, storage: { find: () => null }, fiscalDb: 'fiscal_api' }
     const v = await getServiceFiscalView(deps, { schemaName: 'setes_setes', institutionId: 1, userId: 7 }, webRef({ schemaName: 'setes_setes', institutionId: 1, userId: 7 }, 6200))

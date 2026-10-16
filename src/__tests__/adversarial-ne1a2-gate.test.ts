@@ -222,9 +222,9 @@ const storage = { save: jest.fn(() => 'x'), find: jest.fn(() => null), read: jes
 const deps: NfseDeps = { pool, keyring: MasterKeyRing.of({}), storage: storage as any, adapter: adapter as any, fiscalDb: 'fiscal_api' }
 const A = { schemaName: 'setes_setes', institutionId: 1, userId: 7 }
 const INVOICE = 6200
-const CNPJ = '12345678000199'
-const KEY = '4106902212345678000199000000000012320260921000012345'.slice(0, 50)
-const DPS_ID = 'DPS410690221234567800019900001000000000000042'
+const CNPJ = '12345678000195'
+const KEY = '4106902212345678000195000000000012320260921000012345'.slice(0, 50)
+const DPS_ID = 'DPS410690221234567800019500001000000000000042'
 const header = (over: any = {}) => ({
   id: INVOICE, number: '17', serie: '1', model: 'SE', value: 1234.5, dtEmission: '2026-09-21', entityId: 900, status: '0',
   lastKind: 'E', lastEvent: 1, lifeEvent: 1, branchUpdatedAt: '2026-09-21 09:00:00',
@@ -233,7 +233,7 @@ const header = (over: any = {}) => ({
 })
 const entity = (id: number) => ({
   id, nameCompany: id === 1 ? 'SETES SISTEMAS LTDA' : 'Cliente Ltda', nickTrade: null,
-  cnpj: id === 1 ? '12.345.678/0001-99' : '98.765.432/0001-88', im: id === 1 ? '777' : null, cpf: null,
+  cnpj: id === 1 ? '12345678000195' : '98765432000198', im: id === 1 ? '777' : null, cpf: null,
   addresses: [{ main: 'S', street: 'Rua A', nmbr: '10', complement: null, neighborhood: 'Centro', zipCode: '80.010-000', cityId: 1, cityName: 'Curitiba', stateName: 'Paraná' }],
 })
 const opened = (env = 'H') => ({

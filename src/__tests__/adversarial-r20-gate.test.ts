@@ -72,10 +72,10 @@ const adapter = { authority: 'ADN', transmit: jest.fn(), queryNfse: jest.fn(), q
 const deps: NfseDeps = { pool, keyring: MasterKeyRing.of({}), storage: new FsFiscalStorage(storageRoot), adapter: adapter as any, fiscalDb: 'fiscal_api' }
 const A = { schemaName: 'setes_setes', institutionId: 1, userId: 7 }
 const INVOICE = 6200
-const CNPJ = '12345678000199'
+const CNPJ = '12345678000195'
 // layout REAL da chave (gate R19 — R19-03): cMun(7) + ambGer(1) + tpInsc(1) + inscrição(14) + nNFSe(13) + AAMM(4) + código(9) + DV(1)
-const KEY = '4106902' + '2' + '2' + '12345678000199' + '0000000000123' + '2609' + '000012345' + '1'
-const DPS_ID = 'DPS410690221234567800019900001000000000000042'
+const KEY = '4106902' + '2' + '2' + '12345678000195' + '0000000000123' + '2609' + '000012345' + '1'
+const DPS_ID = 'DPS410690221234567800019500001000000000000042'
 const nfseXmlOf = (key: string) =>
   `<NFSe xmlns="http://www.sped.fazenda.gov.br/nfse"><infNFSe Id="NFS${key}"><nNFSe>123</nNFSe><dhProc>2026-09-21T10:15:30-03:00</dhProc><cStat>100</cStat><emit><CNPJ>${CNPJ}</CNPJ></emit><DPS><infDPS Id="${DPS_ID}"></infDPS></DPS></infNFSe></NFSe>`
 
@@ -180,7 +180,7 @@ const header = (over: any = {}) => ({
 })
 const entity = (id: number) => ({
   id, nameCompany: id === 1 ? 'SETES SISTEMAS LTDA' : 'Cliente Ltda', nickTrade: null,
-  cnpj: id === 1 ? '12.345.678/0001-99' : '98.765.432/0001-88', im: id === 1 ? '777' : null, cpf: null,
+  cnpj: id === 1 ? '12345678000195' : '98765432000198', im: id === 1 ? '777' : null, cpf: null,
   addresses: [{ main: 'S', street: 'Rua A', nmbr: '10', complement: null, neighborhood: 'Centro', zipCode: '80.010-000', cityId: 1, cityName: 'Curitiba', stateName: 'Paraná' }],
 })
 let headerRow: any

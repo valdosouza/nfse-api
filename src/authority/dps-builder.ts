@@ -4,6 +4,7 @@ import {
   ParsedNfseIbscbs,
 } from './types'
 import { layoutAt } from './layout-calendar'
+import { asNfseAccessKey } from './access-key'
 
 /**
  * Montagem do XML do DPS v1.01 e do pedido de registro de evento (cancelamento
@@ -124,12 +125,19 @@ const grp = (name: string, inner: string, attrs = ''): string => `<${name}${attr
 /**
  * "DPS" + cMun(7) + tpInsc(1: 1 CPF · 2 CNPJ) + inscrição(14, zero à esquerda)
  * + série(5) + nDPS(15) = 45 posições (TSIdDPS `DPS[0-9]{42}`).
+ *
+ * D-CJ8/D-CJ12 (gate socrático da onda 0 do CNPJ alfanumérico): a inscrição entra COMO É — CNPJ de 14 dígitos (tpInsc 2) ou CPF de 11
+ * (tpInsc 1, zeros à esquerda); qualquer outra coisa LANÇA. Antes `digits(inscricao)` SEM tamanho tirava as letras e completava com zeros:
+ * o Id (write-once na vida da nota) nasceria com a inscrição de OUTRO contribuinte. O CNPJ alfanumérico entra aqui pelo calendário de
+ * LEIAUTE na onda 1 (D-CJ7) — até lá a fonte de fatos já recusa antes (`DPS_NUMERIC_CNPJ`) e este é o cinto.
  */
 export function buildDpsId(cMun: string, tpInsc: DpsTpInsc, inscricao: string, serie: number | string, nDps: number | string): string {
   const mun = digits(cMun, 'cMun', 7)
   if (tpInsc !== '1' && tpInsc !== '2') throw new Error(`tpInsc inválido: ${tpInsc}`)
-  const insc = digits(inscricao, 'inscrição')
-  if (insc.length > 14) throw new Error(`inscrição com mais de 14 dígitos: ${inscricao}`)
+  const insc = String(inscricao ?? '')
+  if (tpInsc === '2' ? !/^[0-9]{14}$/.test(insc) : !/^[0-9]{11}$/.test(insc)) {
+    throw new Error(`inscrição inválida para o Id do DPS (tpInsc ${tpInsc}: esperado ${tpInsc === '2' ? 'CNPJ de 14 dígitos' : 'CPF de 11 dígitos'}, nada é removido): ${inscricao}`)
+  }
   const s = Number(serie), n = Number(nDps)
   // séries do aplicativo próprio = 00001–49999 (50000+ são do emissor nacional — §1 do prompt);
   // defesa em profundidade: a linha do emissor pode ter vindo por SQL (ACHADO 3 do gate)
@@ -252,7 +260,17 @@ export function buildDpsXml(input: DpsInput, id: string): string {
 
 /** "PRE" + chave(50) + código do evento(6) = 59 (TSIdPedRegEvt `PRE[0-9]{56}`; Anexo II linha 13). */
 export function buildEventId(accessKey: string, eventCode: string): string {
-  return `PRE${digits(accessKey, 'chave de acesso', 50)}${digits(eventCode, 'código do evento', 6)}`
+  return `PRE${echoAccessKey(accessKey)}${digits(eventCode, 'código do evento', 6)}`
+}
+
+/**
+ * D-CJ7: a chave do FISCO vai no pedido de evento COMO VEIO (eco), conferida pela forma geral — `digits()` tirava as letras e o
+ * cancelamento de uma NFS-e de emitente com CNPJ alfanumérico ficava impossível.
+ */
+function echoAccessKey(accessKey: string): string {
+  const key = asNfseAccessKey(accessKey)
+  if (key === null || key !== accessKey) throw new Error(`chave de acesso inválida (esperado a forma geral de 50 posições): ${accessKey}`)
+  return key
 }
 
 /**
@@ -265,7 +283,7 @@ export function buildCancelEventXml(input: CancelEventInput): string {
   const motive = text(input.xMotivo, false)
   if (motive.length < 15 || motive.length > 255) throw new Error('xMotivo do cancelamento deve ter 15 a 255 caracteres')
   if (!['1', '2', '9'].includes(input.cMotivo)) throw new Error(`cMotivo inválido: ${input.cMotivo}`)
-  const chave = digits(input.accessKey, 'chave de acesso', 50)
+  const chave = echoAccessKey(input.accessKey)
   const dhEvento = formatDateTimeTz(input.dhEvento)
   const inf =
     el('tpAmb', tpAmbOf(input.environment)) +

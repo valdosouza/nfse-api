@@ -82,8 +82,8 @@ const pool = { query: jest.fn(), getConnection: jest.fn(async () => conn) } as a
 const deps: NfseDeps = { pool, keyring: MasterKeyRing.of({}), storage: new FsFiscalStorage(storageRoot), adapter: {} as any, fiscalDb: 'fiscal_api' }
 const A = { schemaName: 'setes_setes', institutionId: 1, userId: 7 }
 const INVOICE = 6200
-const CNPJ = '12345678000199'
-const DPS_ID = 'DPS410690221234567800019900001000000000000042'
+const CNPJ = '12345678000195'
+const DPS_ID = 'DPS410690221234567800019500001000000000000042'
 
 const tx = (over: any = {}) => withRecord({
   institutionId: 1, invoiceId: INVOICE, attempt: 1, lifeEvent: 1, environment: 'P', serie: '1', dpsNumber: 42, dpsId: DPS_ID,

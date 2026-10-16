@@ -5,7 +5,7 @@ import { normalizeCancelMotive } from '../nfse/transmission'
 import { buildCancelEventXml, toTsString } from '../authority/dps-builder'
 
 const TS_STRING = /^(?:[!-ÿ][ -ÿ]*[!-ÿ]|[!-ÿ])$/
-const CHAVE = '4106902' + '2' + '2' + '12345678000199' + '0000000000123' + '2609' + '000000001' + '7'
+const CHAVE = '4106902' + '2' + '2' + '12345678000195' + '0000000000123' + '2609' + '000000001' + '7'
 const xMotivoOf = (xml: string) => xml.match(/<xMotivo>([^<]*)<\/xMotivo>/)![1]
 
 describe('TSString do XSD — motivo do cancelamento e texto livre', () => {
@@ -13,7 +13,7 @@ describe('TSString do XSD — motivo do cancelamento e texto livre', () => {
     const m = normalizeCancelMotive('teste')
     expect(m).toBe('teste - Cancelamento solicitado pelo emissor')
     expect(TS_STRING.test(m)).toBe(true)
-    const xml = buildCancelEventXml({ accessKey: CHAVE, dhEvento: '2026-10-10T17:30:00-03:00', cMotivo: '1', xMotivo: m, environment: 'P', verAplic: 'v', cnpjAutor: '12345678000199' })
+    const xml = buildCancelEventXml({ accessKey: CHAVE, dhEvento: '2026-10-10T17:30:00-03:00', cMotivo: '1', xMotivo: m, environment: 'P', verAplic: 'v', cnpjAutor: '12345678000195' })
     expect(TS_STRING.test(xMotivoOf(xml))).toBe(true)
   })
 

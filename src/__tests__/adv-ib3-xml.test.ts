@@ -100,13 +100,13 @@ describe('(b) parseNfseIbscbs — o grupo DECLARADO nunca vira voz do fisco', ()
 const base: DpsInput = {
   environment: 'H', dhEmi: '2026-12-20T10:15:30-03:00', verAplic: 'nfse-api', serie: 1, nDps: 42, dCompet: '2026-12-20',
   tpEmit: '1', cLocEmi: '4106902',
-  prest: { cnpj: '12345678000199', regTrib: { opSimpNac: '3', regApTribSN: '1', regEspTrib: '0' } },
-  toma: { cnpj: '98765432000188', xNome: 'Cliente' },
+  prest: { cnpj: '12345678000195', regTrib: { opSimpNac: '3', regApTribSN: '1', regEspTrib: '0' } },
+  toma: { cnpj: '98765432000198', xNome: 'Cliente' },
   serv: { locPrest: { cLocPrestacao: '4106902' }, cServ: { cTribNac: '010201', xDescServ: 'Suporte mensal', cNBS: '115021000' } },
   valores: { vServ: 250, trib: { tribMun: { tribISSQN: '1', tpRetISSQN: '1' }, totTrib: { pTotTribSN: 6 } } },
   ibscbs: { cIndOp: '100301', cClassTrib: '000001' },
 }
-const ID = buildDpsId('4106902', '2', '12345678000199', 1, 42)
+const ID = buildDpsId('4106902', '2', '12345678000195', 1, 42)
 
 describe('(a) montador e fonte de fatos', () => {
   it('grupo sem cNBS ("" ou ausente) nunca sai; NBS fora da forma no cServ nunca sai', () => {
@@ -188,7 +188,7 @@ describe('(e) DANFSe / "No fisco" com XML hostil — nunca 500', () => {
 // ---------------------------------------------------------------------------------------------------------
 describe('(g) cerca D-IB41 e escritor único (regex sobre o texto)', () => {
   const fenceSrc = fs.readFileSync(path.join(PROJECT_ROOT, 'src', '__tests__', 'ibscbs-ib3.test.ts'), 'utf8')
-  const forbidden = new RegExp(fenceSrc.match(/const forbidden = \/(.+)\/\n/)![1])
+  const forbidden = new RegExp(fenceSrc.match(/const forbidden = \/(.+)\/\r?\n/)![1])   // \r?: cópia CRLF no Windows
   it('ACHADO (LOW): a cerca D-IB41 só pega `tb_service` com alias sv/s — outros aliases/AS/crase/concatenação lêem a presunção sem acusar', () => {
     const bypasses = [
       'SELECT p.nbs FROM `${s}`.tb_service p WHERE p.id = ?',

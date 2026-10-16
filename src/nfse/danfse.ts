@@ -1,5 +1,5 @@
 import PDFDocument from 'pdfkit'
-import { parseXml, firstElement, firstText, textOf, XmlNode, XmlUnreadableError, HttpError, ErrorCodes } from 'fiscal-api'
+import { parseXml, firstElement, firstText, textOf, XmlNode, XmlUnreadableError, HttpError, ErrorCodes, FederalIdKind, federalIdOf, formatFederalId } from 'fiscal-api'
 import { parseNfseXml, parseNfseDeclaration, childOf, pathOf, NFSE_XML } from '../authority/dps-builder'
 
 /**
@@ -29,19 +29,29 @@ export const NFSE_PUBLIC_QUERY_URL = 'https://www.nfse.gov.br/ConsultaPublica/?t
 const group = (scope: XmlNode | null, name: string): XmlNode | null => (scope ? firstElement(scope, name, NFSE_XML) : null)
 /** O texto do 1º campo [name] dentro do grupo (recusa se não é texto simples — D-NE72). */
 const text = (scope: XmlNode | null, name: string): string | null => (scope ? firstText(scope, name, NFSE_XML) : null)
-const fmtDoc = (v: string | null): string => {
+/**
+ * D-CJ7 (S7 do inventário): a inscrição formatada pela peça (`fiscal-api` — `FederalId`) com o tipo que o LUGAR diz (o elemento `<CNPJ>` ou
+ * `<CPF>` do XML) — antes era pelo comprimento depois de tirar o que não é dígito (um CNPJ alfanumérico com 3 letras saía com máscara de CPF).
+ * Valor que não fecha forma + DV sai como veio (exibir nunca esconde o dado).
+ */
+const fmtDoc = (v: string | null, kind: FederalIdKind | null): string => {
   if (!v) return '—'
-  const d = v.replace(/\D/g, '')
-  if (d.length === 14) return d.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5')
-  if (d.length === 11) return d.replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, '$1.$2.$3-$4')
-  return v
+  const id = kind ? federalIdOf(kind, v) : null
+  return id ? formatFederalId(id) : v
+}
+/** O tipo da inscrição do tomador = o ELEMENTO que a carrega no DPS embutido (fora do `DanfseFields` — paridade do N17 com o oráculo). */
+function tomaDocKindOf(nfseXml: string): FederalIdKind | null {
+  try {
+    const toma = group(group(parseXml(nfseXml), 'infDPS'), 'toma')
+    return text(toma, 'CNPJ') ? 'cnpj' : text(toma, 'CPF') ? 'cpf' : null
+  } catch { return null }
 }
 const fmtMoney = (v: string | null): string => {
   const n = Number(v ?? '')
   if (!Number.isFinite(n)) return '—'
   return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
-const fmtKey = (k: string): string => k.replace(/(\d{4})(?=\d)/g, '$1 ')
+const fmtKey = (k: string): string => k.replace(/([0-9A-Z]{4})(?=[0-9A-Z])/g, '$1 ')   // D-CJ7: grupos de 4 também com letra
 
 /**
  * IB-3 (gates socrático L2 + adversarial): valor do FISCO no bloco IBS/CBS como TEXTO exato — nunca `Number` (TSDec15V2 tem até 15 inteiros:
@@ -205,12 +215,12 @@ export async function renderDanfse(nfseXml: string, opts: DanfseOptions): Promis
 
   section('Prestador do serviço')
   label('Razão social:', f.prest.xNome ?? opts.issuerName)
-  label('CNPJ:', fmtDoc(f.prest.cnpj))
+  label('CNPJ:', fmtDoc(f.prest.cnpj, 'cnpj'))
   label('Inscrição municipal:', f.prest.im)
 
   section('Tomador do serviço')
   label('Nome:', f.toma.xNome)
-  label('CPF/CNPJ:', fmtDoc(f.toma.doc))
+  label('CPF/CNPJ:', fmtDoc(f.toma.doc, tomaDocKindOf(nfseXml)))
   label('Endereço:', f.toma.address)
 
   section('Serviço prestado')

@@ -14,6 +14,7 @@ import fs from 'fs'
 import { buildDpsId, buildDpsXml, buildCancelEventXml, buildEventId, parseNfseXml, parseEventXml, parseNfseDeclaration, nfseDpsHasIbscbs } from '../authority/dps-builder'
 import type { NfseDeclaredIbscbs, NfseIbscbsValues } from '../authority/types'
 import { ADN_SIGN_ALGORITHM } from '../authority/adn'
+import { asNfseAccessKey, issuerOfAccessKey, sameEmbeddedIssuer } from '../authority/access-key'
 import {
   SERVICE_MODEL, VER_APLIC, ServiceInvoiceHeader, DpsBase, EmitterIdentity,
   readServiceInvoice, branchUpdatedAt, buildDpsBase, buildEmitter, emitterCnpj, listPendingServiceInvoices,
@@ -82,8 +83,10 @@ const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e)).slic
 const estDeps = (d: NfseDeps) => ({ pool: d.pool, keyring: d.keyring })
 
 export const dpsFileName = (dpsId: string) => `${dpsId}-dps.xml`
-export const nfseFileName = (accessKey: string) => `${String(accessKey).replace(/\D/g, '')}-nfse.xml`
-export const cancelEventFileName = (accessKey: string) => `${String(accessKey).replace(/\D/g, '')}-evt101101.xml`
+// D-CJ7: o nome do arquivo leva a chave COMO É (antes sem as letras — duas chaves alfanuméricas diferentes podiam cair no mesmo arquivo;
+// para chave numérica o nome é o mesmo de sempre). A chave chega aqui já conferida pela forma geral (`asNfseAccessKey`) na leitura da voz.
+export const nfseFileName = (accessKey: string) => `${accessKey}-nfse.xml`
+export const cancelEventFileName = (accessKey: string) => `${accessKey}-evt101101.xml`
 
 /**
  * NE-1a parte 2 (D-NE12/D-NE59): a nota chega INTEIRA da borda (`InvoiceRef` — o terminal vem da ROTA; `WEB_TERMINAL` só lá). A
@@ -1190,7 +1193,7 @@ async function ibscbsViewOf(
  * nNFSe(13) + AAMM(4) + código(9) + DV(1) (Infra-IA/setes-api/integracoes/nfse-adn/README.md; provado nas chaves 704–706).
  */
 function sameIssuerKey(a: string, b: string): boolean {
-  return a.length === 50 && b.length === 50 && a.slice(8, 23) === b.slice(8, 23)
+  return sameEmbeddedIssuer(issuerOfAccessKey(a), issuerOfAccessKey(b))   // D-CJ7: a peça da chave, nunca o recorte copiado
 }
 
 /** D-F76: chave da SUBSTITUTA no XML do evento arquivado — só exibição; XML ausente/ilegível = null (a tela diz "indisponível"). */
@@ -1202,7 +1205,7 @@ async function substituteKeyOf(deps: NfseDeps, institutionId: number, tx: Transm
     const key = parseEventXml(fs.readFileSync(file, 'utf8')).substituteKey
     // R13-04 do gate adversarial: a própria chave não é a substituta. D-F85 (= Q-F91, Valdo 2026-10-10): a substituta é do MESMO
     // emitente — tipo de inscrição + inscrição embutidos na chave (posições 9–23 da chave de 50) iguais aos da substituída
-    return key && /^[0-9A-Z]{50}$/.test(key) && key !== tx.accessKey && sameIssuerKey(key, tx.accessKey!) ? key : null
+    return key && asNfseAccessKey(key) === key && key !== tx.accessKey && sameIssuerKey(key, tx.accessKey!) ? key : null
   } catch { return null }
 }
 

@@ -63,9 +63,9 @@ const adapter = { authority: 'ADN', transmit: jest.fn(), queryNfse: jest.fn(), q
 const deps: NfseDeps = { pool, keyring: MasterKeyRing.of({}), storage: new FsFiscalStorage(storageRoot), adapter: adapter as any, fiscalDb: 'fiscal_api' }
 const A = { schemaName: 'setes_setes', institutionId: 1, userId: 7 }
 const INVOICE = 6200
-const CNPJ = '12345678000199'
-const KEY = '4106902212345678000199000000000012320260921000012345'.slice(0, 50)
-const DPS_ID = 'DPS410690221234567800019900001000000000000042'
+const CNPJ = '12345678000195'
+const KEY = '4106902212345678000195000000000012320260921000012345'.slice(0, 50)
+const DPS_ID = 'DPS410690221234567800019500001000000000000042'
 const NFSE_XML = `<NFSe xmlns="http://www.sped.fazenda.gov.br/nfse"><infNFSe Id="NFS${KEY}"><nNFSe>123</nNFSe><dhProc>2026-09-21T10:15:30-03:00</dhProc><cStat>100</cStat><emit><CNPJ>${CNPJ}</CNPJ></emit><DPS><infDPS Id="${DPS_ID}"></infDPS></DPS></infNFSe></NFSe>`
 
 const header = (over: any = {}) => ({
@@ -76,7 +76,7 @@ const header = (over: any = {}) => ({
 })
 const entity = (id: number) => ({
   id, nameCompany: id === 1 ? 'SETES SISTEMAS LTDA' : 'Cliente Ltda', nickTrade: null,
-  cnpj: id === 1 ? '12.345.678/0001-99' : '98.765.432/0001-88', im: id === 1 ? '777' : null, cpf: null,
+  cnpj: id === 1 ? '12345678000195' : '98765432000198', im: id === 1 ? '777' : null, cpf: null,
   addresses: [{ main: 'S', street: 'Rua A', nmbr: '10', complement: null, neighborhood: 'Centro', zipCode: '80.010-000', cityId: 1, cityName: 'Curitiba', stateName: 'Paraná' }],
 })
 const opened = (env = 'H') => ({
@@ -156,8 +156,8 @@ describe('transmitir — trava da nota → DPS da vida → fisco FORA da transa�
     expect(conn.beginTransaction.mock.invocationCallOrder[1]).toBeGreaterThan(fiscoAt)
     const sent = adapter.transmit.mock.calls[0][1] as string
     expect(sent).toContain(`<infDPS Id="${DPS_ID}">`)
-    expect(sent).toContain('<prest><CNPJ>12345678000199</CNPJ><IM>777</IM><regTrib><opSimpNac>3</opSimpNac><regApTribSN>1</regApTribSN><regEspTrib>0</regEspTrib></regTrib></prest>')
-    expect(sent).toContain('<toma><CNPJ>98765432000188</CNPJ><xNome>Cliente Ltda</xNome>')
+    expect(sent).toContain('<prest><CNPJ>12345678000195</CNPJ><IM>777</IM><regTrib><opSimpNac>3</opSimpNac><regApTribSN>1</regApTribSN><regEspTrib>0</regEspTrib></regTrib></prest>')
+    expect(sent).toContain('<toma><CNPJ>98765432000198</CNPJ><xNome>Cliente Ltda</xNome>')
     expect(sent).not.toContain('<pAliq>')                       // ME/EPP pelo Simples sem retenção (E0625)
     expect(repo.fillAuthorityData).toHaveBeenCalledWith(itxLike(conn, 1, INVOICE), 1, { accessKey: KEY, nfseNumber: '123', dhProc: '2026-09-21 13:15:30' })
     expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(itxLike(conn, 1, INVOICE), 1, A.userId, expect.objectContaining({ kind: 'A', source: 'P', dh: '2026-09-21 13:15:30' }))
@@ -273,7 +273,7 @@ describe('D-F59 (= Q-F67 (a), Valdo 2026-10-10) — IM do PRESTADOR no DPS só e
     ;(fiscal.openIssuer as jest.Mock).mockResolvedValue(opened('P'))
     await transmitServiceInvoice(deps, A, webRef(A, INVOICE))
     const sentP = adapter.transmit.mock.calls[0][1] as string
-    expect(sentP).toContain('<prest><CNPJ>12345678000199</CNPJ><regTrib>')
+    expect(sentP).toContain('<prest><CNPJ>12345678000195</CNPJ><regTrib>')
     expect(sentP).not.toMatch(/<prest>(?:(?!<\/prest>)[\s\S])*<IM>/)
   })
 })

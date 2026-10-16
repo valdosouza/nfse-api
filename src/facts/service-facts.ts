@@ -1,6 +1,6 @@
 import {
   HttpError, FieldError, ErrorCodes, Queryable, assertSchema, erp, nowIsoIn, InvoiceRef, InvoiceScope,
-  LIVE_VOICE_KINDS, AUTHORIZED_KINDS, sqlKindList,
+  LIVE_VOICE_KINDS, AUTHORIZED_KINDS, sqlKindList, readFederalIdFact, FederalIdFact, FederalIdKind,
 } from 'fiscal-api'
 import type { DpsInput, DpsIbscbs, DpsToma, DpsTotTrib, AuthorityEnvironment } from '../authority/types'
 
@@ -175,16 +175,30 @@ export async function branchUpdatedAt(q: Queryable, schemaName: string, ref: Inv
 // Emitente / tomador → DpsInput
 // ---------------------------------------------------------------------------
 
-const digitsOf = (v: string | null | undefined) => String(v ?? '').replace(/\D/g, '')
+const digitsOf = (v: string | null | undefined) => String(v ?? '').replace(/\D/g, '')   // só CEP (D-CJ12: nunca sobre inscrição)
 
-/** L4 do socrático da Onda 3: leituras (XML, DANFSe, tela) só precisam do CNPJ do emitente. */
+/**
+ * D-CJ8 (onda 0 da frente do CNPJ alfanumérico): o ESCRITOR do DPS segue o leiaute oficial de cada ambiente — o calendário por LEIAUTE
+ * entra na onda 1 (D-CJ7: homologação já aceita letra, produção ainda numérica). Até lá, o CNPJ alfanumérico VÁLIDO chega aqui e é recusado
+ * de forma LEGÍVEL (422, antes de reservar o nDPS) — nunca mutilado (o `digits()` do montador o tiraria ou lançaria um erro cru).
+ */
+const DPS_NUMERIC_CNPJ = /^[0-9]{14}$/
+
+/** O CNPJ do emitente como fato em TRÊS estados (D-CJ2): ausente ≠ inválido — o diagnóstico diz o que corrigir. */
+function emitterCnpjProblem(fact: FederalIdFact): FieldError | null {
+  if (fact.state === 'absent') return { field: 'emitter.cnpj', message: 'Estabelecimento sem CNPJ (pessoa jurídica)' }
+  if (fact.state === 'invalid') return { field: 'emitter.cnpj', message: 'CNPJ do estabelecimento inválido no cadastro (forma ou dígito verificador)' }
+  return null
+}
+
+/** L4 do socrático da Onda 3: leituras (XML, DANFSe, tela) só precisam do CNPJ do emitente (válido; alfanumérico serve para LER). */
 export async function emitterCnpj(q: Queryable, institutionId: number): Promise<string> {
-  const cnpj = await erp.establishmentCnpj(q, institutionId)
-  if (!cnpj) {
-    throw new HttpError(422, 'Estabelecimento sem CNPJ (pessoa jurídica) — complete no Meu Estabelecimento',
-      [{ field: 'emitter.cnpj', message: 'Estabelecimento sem CNPJ' }], ErrorCodes.FISCAL_EMITTER_INCOMPLETE)
-  }
-  return cnpj
+  const cnpj = await erp.establishmentCnpj(q, institutionId)          // VÁLIDO na forma canônica, ou null
+  if (cnpj) return cnpj
+  // só no erro: o fato em três estados diz se falta ou se está errado (o caminho feliz segue com UMA leitura)
+  const problem = emitterCnpjProblem(await erp.establishmentCnpjFact(q, institutionId))
+    ?? { field: 'emitter.cnpj', message: 'Estabelecimento sem CNPJ (pessoa jurídica)' }
+  throw new HttpError(422, `${problem.message} — corrija no Meu Estabelecimento`, [problem], ErrorCodes.FISCAL_EMITTER_INCOMPLETE)
 }
 
 export interface EmitterIdentity {
@@ -204,8 +218,13 @@ export interface EmitterIdentity {
 export async function buildEmitter(q: Queryable, schemaName: string, institutionId: number): Promise<{ identity: EmitterIdentity; prest: DpsInput['prest']; simplesTotalTaxAliquot: number | null }> {
   const full = await erp.entityFiscal(q, institutionId)
   const missing: FieldError[] = []
-  const cnpj = digitsOf(full?.cnpj)
-  if (!full || cnpj.length !== 14) missing.push({ field: 'emitter.cnpj', message: 'Estabelecimento sem CNPJ (pessoa jurídica)' })
+  const fact = readFederalIdFact('cnpj', full?.cnpj)
+  const problem = emitterCnpjProblem(fact)
+  if (problem) missing.push(problem)
+  else if (fact.state === 'valid' && !DPS_NUMERIC_CNPJ.test(fact.id.value)) {
+    missing.push({ field: 'emitter.cnpj', message: 'CNPJ alfanumérico: a NFS-e com CNPJ com letras ainda não é emitida (o leiaute de produção do fisco é numérico)' })
+  }
+  const cnpj = fact.state === 'valid' ? fact.id.value : ''
   const addr = full?.addresses.find(a => a.main === 'S') ?? full?.addresses[0]
   const cMun = await erp.cityIbge(q, addr?.cityId)
   if (!addr) missing.push({ field: 'emitter.address', message: 'Estabelecimento sem endereço principal' })
@@ -266,16 +285,25 @@ export function emitterDpsFacts(prest: DpsInput['prest'], simplesTotalTaxAliquot
 export async function buildRecipient(q: Queryable, entityId: number): Promise<DpsToma> {
   const full = await erp.entityFiscal(q, entityId)
   const missing: FieldError[] = []
-  const cnpj = digitsOf(full?.cnpj)
-  const cpf = digitsOf(full?.cpf)
-  if (!full || (cnpj.length !== 14 && cpf.length !== 11)) missing.push({ field: 'recipient.document', message: 'Tomador sem CPF/CNPJ válido' })
+  // D-CJ2: PF × PJ pelo LUGAR (a especialização que carrega a inscrição — `tb_company` × `tb_person`), nunca pelo comprimento depois de
+  // limpar (um CNPJ com 3 letras virava 11 dígitos = "CPF"); três estados: ausente ≠ inválido ≠ válido
+  const cnpjFact = readFederalIdFact('cnpj', full?.cnpj)
+  const cpfFact = readFederalIdFact('cpf', full?.cpf)
+  const doc: { kind: FederalIdKind; fact: FederalIdFact } = cnpjFact.state !== 'absent' ? { kind: 'cnpj', fact: cnpjFact } : { kind: 'cpf', fact: cpfFact }
+  if (!full || doc.fact.state === 'absent') missing.push({ field: 'recipient.document', message: 'Tomador sem CPF/CNPJ' })
+  else if (doc.fact.state === 'invalid') {
+    missing.push({ field: 'recipient.document', message: `${doc.kind === 'cnpj' ? 'CNPJ' : 'CPF'} do tomador inválido no cadastro (forma ou dígito verificador)` })
+  } else if (doc.kind === 'cnpj' && !DPS_NUMERIC_CNPJ.test(doc.fact.id.value)) {
+    missing.push({ field: 'recipient.document', message: 'CNPJ alfanumérico do tomador: a NFS-e ainda não é emitida para CNPJ com letras (o leiaute de produção do fisco é numérico)' })
+  }
   const xNome = (full?.nameCompany ?? full?.nickTrade ?? '').trim()
   if (!xNome) missing.push({ field: 'recipient.name', message: 'Tomador sem nome' })
   if (missing.length) {
     throw new HttpError(422, `Cadastro do tomador ${entityId} incompleto para o DPS — complete o cadastro da entidade`,
       missing, ErrorCodes.FISCAL_RECIPIENT_INCOMPLETE)
   }
-  const toma: DpsToma = cnpj.length === 14 ? { cnpj, xNome } : { cpf, xNome }
+  const value = doc.fact.state === 'valid' ? doc.fact.id.value : ''
+  const toma: DpsToma = doc.kind === 'cnpj' ? { cnpj: value, xNome } : { cpf: value, xNome }
   const im = (full!.im ?? '').trim()
   if (im) toma.im = im
   const addr = full!.addresses.find(a => a.main === 'S') ?? full!.addresses[0]

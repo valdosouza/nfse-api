@@ -28,7 +28,7 @@ function selfSigned(): { cert: Buffer; key: Buffer } {
   cert.serialNumber = '01'
   cert.validity.notBefore = new Date(Date.now() - 60_000)
   cert.validity.notAfter = new Date(Date.now() + 86_400_000)
-  const attrs = [{ name: 'commonName', value: 'SETES TESTE:12345678000199' }, { name: 'countryName', value: 'BR' }]
+  const attrs = [{ name: 'commonName', value: 'SETES TESTE:12345678000195' }, { name: 'countryName', value: 'BR' }]
   cert.setSubject(attrs); cert.setIssuer(attrs)
   cert.sign(fk, forge.md.sha256.create())
   return { cert: Buffer.from(forge.pki.certificateToPem(cert)), key: Buffer.from(keyPem) }
@@ -39,16 +39,16 @@ const other = selfSigned()
 const dpsInput: DpsInput = {
   environment: 'H', dhEmi: '2026-09-21T10:15:30.123-03:00', verAplic: 'setes-api 1.0', serie: 1, nDps: 42, dCompet: '2026-09-21',
   tpEmit: '1', cLocEmi: '4106902',
-  prest: { cnpj: '12345678000199', im: '123456', regTrib: { opSimpNac: '1', regEspTrib: '0' } },
+  prest: { cnpj: '12345678000195', im: '123456', regTrib: { opSimpNac: '1', regEspTrib: '0' } },
   toma: {
-    cnpj: '98765432000188', xNome: 'Cliente & Filhos <Ltda>',
+    cnpj: '98765432000198', xNome: 'Cliente & Filhos <Ltda>',
     end: { cMun: '4106902', cep: '80010000', xLgr: 'Rua A', nro: '10', xCpl: 'Sala 2', xBairro: 'Centro' },
     fone: '4133331234', email: 'cliente@exemplo.com.br',
   },
   serv: { locPrest: { cLocPrestacao: '4106902' }, cServ: { cTribNac: '010201', xDescServ: 'Licença mensal <ERP> & suporte\nlinha 2' } },
   valores: { vServ: 1234.5, vDescIncond: 0, trib: { tribMun: { tribISSQN: '1', tpRetISSQN: '1', pAliq: 2 }, totTrib: { indTotTrib: '0' } } },
 }
-const DPS_ID = buildDpsId('4106902', '2', '12345678000199', 1, 42)
+const DPS_ID = buildDpsId('4106902', '2', '12345678000195', 1, 42)
 
 /** Ordem de aparição de substrings no texto (a ordem do XSD importa). */
 function inOrder(text: string, parts: string[]): void {
@@ -62,11 +62,18 @@ function inOrder(text: string, parts: string[]): void {
 
 describe('buildDpsId / buildDpsXml', () => {
   it('Id = DPS + cMun(7) + tpInsc(1) + inscrição(14) + série(5) + nDPS(15) = 45 posições', () => {
-    expect(DPS_ID).toBe('DPS' + '4106902' + '2' + '12345678000199' + '00001' + '000000000000042')
+    expect(DPS_ID).toBe('DPS' + '4106902' + '2' + '12345678000195' + '00001' + '000000000000042')
     expect(DPS_ID).toHaveLength(45)
     expect(buildDpsId('4106902', '1', '12345678901', 49999, 1)).toBe('DPS4106902' + '1' + '00012345678901' + '49999' + '000000000000001')
-    expect(() => buildDpsId('410690', '2', '12345678000199', 1, 1)).toThrow(/cMun/)
-    expect(() => buildDpsId('4106902', '2', '12345678000199', 0, 1)).toThrow(/série/)
+    expect(() => buildDpsId('410690', '2', '12345678000195', 1, 1)).toThrow(/cMun/)
+    expect(() => buildDpsId('4106902', '2', '12345678000195', 0, 1)).toThrow(/série/)
+  })
+
+  it('D-CJ8/D-CJ12 (gate socrático da onda 0): a inscrição do Id entra COMO É — letra, máscara ou tamanho errado LANÇAM (antes: letras tiradas + zeros à esquerda)', () => {
+    for (const bad of ['PC3D315K000193', '12.345.678/0001-95', '1234567800019', '123456780001950'])
+      expect(() => buildDpsId('4106902', '2', bad, 1, 1)).toThrow(/inscrição inválida para o Id do DPS/)
+    for (const bad of ['123.456.789-01', '1234567890', '00012345678901'])
+      expect(() => buildDpsId('4106902', '1', bad, 1, 1)).toThrow(/inscrição inválida para o Id do DPS/)
   })
 
   it('XML segue a ORDEM do TCInfDPS/TCInfoPrestador/TCInfoPessoa/TCServ/TCInfoValores, sem formatação entre tags', () => {
@@ -77,8 +84,8 @@ describe('buildDpsId / buildDpsXml', () => {
     inOrder(xml, [
       '<tpAmb>2</tpAmb>', '<dhEmi>2026-09-21T10:15:30-03:00</dhEmi>', '<verAplic>setes-api 1.0</verAplic>', '<serie>1</serie>', '<nDPS>42</nDPS>',
       '<dCompet>2026-09-21</dCompet>', '<tpEmit>1</tpEmit>', '<cLocEmi>4106902</cLocEmi>',
-      '<prest><CNPJ>12345678000199</CNPJ><IM>123456</IM><regTrib><opSimpNac>1</opSimpNac><regEspTrib>0</regEspTrib></regTrib></prest>',
-      '<toma><CNPJ>98765432000188</CNPJ><xNome>Cliente &amp; Filhos &lt;Ltda&gt;</xNome>',
+      '<prest><CNPJ>12345678000195</CNPJ><IM>123456</IM><regTrib><opSimpNac>1</opSimpNac><regEspTrib>0</regEspTrib></regTrib></prest>',
+      '<toma><CNPJ>98765432000198</CNPJ><xNome>Cliente &amp; Filhos &lt;Ltda&gt;</xNome>',
       '<end><endNac><cMun>4106902</cMun><CEP>80010000</CEP></endNac><xLgr>Rua A</xLgr><nro>10</nro><xCpl>Sala 2</xCpl><xBairro>Centro</xBairro></end>',
       '<fone>4133331234</fone><email>cliente@exemplo.com.br</email></toma>',
       '<serv><locPrest><cLocPrestacao>4106902</cLocPrestacao></locPrest><cServ><cTribNac>010201</cTribNac><xDescServ>',
@@ -101,7 +108,7 @@ describe('buildDpsId / buildDpsXml', () => {
       valores: { ...dpsInput.valores, trib: { ...dpsInput.valores.trib, totTrib: { pTotTribSN: 6.5 } } } }, DPS_ID)
     expect(pf).toContain('<toma><CPF>12345678901</CPF><xNome>Fulano</xNome></toma>')
     expect(pf).toContain('<totTrib><pTotTribSN>6.50</pTotTribSN></totTrib>')
-    expect(() => buildDpsXml({ ...dpsInput, toma: { cnpj: '98765432000188', cpf: '12345678901', xNome: 'x' } }, DPS_ID)).toThrow(/CNPJ ou CPF/)
+    expect(() => buildDpsXml({ ...dpsInput, toma: { cnpj: '98765432000198', cpf: '12345678901', xNome: 'x' } }, DPS_ID)).toThrow(/CNPJ ou CPF/)
     expect(() => buildDpsXml({ ...dpsInput, valores: { ...dpsInput.valores, trib: { ...dpsInput.valores.trib, tribMun: { tribISSQN: '1', tpRetISSQN: '1', pAliq: 10 } } } }, DPS_ID)).toThrow(/pAliq/)
   })
 
@@ -162,8 +169,8 @@ describe('signXml / verifyXml (XMLDSig enveloped, Manual 2022 §6.1.4)', () => {
   })
 
   it('pedido de evento assina infPedReg e a Signature fecha em </pedRegEvento>', () => {
-    const chave = '4106902' + '2' + '2' + '12345678000199' + '0000000000123' + '2609' + '000000001' + '7'
-    const ev = buildCancelEventXml({ accessKey: chave, dhEvento: '2026-09-21T11:00:00-03:00', cMotivo: '1', xMotivo: 'Erro na emissão: valor do serviço incorreto', environment: 'H', verAplic: 'setes-api 1.0', cnpjAutor: '12345678000199' })
+    const chave = '4106902' + '2' + '2' + '12345678000195' + '0000000000123' + '2609' + '000000001' + '7'
+    const ev = buildCancelEventXml({ accessKey: chave, dhEvento: '2026-09-21T11:00:00-03:00', cMotivo: '1', xMotivo: 'Erro na emissão: valor do serviço incorreto', environment: 'H', verAplic: 'setes-api 1.0', cnpjAutor: '12345678000195' })
     const id = buildEventId(chave, '101101')
     const signed = signXml(ev, { referenceId: id, cert: pair.cert, key: pair.key, algorithm: 'sha1' })
     expect(signed).toMatch(/<\/infPedReg><Signature xmlns="http:\/\/www\.w3\.org\/2000\/09\/xmldsig#">[\s\S]*<\/Signature><\/pedRegEvento>$/)
@@ -175,30 +182,30 @@ describe('signXml / verifyXml (XMLDSig enveloped, Manual 2022 §6.1.4)', () => {
 // ---------------------------------------------------------------------------
 // fixtures do fisco
 // ---------------------------------------------------------------------------
-const CHAVE = '4106902' + '2' + '2' + '12345678000199' + '0000000000123' + '2609' + '000000001' + '7'
+const CHAVE = '4106902' + '2' + '2' + '12345678000195' + '0000000000123' + '2609' + '000000001' + '7'
 const NFSE_XML = '<?xml version="1.0" encoding="UTF-8"?><NFSe xmlns="http://www.sped.fazenda.gov.br/nfse" versao="1.01">'
   + `<infNFSe Id="NFS${CHAVE}"><xLocEmi>Curitiba</xLocEmi><xLocPrestacao>Curitiba</xLocPrestacao><nNFSe>123</nNFSe><cLocIncid>4106902</cLocIncid>`
   + '<xTribNac>Programação</xTribNac><verAplic>SNNFSE</verAplic><ambGer>2</ambGer><tpEmis>1</tpEmis><cStat>100</cStat><dhProc>2026-09-21T13:16:01-03:00</dhProc><nDFSe>555</nDFSe>'
-  + '<emit><CNPJ>12345678000199</CNPJ><xNome>Setes</xNome><enderNac><xLgr>R</xLgr><nro>1</nro><xBairro>C</xBairro><cMun>4106902</cMun><UF>PR</UF><CEP>80010000</CEP></enderNac></emit>'
+  + '<emit><CNPJ>12345678000195</CNPJ><xNome>Setes</xNome><enderNac><xLgr>R</xLgr><nro>1</nro><xBairro>C</xBairro><cMun>4106902</cMun><UF>PR</UF><CEP>80010000</CEP></enderNac></emit>'
   + '<valores><vBC>1234.50</vBC><pAliqAplic>2.00</pAliqAplic><vISSQN>24.69</vISSQN><vLiq>1234.50</vLiq></valores>'
   + `<DPS versao="1.01"><infDPS Id="${DPS_ID}"><tpAmb>2</tpAmb><dhEmi>2026-09-21T10:15:30-03:00</dhEmi><nDPS>42</nDPS></infDPS></DPS></infNFSe>`
   + '<Signature xmlns="http://www.w3.org/2000/09/xmldsig#"><SignedInfo/><SignatureValue>x</SignatureValue></Signature></NFSe>'
 const EVENT_XML = '<?xml version="1.0" encoding="UTF-8"?><evento xmlns="http://www.sped.fazenda.gov.br/nfse" versao="1.01">'
   + `<infEvento Id="EVT${'0'.repeat(59)}"><verAplic>SNNFSE</verAplic><ambGer>2</ambGer><nSeqEvento>1</nSeqEvento><dhProc>2026-09-22T09:00:00-03:00</dhProc><nDFSe>556</nDFSe>`
-  + `<pedRegEvento versao="1.01"><infPedReg Id="PRE${CHAVE}101101"><tpAmb>2</tpAmb><verAplic>setes-api 1.0</verAplic><dhEvento>2026-09-22T08:59:00-03:00</dhEvento><CNPJAutor>12345678000199</CNPJAutor><chNFSe>${CHAVE}</chNFSe>`
+  + `<pedRegEvento versao="1.01"><infPedReg Id="PRE${CHAVE}101101"><tpAmb>2</tpAmb><verAplic>setes-api 1.0</verAplic><dhEvento>2026-09-22T08:59:00-03:00</dhEvento><CNPJAutor>12345678000195</CNPJAutor><chNFSe>${CHAVE}</chNFSe>`
   + '<e101101><xDesc>Cancelamento de NFS-e</xDesc><cMotivo>1</cMotivo><xMotivo>Erro na emiss&#xE3;o: valor &amp; tomador</xMotivo></e101101></infPedReg></pedRegEvento></infEvento></evento>'
 
 describe('buildCancelEventXml / parseNfseXml / parseEventXml', () => {
   it('pedRegEvento v1.01: Id = PRE + chave(50) + 101101 (59), ordem tpAmb/verAplic/dhEvento/CNPJAutor/chNFSe/e101101, xDesc fixo', () => {
-    const xml = buildCancelEventXml({ accessKey: CHAVE, dhEvento: '2026-09-21T11:00:00.500-03:00', cMotivo: '2', xMotivo: 'Serviço não prestado ao <cliente>', environment: 'P', verAplic: 'setes-api 1.0', cnpjAutor: '12345678000199' })
+    const xml = buildCancelEventXml({ accessKey: CHAVE, dhEvento: '2026-09-21T11:00:00.500-03:00', cMotivo: '2', xMotivo: 'Serviço não prestado ao <cliente>', environment: 'P', verAplic: 'setes-api 1.0', cnpjAutor: '12345678000195' })
     const id = `PRE${CHAVE}101101`
     expect(id).toHaveLength(59)
     expect(xml).toBe('<?xml version="1.0" encoding="UTF-8"?><pedRegEvento xmlns="http://www.sped.fazenda.gov.br/nfse" versao="1.01">'
-      + `<infPedReg Id="${id}"><tpAmb>1</tpAmb><verAplic>setes-api 1.0</verAplic><dhEvento>2026-09-21T11:00:00-03:00</dhEvento><CNPJAutor>12345678000199</CNPJAutor><chNFSe>${CHAVE}</chNFSe>`
+      + `<infPedReg Id="${id}"><tpAmb>1</tpAmb><verAplic>setes-api 1.0</verAplic><dhEvento>2026-09-21T11:00:00-03:00</dhEvento><CNPJAutor>12345678000195</CNPJAutor><chNFSe>${CHAVE}</chNFSe>`
       + '<e101101><xDesc>Cancelamento de NFS-e</xDesc><cMotivo>2</cMotivo><xMotivo>Serviço não prestado ao &lt;cliente&gt;</xMotivo></e101101></infPedReg></pedRegEvento>')
     expect(buildCancelEventXml({ accessKey: CHAVE, dhEvento: '2026-09-21T11:00:00-03:00', cMotivo: '9', xMotivo: 'Outros motivos do cancelamento', environment: 'H', verAplic: 'v', cpfAutor: '12345678901' })).toContain('<CPFAutor>12345678901</CPFAutor>')
-    expect(() => buildCancelEventXml({ accessKey: CHAVE, dhEvento: '2026-09-21T11:00:00-03:00', cMotivo: '1', xMotivo: 'curto', environment: 'H', verAplic: 'v', cnpjAutor: '12345678000199' })).toThrow(/15 a 255/)
-    expect(() => buildCancelEventXml({ accessKey: '123', dhEvento: '2026-09-21T11:00:00-03:00', cMotivo: '1', xMotivo: 'Erro na emissão da nota fiscal', environment: 'H', verAplic: 'v', cnpjAutor: '12345678000199' })).toThrow(/chave/)
+    expect(() => buildCancelEventXml({ accessKey: CHAVE, dhEvento: '2026-09-21T11:00:00-03:00', cMotivo: '1', xMotivo: 'curto', environment: 'H', verAplic: 'v', cnpjAutor: '12345678000195' })).toThrow(/15 a 255/)
+    expect(() => buildCancelEventXml({ accessKey: '123', dhEvento: '2026-09-21T11:00:00-03:00', cMotivo: '1', xMotivo: 'Erro na emissão da nota fiscal', environment: 'H', verAplic: 'v', cnpjAutor: '12345678000195' })).toThrow(/chave/)
   })
 
   it('parseNfseXml lê a chave sem o literal NFS, número, dhProc, cStat e o Id do DPS embutido', () => {
@@ -255,14 +262,14 @@ describe('adaptador ADN — transmit (POST /nfse)', () => {
 
   it('400 com erros[] → 422 FISCAL_DPS_REJECTED com os E0xxx em fields[] (field "dps")', async () => {
     mockHttp.mockResolvedValueOnce({ status: 400, headers: {}, text: JSON.stringify({ erros: [
-      { codigo: 'E0718', descricao: 'A assinatura deve ser do emitente da DPS', complemento: 'CNPJ 12345678000199' },
+      { codigo: 'E0718', descricao: 'A assinatura deve ser do emitente da DPS', complemento: 'CNPJ 12345678000195' },
       { codigo: 'E0006', descricao: 'Ambiente divergente' },
     ] }) })
     await expect(adn.transmit(ctx, '<DPS/>')).rejects.toMatchObject({
       statusCode: 422, code: 'FISCAL_DPS_REJECTED', authorityStatus: 400,
-      message: expect.stringMatching(/E0718: A assinatura deve ser do emitente da DPS \(CNPJ 12345678000199\) — E0006: Ambiente divergente/),
+      message: expect.stringMatching(/E0718: A assinatura deve ser do emitente da DPS \(CNPJ 12345678000195\) — E0006: Ambiente divergente/),
       fields: [
-        { field: 'dps', message: 'E0718: A assinatura deve ser do emitente da DPS (CNPJ 12345678000199)' },
+        { field: 'dps', message: 'E0718: A assinatura deve ser do emitente da DPS (CNPJ 12345678000195)' },
         { field: 'dps', message: 'E0006: Ambiente divergente' },
       ],
     })

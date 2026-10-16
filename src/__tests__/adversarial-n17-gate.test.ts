@@ -42,11 +42,11 @@ beforeAll(() => { transport.request = mockHttp as any })
 afterAll(() => { transport.request = realTransport })
 beforeEach(() => { mockHttp.mockReset(); (fiscal.parseXml as unknown as jest.Mock).mockClear() })
 
-const CNPJ = '12345678000199'
+const CNPJ = '12345678000195'
 const KEY = '4106902' + '2' + '2' + CNPJ + '0000000000123' + '2609' + '000012345' + '1'
 const KEY_B = `${KEY.slice(0, -1)}8`
-const DPS_ID = 'DPS410690221234567800019900001000000000000042'
-const DPS_ID_B = 'DPS410690221234567800019900001000000000000043'
+const DPS_ID = 'DPS410690221234567800019500001000000000000042'
+const DPS_ID_B = 'DPS410690221234567800019500001000000000000043'
 const ctxH = { environment: 'H' as const, cert: Buffer.from('CERT'), key: Buffer.from('KEY') }
 const SIGNED_DPS = `<?xml version="1.0" encoding="UTF-8"?><DPS xmlns="http://www.sped.fazenda.gov.br/nfse" versao="1.01"><infDPS Id="${DPS_ID}"><nDPS>42</nDPS></infDPS></DPS>`
 
@@ -70,7 +70,7 @@ function nfseXml(o: { key?: string; header?: string; emit?: string; dpsId?: stri
     `${o.header ?? '<nNFSe>123</nNFSe><cStat>100</cStat><dhProc>2026-09-21T10:15:30-03:00</dhProc><nDFSe>7</nDFSe><ambGer>2</ambGer>'}` +
     `${o.emit ?? `<emit><CNPJ>${CNPJ}</CNPJ><xNome>Setes</xNome></emit>`}<valores><vLiq>10.00</vLiq><vISSQN>0.20</vISSQN></valores>` +
     `<DPS versao="1.01"><infDPS Id="${o.dpsId ?? DPS_ID}"><nDPS>42</nDPS><serie>1</serie><dCompet>2026-09-01</dCompet><prest><CNPJ>${CNPJ}</CNPJ></prest>` +
-    `<toma><CNPJ>98765432000188</CNPJ><xNome>${o.xNomeToma ?? 'Cliente'}</xNome><end><xLgr>${o.xLgr ?? 'Rua A'}</xLgr><nro>1</nro></end></toma>` +
+    `<toma><CNPJ>98765432000198</CNPJ><xNome>${o.xNomeToma ?? 'Cliente'}</xNome><end><xLgr>${o.xLgr ?? 'Rua A'}</xLgr><nro>1</nro></end></toma>` +
     `<serv><locPrest><cLocPrestacao>4106902</cLocPrestacao></locPrest><cServ><cTribNac>010201</cTribNac><xDescServ>${o.xDescServ ?? 'Licença'}</xDescServ></cServ></serv>` +
     `<valores><vServPrest><vServ>10.00</vServ></vServPrest></valores></infDPS></DPS></infNFSe>${o.tail ?? ''}</NFSe>`
 }

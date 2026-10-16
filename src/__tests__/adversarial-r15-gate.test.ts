@@ -66,10 +66,10 @@ const adapter = { authority: 'ADN', transmit: jest.fn(), queryNfse: jest.fn(), q
 const deps: NfseDeps = { pool, keyring: MasterKeyRing.of({}), storage: new FsFiscalStorage(storageRoot), adapter: adapter as any, fiscalDb: 'fiscal_api' }
 const A = { schemaName: 'setes_setes', institutionId: 1, userId: 7 }
 const INVOICE = 6200
-const CNPJ = '12345678000199'
-const KEY = '4106902212345678000199000000000012320260921000012345'.slice(0, 50)
+const CNPJ = '12345678000195'
+const KEY = '4106902212345678000195000000000012320260921000012345'.slice(0, 50)
 const SUBST_KEY = `${KEY.slice(0, -1)}9`
-const DPS_ID = 'DPS410690221234567800019900001000000000000042'
+const DPS_ID = 'DPS410690221234567800019500001000000000000042'
 const nfseXmlFor = (extra = '') =>
   `<NFSe xmlns="http://www.sped.fazenda.gov.br/nfse"><infNFSe Id="NFS${KEY}"><nNFSe>123</nNFSe><dhProc>2026-09-21T10:15:30-03:00</dhProc><cStat>100</cStat><emit><CNPJ>${CNPJ}</CNPJ></emit><DPS><infDPS Id="${DPS_ID}"></infDPS></DPS>${extra}</infNFSe></NFSe>`
 const NFSE_XML = nfseXmlFor()

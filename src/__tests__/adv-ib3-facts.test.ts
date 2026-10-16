@@ -32,9 +32,9 @@ const header = (over: Partial<ServiceInvoiceHeader['branch']> = {}): ServiceInvo
 
 beforeEach(() => {
   erpM.entityFiscal.mockImplementation(async (_q: unknown, id: number) => id === EMITTER
-    ? { cnpj: '12345678000199', nameCompany: 'Setes', addresses: [{ main: 'S', cityId: 10, cityName: 'Curitiba', stateName: 'PR' }] }
+    ? { cnpj: '12345678000195', nameCompany: 'Setes', addresses: [{ main: 'S', cityId: 10, cityName: 'Curitiba', stateName: 'PR' }] }
     // tomador com endereço INCOMPLETO (sem número) — o XSD deixa `end` opcional e a fonte de fatos o omite calada
-    : { cnpj: '98765432000188', nameCompany: 'Cliente', addresses: [{ main: 'S', cityId: 10, zipCode: '80000000', street: 'Rua A', nmbr: '', neighborhood: 'Centro' }] })
+    : { cnpj: '98765432000198', nameCompany: 'Cliente', addresses: [{ main: 'S', cityId: 10, zipCode: '80000000', street: 'Rua A', nmbr: '', neighborhood: 'Centro' }] })
   erpM.cityIbge.mockResolvedValue('4106902')
   erpM.entityTax.mockResolvedValue({ simplesRegime: '3', simplesAssessment: '1', specialTaxRegime: '0', simplesTotalTaxAliquot: 6 })
   erpM.institutionZone.mockResolvedValue('America/Sao_Paulo')
@@ -52,8 +52,8 @@ describe('ACHADO (MEDIUM): rejeições do fisco previsíveis na montagem do grup
 
   it('E0903 — serviço do subitem 17.12 classificado: o DPS iria SEM `tpOper` (o montador nunca o emite; o fisco rejeita)', async () => {
     erpM.entityFiscal.mockImplementation(async (_q: unknown, id: number) => id === EMITTER
-      ? { cnpj: '12345678000199', nameCompany: 'Setes', addresses: [{ main: 'S', cityId: 10, cityName: 'Curitiba', stateName: 'PR' }] }
-      : { cnpj: '98765432000188', nameCompany: 'Cliente', addresses: [{ main: 'S', cityId: 10, zipCode: '80000000', street: 'Rua A', nmbr: '1', neighborhood: 'Centro' }] })
+      ? { cnpj: '12345678000195', nameCompany: 'Setes', addresses: [{ main: 'S', cityId: 10, cityName: 'Curitiba', stateName: 'PR' }] }
+      : { cnpj: '98765432000198', nameCompany: 'Cliente', addresses: [{ main: 'S', cityId: 10, zipCode: '80000000', street: 'Rua A', nmbr: '1', neighborhood: 'Centro' }] })
     let refused: any = null
     try { await buildDpsBase({} as any, 'setes_setes', EMITTER, header({ serviceListId: '17.12', nationalCode: '171201' }), 'P') } catch (e) { refused = e }
     expect(refused).toMatchObject({ statusCode: 422 })

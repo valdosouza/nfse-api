@@ -76,7 +76,7 @@ describe('resistiu — E0234/E0903 locais (assertIbscbsGroupDeliverable)', () =>
     expect(status(() => assertIbscbsGroupDeliverable({ ...g, cIndOp: '020101' }, { cpf: '12345678909', xNome: 'F' } as any, '010201'))).toBe('ok')
   })
   it('nationalCode nulo/curto/25.05: nunca TypeError (500); 25.05 = 422 E0903', () => {
-    const toma = { cnpj: '12345678000199', xNome: 'X', end: { cMun: '4106902', cep: '80000000', xLgr: 'R', nro: '1', xBairro: 'B' } } as any
+    const toma = { cnpj: '12345678000195', xNome: 'X', end: { cMun: '4106902', cep: '80000000', xLgr: 'R', nro: '1', xBairro: 'B' } } as any
     expect(status(() => assertIbscbsGroupDeliverable(g, toma, null as any))).toBe('ok')
     expect(status(() => assertIbscbsGroupDeliverable(g, toma, '25' as any))).toBe('ok')
     expect(status(() => assertIbscbsGroupDeliverable(g, toma, '250501'))).toBe(422)
