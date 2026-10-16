@@ -50,7 +50,7 @@ jest.mock('fiscal-api', () => {
 
 const ROOT = path.resolve(__dirname, '..', '..')
 const DPS = 'DPS410690221234567800019500001000000000000042'
-const KEY = '4106902212345678000195000000000012320260921000012345'.slice(0, 50)
+const KEY = '4106902221234567800019500000000001232026092100001234'.slice(0, 50)
 const A = { schemaName: 'setes_setes', institutionId: 1, userId: 7 }
 const INVOICE = 6200
 const adapter = { authority: 'ADN', transmit: jest.fn(), queryNfse: jest.fn(), queryDpsAccessKey: jest.fn(), registerEvent: jest.fn(), municipalTerms: jest.fn() }
@@ -422,7 +422,7 @@ dLive('AO VIVO — migrations 005, sondas do boot, view 004 e o veredito com lin
 
   it('[CORRIGIDO — D-F119] [MEDIUM F2A1-01 — ao vivo] view + mapa REAIS: a vida ANTERIOR autorizada em H (cancelada local, nota refaturada) não dispensa a reconferência — o leitor entrega só a vida PEDIDA e o veredito RECUSA a mistura', async () => {
     await seed(pool, SYN, 31, [
-      { attempt: 1, life: 3, env: 'H', dpsId: DPS_OF(31, 3), key: '41069022123456780001950000000000123202609210000' + '311', voice: { kind: 'A', source: 'P', created: '2026-09-20 10:00:05' } },
+      { attempt: 1, life: 3, env: 'H', dpsId: DPS_OF(31, 3), key: '41069022212345678000195000000000012320260921000' + '311', voice: { kind: 'A', source: 'P', created: '2026-09-20 10:00:05' } },
       { attempt: 2, life: 9, env: 'P', dpsId: DPS_OF(31, 9), voice: { kind: 'F', source: 'Q', created: '2026-10-01 10:05:00' } },
     ])
     const r = invoiceRef(SYN, 31, 0)
@@ -460,7 +460,7 @@ dLive('AO VIVO — migrations 005, sondas do boot, view 004 e o veredito com lin
     try {
       await c1.beginTransaction()
       expect(await readFamilyTransmissions(c1, SERVICE_VOICE_READING, NAME, r, 1)).toEqual([])  // 1ª leitura consistente = snapshot
-      await seed(pool, SYN, 41, [{ attempt: 1, life: 1, env: 'P', dpsId: DPS_OF(41, 1), voice: { kind: 'A', source: 'P', created: '2026-10-01 10:05:00' }, key: '4106902212345678000195000000000012320260921004101' }])
+      await seed(pool, SYN, 41, [{ attempt: 1, life: 1, env: 'P', dpsId: DPS_OF(41, 1), voice: { kind: 'A', source: 'P', created: '2026-10-01 10:05:00' }, key: '4106902221234567800019500000000001232026092100410' }])
       await c1.query(`SELECT * FROM tb_establishment_issuer WHERE tb_institution_id = ? AND model = '55' FOR UPDATE`, [SYN])
       expect(await readFamilyTransmissions(c1, SERVICE_VOICE_READING, NAME, r, 1)).toEqual([])  // DEPOIS da trava: ainda o snapshot velho (por isso D-F121)
     } finally {

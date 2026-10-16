@@ -64,7 +64,7 @@ const deps: NfseDeps = { pool, keyring: MasterKeyRing.of({}), storage: new FsFis
 const A = { schemaName: 'setes_setes', institutionId: 1, userId: 7 }
 const INVOICE = 6200
 const CNPJ = '12345678000195'
-const KEY = '4106902212345678000195000000000012320260921000012345'.slice(0, 50)
+const KEY = '4106902221234567800019500000000001232026092100001234'.slice(0, 50)
 const DPS_ID = 'DPS410690221234567800019500001000000000000042'
 const NFSE_XML = `<NFSe xmlns="http://www.sped.fazenda.gov.br/nfse"><infNFSe Id="NFS${KEY}"><nNFSe>123</nNFSe><dhProc>2026-09-21T10:15:30-03:00</dhProc><cStat>100</cStat><emit><CNPJ>${CNPJ}</CNPJ></emit><DPS><infDPS Id="${DPS_ID}"></infDPS></DPS></infNFSe></NFSe>`
 
@@ -298,7 +298,9 @@ describe('D-CJ7 — CNPJ alfanumérico pelo calendário de LEIAUTE', () => {
   })
   it('HOMOLOGAÇÃO: emitente e tomador alfanuméricos vão como são — no <prest>, no <toma> e no Id do DPS', async () => {
     erpM.entityFiscal.mockImplementation(withCnpj(ALFA, '00000000E08G12'))
-    adapter.transmit.mockResolvedValue({ accessKey: KEY, nfseNumber: '123', dhProc: '2026-10-16T10:15:30-03:00', nfseXml: NFSE_XML, raw: {} })
+    // a chave que o fisco devolve embute o MESMO emitente do DPS (D-CJ19 — o adaptador e a transmissão conferem)
+    const keyAlfa = '4106902' + '2' + '2' + ALFA + '0000000000123' + '2610' + '000012345' + '6'
+    adapter.transmit.mockResolvedValue({ accessKey: keyAlfa, nfseNumber: '123', dhProc: '2026-10-16T10:15:30-03:00', nfseXml: NFSE_XML, raw: {} })
     await transmitServiceInvoice(deps, A, webRef(A, INVOICE))
     const sent = adapter.transmit.mock.calls[0][1] as string
     expect(sent).toContain(`<prest><CNPJ>${ALFA}</CNPJ>`)
@@ -360,7 +362,7 @@ describe('D-CJ19 — documento JÁ autorizado pela chave dele, nunca pelo cadast
     jest.clearAllMocks()
     ;(fiscal.openIssuer as jest.Mock).mockResolvedValue(opened('P'))
     cadastroTrocadoPara(CNPJ)
-    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A', environment: 'P', accessKey: keyOf(ALFA), dhProc: '2026-08-15 13:00:00' }))
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A', environment: 'P', accessKey: keyOf(ALFA), dpsId: `DPS4106902${'2'}${ALFA}00001${'000000000000042'}`, dhProc: '2026-08-15 13:00:00' }))
     const err = await cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'cliente desistiu do serviço').then(() => null, x => x)
     expect(err).toMatchObject({ statusCode: 422, code: 'FISCAL_DPS_INVALID' })
     expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()                         // nada reservado (sem K)

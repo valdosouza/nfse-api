@@ -415,6 +415,7 @@ describe('RESISTIU — D-F98: cerca estática da nfse-api (todo produtor do amb�
     expect(producers.map(p => `${p.file} :: ${p.cause}`).sort()).toEqual([
       'src/authority/adn.ts :: cause',                            // o `unknownResponse(cause, …)` — conferido abaixo
       'src/authority/adn.ts :: evento-recusado',
+      'src/nfse/transmission.ts :: nfse-chave-divergente',     // D-CJ19 (2026-10-16): chave de OUTRO emitente que o DPS — pasta/autor nunca alheios
       'src/nfse/transmission.ts :: nfse-de-outro-dps',
       'src/nfse/transmission.ts :: situacao-ilegivel',
     ])

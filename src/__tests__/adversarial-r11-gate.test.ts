@@ -60,7 +60,7 @@ const deps: NfseDeps = { pool, keyring: MasterKeyRing.of({}), storage: new FsFis
 const A = { schemaName: 'setes_setes', institutionId: 1, userId: 7 }
 const INVOICE = 6200
 const CNPJ = '12345678000195'
-const KEY = '4106902212345678000195000000000012320260921000012345'.slice(0, 50)
+const KEY = '4106902221234567800019500000000001232026092100001234'.slice(0, 50)
 const DPS_ID = 'DPS410690221234567800019500001000000000000042'
 const NFSE_XML = `<NFSe xmlns="http://www.sped.fazenda.gov.br/nfse"><infNFSe Id="NFS${KEY}"><nNFSe>123</nNFSe><dhProc>2026-09-21T10:15:30-03:00</dhProc><cStat>100</cStat><emit><CNPJ>${CNPJ}</CNPJ></emit><DPS><infDPS Id="${DPS_ID}"></infDPS></DPS></infNFSe></NFSe>`
 

@@ -149,7 +149,7 @@ const adapter = { authority: 'ADN', transmit: jest.fn(), queryNfse: jest.fn(), q
 const deps: NfseDeps = { pool, keyring: MasterKeyRing.of({}), storage: new FsFiscalStorage(storageRoot), adapter: adapter as any, fiscalDb: 'fiscal_api' }
 const A = { schemaName: 'setes_setes', institutionId: 1, userId: 7 }
 const INVOICE = 6200
-const KEY = '4106902212345678000195000000000012320260921000012345'.slice(0, 50)
+const KEY = '4106902221234567800019500000000001232026092100001234'.slice(0, 50)
 const DPS_ID = 'DPS410690221234567800019500001000000000000042'
 
 const header = (over: any = {}) => ({
@@ -266,13 +266,17 @@ describe('promessa 3 — PRODUÇÃO recusa LEGÍVEL antes de nDPS/tentativa/fisc
   })
   // O cancelamento lê o CNPJAutor do cadastro ATUAL (buildEmitter — que na onda 1 deixou de recusar o alfanumérico); em P o cinto do montador
   // do evento LANÇA um Error cru, o preparo libera o K com "falha interna no preparo" e o erro sobe como 500 (com ref), não como 422 legível.
-  it('[CORRIGIDO na sessão — ACHADO LOW] cancelar em PRODUÇÃO com o cadastro do emitente hoje alfanumérico: 422 legível ANTES do K (era Error cru → 500 depois da reserva)', async () => {
+  // D-CJ19 (2026-10-16): o autor do pedido é o emitente da NOTA (embutido na chave), não o cadastro de hoje — o caso passa a ser a nota COM
+  // letra em P (chave e DPS do emitente alfanumérico); cadastro hoje alfanumérico com nota numérica segue (teste em `transmission.test.ts`)
+  it('[CORRIGIDO na sessão — ACHADO LOW] cancelar em PRODUÇÃO nota de emitente alfanumérico: 422 legível ANTES do K (era Error cru → 500 depois da reserva)', async () => {
     emitterDoc = ALFA
     ;(fiscal.openIssuer as jest.Mock).mockResolvedValue(opened('P'))
+    const keyAlfa = '4106902' + '2' + '2' + ALFA + '0000000000123' + '2610' + '000012345' + '6'
+    const dpsAlfa = `DPS4106902${'2'}${ALFA}00001${'000000000000042'}`
     // a tentativa ACOMPANHA as vozes gravadas (K da reserva, N da liberação) — molde `followVoices` de transmission.test.ts
     let kind: string | null = 'A'
     ;(repo.insertTransmissionEvent as jest.Mock).mockImplementation(async (_i: any, _a: number, _u: any, ev: any) => { kind = ev.kind; return 2 })
-    ;(repo.latestTransmission as jest.Mock).mockImplementation(async () => tx({ environment: 'P', lastKind: kind }))
+    ;(repo.latestTransmission as jest.Mock).mockImplementation(async () => tx({ environment: 'P', lastKind: kind, accessKey: keyAlfa, dpsId: dpsAlfa }))
     const err = await cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'cliente desistiu do serviço').then(() => null, x => x)
     expect(adapter.registerEvent).not.toHaveBeenCalled()                                                   // o fisco não é chamado
     expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()                                            // e NADA é reservado (nem K, nem N)

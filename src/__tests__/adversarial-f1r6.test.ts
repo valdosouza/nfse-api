@@ -75,7 +75,7 @@ const ACTOR_2 = { schemaName: 'setes_outro', institutionId: 2, userId: 990006 } 
 const INVOICE = 6300
 const CNPJ = '07742094000113'
 const DPS_ID = 'DPS410690220774209400011300001000000000000043'
-const KEY = ('4106902' + '2' + CNPJ + '0'.repeat(50)).slice(0, 50)
+const KEY = ('4106902' + '2' + '2' + CNPJ + '0'.repeat(50)).slice(0, 50)   // cMun + ambGer + tpInsc 2 + CNPJ (D-CJ19: chave do emitente do DPS)
 const NFSE_XML = `<NFSe xmlns="http://www.sped.fazenda.gov.br/nfse" versao="1.01"><infNFSe Id="NFS${KEY}"><nNFSe>43</nNFSe><dhProc>2026-10-04T10:00:00-03:00</dhProc><cStat>100</cStat><emit><CNPJ>${CNPJ}</CNPJ></emit><DPS><infDPS Id="${DPS_ID}"></infDPS></DPS></infNFSe></NFSe>`
 
 const tx = (over: any = {}) => withRecord({

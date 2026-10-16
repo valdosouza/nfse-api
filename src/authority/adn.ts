@@ -247,6 +247,12 @@ export const adnAdapter: TaxAuthorityAdapter = {
         ? unknownResponse('nfse-de-outro-dps', 'transmitir: NFS-e de OUTRO DPS (Id divergente do enviado)', status, text, { foreign: true })
         : unknownResponse('nfse-sem-identidade', 'transmitir: NFS-e sem o Id do DPS', status, text, { foreign: true })
     }
+    // D-CJ19 (gate adversarial do delta, MEDIUM — 2026-10-16): a chave agora decide a PASTA do arquivo fiscal e o AUTOR do evento — o
+    // emitente EMBUTIDO nela tem de ser o do DPS que enviamos (a MESMA conferência do GET /dps, abaixo). Nosso Id com a chave de OUTRO
+    // emitente = resposta alheia: ambígua, nunca voz A
+    if (!sameEmbeddedIssuer(issuerOfAccessKey(accessKey), issuerOfDpsId(parsed.dpsId))) {     // = o Id enviado (conferido acima)
+      throw unknownResponse('nfse-chave-divergente', 'transmitir: chave de OUTRO emitente', status, text, { foreign: true })
+    }
     return {
       accessKey, nfseNumber: parsed.nNFSe, dhProc: parsed.dhProc ?? str(data?.dataHoraProcessamento), nfseXml, raw: data,
     }

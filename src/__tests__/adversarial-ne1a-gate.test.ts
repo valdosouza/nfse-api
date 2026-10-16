@@ -60,7 +60,7 @@ function capture() {
   return { q, calls }
 }
 
-const KEY = '41069022123456780001950000000000123202609210000123'.slice(0, 50)
+const KEY = '41069022212345678000195000000000012320260921000012'.slice(0, 50)
 /** Linha CRUA do `TX_SELECT` (como o banco a entrega): `authorityRecorded` pela MESMA definição da família (`access_key` não nula). */
 const rawTx = (attempt: number, accessKey: string | null, over: Record<string, unknown> = {}) => ({
   institutionId: 1, invoiceId: 6200, attempt, lifeEvent: 1, environment: 'P', serie: '1', dpsNumber: 42, dpsId: 'DPS1',

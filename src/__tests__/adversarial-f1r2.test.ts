@@ -49,6 +49,8 @@ const deps: NfseDeps = { pool, keyring: MasterKeyRing.of({}), storage: new FsFis
 const ACTOR = { schemaName: 'setes_setes', institutionId: 1, userId: 7 }
 const INVOICE = 6200
 const CNPJ = '07742094000113'
+// D-CJ19: a chave embute o MESMO emitente do DPS (cMun + ambGer + tpInsc 2 + CNPJ) — a chave de outro emitente é recusada antes de tudo
+const KEY_OF_DPS = ('4106902' + '2' + '2' + CNPJ + '0'.repeat(50)).slice(0, 50)
 const DPS_ID = 'DPS410690220774209400011300001000000000000042'
 
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
@@ -158,7 +160,7 @@ describe('[LOW — corrigido] CONTRATO (OpenAPI design-first — D-F8): todo sta
   const doc = loadOpenApi()
   const documented = (method: string, yamlPath: string) => Object.keys(doc.paths?.[yamlPath]?.[method]?.responses ?? {})
 
-  it('PUT issuers/55 → 422 · DELETE issuers/SE sem habilitação → 404 · PUT certificate sem chave-mestra → 503 · transmit id 0 → 400 · XML sem CNPJ do emitente → 422 · cancel com emitente incompleto → 422', async () => {
+  it('PUT issuers/55 → 422 · DELETE issuers/SE sem habilitação → 404 · PUT certificate sem chave-mestra → 503 · transmit id 0 → 400 · XML com o cadastro sem CNPJ → 404 (D-CJ19: a pasta é a da CHAVE) · cancel com emitente incompleto → 422', async () => {
     const app = appFor()
     erpM.establishmentCnpj.mockImplementation(async () => CNPJ)
     const observed: [string, string, number, string][] = []
@@ -170,20 +172,22 @@ describe('[LOW — corrigido] CONTRATO (OpenAPI design-first — D-F8): todo sta
     await hit('delete', '/v1/emitter/issuers/SE', '/v1/emitter/issuers/{model}')                       // conn.query → sem linha
     await hit('put', '/v1/emitter/certificate', '/v1/emitter/certificate', { pfxBase64: pfxFor(`SETES SISTEMAS LTDA:${CNPJ}`), password: 'senha' })
     await hit('post', '/v1/nfse/invoices/0/transmit', '/v1/nfse/invoices/{invoiceId}/transmit')
-    repoM.listLifeTransmissions.mockResolvedValue({ transmissions: [tx({ accessKey: '4'.repeat(50), lastKind: 'A' })], events: [] })
+    repoM.listLifeTransmissions.mockResolvedValue({ transmissions: [tx({ accessKey: KEY_OF_DPS, lastKind: 'A' })], events: [] })
     erpM.establishmentCnpj.mockResolvedValue(null)
+    // D-CJ19 (2026-10-16): o XML de nota autorizada é procurado pela pasta do emitente EMBUTIDO na chave — o cadastro sem CNPJ não pesa;
+    // sem o arquivo arquivado aqui, 404 FISCAL_NFSE_NOT_FOUND (antes: 422 pelo cadastro)
     await hit('get', `/v1/nfse/invoices/${INVOICE}/xml`, '/v1/nfse/invoices/{invoiceId}/xml')       // (o DANFSe idem)
     // cancelar NFS-e autorizada com o cadastro do emitente incompleto no PREPARO local → 422 (N libera o K)
     erpM.lockInvoice.mockResolvedValue({ alive: true, lifeEvent: 1, lastEvent: 1, lastKind: 'E' })
-    repoM.latestTransmission.mockResolvedValue(tx({ accessKey: '4'.repeat(50), lastKind: 'A', dhProc: '2026-09-21 13:15:30' }))
-    repoM.getTransmission.mockResolvedValue(tx({ accessKey: '4'.repeat(50), lastKind: 'K' }))
+    repoM.latestTransmission.mockResolvedValue(tx({ accessKey: KEY_OF_DPS, lastKind: 'A', dhProc: '2026-09-21 13:15:30' }))
+    repoM.getTransmission.mockResolvedValue(tx({ accessKey: KEY_OF_DPS, lastKind: 'K' }))
     repoM.insertTransmissionEvent.mockResolvedValue(2)
     erpM.entityFiscal.mockResolvedValue(null)
     await hit('post', `/v1/nfse/invoices/${INVOICE}/cancel`, '/v1/nfse/invoices/{invoiceId}/cancel', { reason: 'erro na emissão da nota' })
     const off = observed.filter(([m, p, st]) => st !== 401 && !documented(m, p).includes(String(st)))
     // eslint-disable-next-line no-console
     console.log('[adv-r2] status fora do YAML', JSON.stringify(off))
-    expect(observed.map(o => o[2])).toEqual([422, 404, 503, 400, 422, 422])                           // a reprodução em si
+    expect(observed.map(o => o[2])).toEqual([422, 404, 503, 400, 404, 422])                           // a reprodução em si
     expect(off).toEqual([])
   })
 })

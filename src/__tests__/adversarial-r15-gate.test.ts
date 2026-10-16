@@ -67,7 +67,7 @@ const deps: NfseDeps = { pool, keyring: MasterKeyRing.of({}), storage: new FsFis
 const A = { schemaName: 'setes_setes', institutionId: 1, userId: 7 }
 const INVOICE = 6200
 const CNPJ = '12345678000195'
-const KEY = '4106902212345678000195000000000012320260921000012345'.slice(0, 50)
+const KEY = '4106902221234567800019500000000001232026092100001234'.slice(0, 50)
 const SUBST_KEY = `${KEY.slice(0, -1)}9`
 const DPS_ID = 'DPS410690221234567800019500001000000000000042'
 const nfseXmlFor = (extra = '') =>
