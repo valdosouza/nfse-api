@@ -1,4 +1,4 @@
-import { FederalId, federalIdOf } from 'fiscal-api'
+import { CNPJ_FORM, FederalId, federalIdOf } from 'fiscal-api'
 
 /**
  * CHAVE DE ACESSO da NFS-e e Id do DPS — a identidade de um DOCUMENTO (frente do CNPJ alfanumérico, D-CJ7 = Q-CJ7 (a), Valdo 2026-10-15;
@@ -75,6 +75,18 @@ export function issuerOfDpsId(id: string): EmbeddedIssuer | null {
 /** Mesmo emitente = mesmo tipo de inscrição e as mesmas 14 posições, comparadas EXATAMENTE (nada normalizado). */
 export function sameEmbeddedIssuer(a: EmbeddedIssuer | null, b: EmbeddedIssuer | null): boolean {
   return !!a && !!b && a.tpInsc === b.tpInsc && a.inscricao === b.inscricao
+}
+
+/**
+ * D-CJ19 (= Q-CJ19 (a), Valdo 2026-10-16): o CNPJ do emitente de um documento JÁ AUTORIZADO é o EMBUTIDO na chave dele — a PASTA do arquivo
+ * fiscal (NFS-e, evento, 2ª via) e o `CNPJAutor` do pedido de evento saem DAQUI, nunca do cadastro de hoje (que governa só o que vai nascer:
+ * corrigido o cadastro, a 2ª via sumiria e o cancelamento iria com OUTRO autor). Leitura da voz do fisco: só a forma canônica da RFB (tpInsc
+ * 2 + `[0-9A-Z]{12}[0-9]{2}`), sem DV conferido — o DV da inscrição é do fisco que autorizou. null quando a chave não traz CNPJ nessa forma
+ * (emitente CPF ou chave fora da forma geral) — quem chama decide a saída.
+ */
+export function cnpjOfAccessKey(key: string): string | null {
+  const i = issuerOfAccessKey(key)
+  return i && i.tpInsc === '2' && CNPJ_FORM.test(i.inscricao) ? i.inscricao : null
 }
 
 /** A inscrição embutida como `FederalId` (o tipo vem do tpInsc — o LUGAR); CPF = as 11 últimas das 14. null se não fecha a forma + DV. */

@@ -5,6 +5,7 @@
 // CINTOS do montador (o que chega até ele fora do leiaute LANÇA — nunca vai ao fisco nem mutilado).
 import { LAYOUT_CALENDAR, LAYOUT_SCHEMAS, cnpjAlphanumericAccepted, layoutAt, layoutLineAt } from '../authority/layout-calendar'
 import { buildCancelEventXml, buildDpsId, buildDpsXml } from '../authority/dps-builder'
+import { cnpjOfAccessKey } from '../authority/access-key'
 import type { DpsInput } from '../authority/types'
 
 const ALFA = 'PC3D315K000193'
@@ -86,5 +87,22 @@ describe('D-CJ7/D-CJ15 — os cintos do montador (forma canônica + leiaute; nun
       xMotivo: 'Serviço não prestado ao cliente', environment: env, verAplic: 'v', cnpjAutor: ALFA })
     expect(ev('H')).toContain(`<CNPJAutor>${ALFA}</CNPJAutor>`)
     expect(() => ev('P')).toThrow(/CNPJ do autor alfanumérico/)
+  })
+})
+
+// D-CJ19 (= Q-CJ19 (a), Valdo 2026-10-16): o CNPJ do emitente de documento JÁ autorizado sai da CHAVE (pasta + CNPJAutor)
+describe('D-CJ19 — cnpjOfAccessKey: o emitente embutido na chave, como veio', () => {
+  // chave de 50: cMun(7) + ambGer(1) + tpInsc(1) + inscrição(14) + nNFSe(13) + AAMM(4) + código(9) + DV(1)
+  const key = (tpInsc: string, insc: string) => `4106902` + `2` + tpInsc + insc + `0000000000123` + `2608` + `000012345` + `6`
+  it('tpInsc 2 + forma canônica (numérica ou alfanumérica) → as 14 posições exatamente; o DV da inscrição é do fisco (não conferido)', () => {
+    expect(cnpjOfAccessKey(key('2', NUM))).toBe(NUM)
+    expect(cnpjOfAccessKey(key('2', ALFA))).toBe(ALFA)
+    expect(cnpjOfAccessKey(key('2', '12345678000199'))).toBe('12345678000199')       // voz do fisco: forma, não DV
+  })
+  it('emitente CPF, letra no DV da inscrição, chave fora da forma → null (quem chama usa o recurso)', () => {
+    expect(cnpjOfAccessKey(key('1', '00052998224725'))).toBeNull()
+    expect(cnpjOfAccessKey(key('2', 'PC3D315K0001AB'))).toBeNull()                    // fora da forma geral da chave
+    expect(cnpjOfAccessKey(key('2', ALFA.toLowerCase()))).toBeNull()                  // minúscula: a chave não tem a forma (nada é "subido")
+    expect(cnpjOfAccessKey('lixo')).toBeNull()
   })
 })

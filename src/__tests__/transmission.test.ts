@@ -17,7 +17,7 @@ import * as repo from '../nfse/repository'
 import { FsFiscalStorage, AuthorityHttpError, HttpError, MasterKeyRing } from 'fiscal-api'
 import {
   transmitServiceInvoice, refreshServiceTransmission, cancelServiceInvoiceAtAuthority, reconfirmBeforeLocalCancel,
-  refreshOpenServiceTransmissions, getServiceFiscalView, resetMunicipalTermsCache, NfseDeps, CEILING_LOOKUP_TIMEOUT_MS,
+  refreshOpenServiceTransmissions, getServiceFiscalView, resetMunicipalTermsCache, NfseDeps, CEILING_LOOKUP_TIMEOUT_MS, readNfseXml,
 } from '../nfse/transmission'
 import { webRef, refOf, WEB, webScope, itxLike } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
 
@@ -305,6 +305,74 @@ describe('D-CJ7 — CNPJ alfanumérico pelo calendário de LEIAUTE', () => {
     expect(sent).toContain('<toma><CNPJ>00000000E08G12</CNPJ>')
     expect(sent).toContain(`Id="DPS41069022${ALFA}`)
     expect(repo.insertLifeDps).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ dpsId: expect.stringContaining(ALFA) }), A.userId)
+  })
+})
+
+// D-CJ19 (= Q-CJ19 (a), Valdo 2026-10-16): o que é de documento JÁ autorizado — a PASTA do arquivo fiscal e o CNPJAutor do pedido de evento —
+// sai do emitente EMBUTIDO na chave da nota; o cadastro de HOJE governa só a emissão (gate socrático da onda 1, pontos (e) e (b))
+describe('D-CJ19 — documento JÁ autorizado pela chave dele, nunca pelo cadastro de hoje', () => {
+  const OTHER = '98765432000198'
+  const ALFA = 'PC3D315K000193'
+  // chave de 50 bem formada: cMun(7) + ambGer(1) + tpInsc 2 (CNPJ) + inscrição(14) + nNFSe(13) + AAMM(4) + código(9) + DV(1)
+  const keyOf = (cnpj: string) => `4106902${'2'}${'2'}${cnpj}0000000000123${'2608'}000012345${'6'}`
+  const cadastroTrocadoPara = (cnpj: string) => {
+    erpM.establishmentCnpj.mockResolvedValue(cnpj)
+    erpM.entityFiscal.mockImplementation(async (_q: any, id: number) => ({ ...entity(id), cnpj: id === 1 ? cnpj : '11222333000181' }))
+  }
+  const EVT = '<evento><infEvento Id="EVT1"><dhProc>2026-09-22T09:00:00-03:00</dhProc></infEvento></evento>'
+  afterEach(() => {
+    for (const d of [CNPJ, OTHER, ALFA]) fs.rmSync(path.join(storageRoot, d), { recursive: true, force: true })
+  })
+
+  it('cancelar com o cadastro trocado para OUTRO CNPJ: o CNPJAutor é o emitente da NOTA e o evento vai para a pasta DELE', async () => {
+    const key = keyOf(CNPJ)
+    cadastroTrocadoPara(OTHER)
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A', accessKey: key, dhProc: '2026-08-15 13:00:00' }))
+    ;(repo.insertTransmissionEvent as jest.Mock).mockResolvedValue(2)
+    adapter.registerEvent.mockResolvedValue({ dhEvento: '2026-09-22T09:00:00-03:00', protocol: 'EVT1', eventXml: EVT, raw: {} })
+    await cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'cliente desistiu do serviço')
+    const eventXml = adapter.registerEvent.mock.calls[0][2] as string
+    expect(eventXml).toContain(`<CNPJAutor>${CNPJ}</CNPJAutor>`)
+    expect(eventXml).not.toContain(OTHER)
+    expect(fs.readFileSync(path.join(storageRoot, CNPJ, 'H', '2026', '08', `${key}-evt101101.xml`), 'utf8')).toBe(EVT)
+    expect(fs.existsSync(path.join(storageRoot, OTHER))).toBe(false)
+  })
+
+  it('a 2ª via (XML) da nota autorizada é achada pela pasta da CHAVE mesmo com o cadastro trocado (antes: 404)', async () => {
+    const key = keyOf(CNPJ)
+    const t = tx({ lastKind: 'A', accessKey: key, dhProc: '2026-08-15 13:00:00', createdAt: '2026-08-15 12:59:00' })
+    deps.storage.save(CNPJ, `${key}-nfse.xml`, NFSE_XML, new Date('2026-08-15T13:00:00Z'), 'H', 'America/Sao_Paulo')
+    cadastroTrocadoPara(OTHER)
+    ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [t], events: [] })
+    const r = await readNfseXml(deps, A, webRef(A, INVOICE))
+    expect(r).toMatchObject({ accessKey: key, xml: NFSE_XML })
+  })
+
+  it('PRODUÇÃO: o leiaute do evento olha o autor DA CHAVE — nota numérica com cadastro hoje alfanumérico cancela; nota com letra recusa antes do K', async () => {
+    ;(fiscal.openIssuer as jest.Mock).mockResolvedValue(opened('P'))
+    ;(repo.insertTransmissionEvent as jest.Mock).mockResolvedValue(2)
+    adapter.registerEvent.mockResolvedValue({ dhEvento: '2026-09-22T09:00:00-03:00', protocol: 'EVT1', eventXml: EVT, raw: {} })
+    cadastroTrocadoPara(ALFA)
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A', environment: 'P', accessKey: keyOf(CNPJ), dhProc: '2026-08-15 13:00:00' }))
+    await cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'cliente desistiu do serviço')
+    expect(adapter.registerEvent.mock.calls[0][2]).toContain(`<CNPJAutor>${CNPJ}</CNPJAutor>`)
+
+    jest.clearAllMocks()
+    ;(fiscal.openIssuer as jest.Mock).mockResolvedValue(opened('P'))
+    cadastroTrocadoPara(CNPJ)
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A', environment: 'P', accessKey: keyOf(ALFA), dhProc: '2026-08-15 13:00:00' }))
+    const err = await cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'cliente desistiu do serviço').then(() => null, x => x)
+    expect(err).toMatchObject({ statusCode: 422, code: 'FISCAL_DPS_INVALID' })
+    expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()                         // nada reservado (sem K)
+    expect(adapter.registerEvent).not.toHaveBeenCalled()
+  })
+
+  it('chave sem CNPJ na forma (emitente CPF / fora da forma) → o RECURSO é o cadastro (leitura tolerante da D-CJ16)', async () => {
+    // a chave dos fixtures antigos traz tpInsc 1 (CPF): a pasta segue o cadastro — os testes anteriores à D-CJ19 seguem valendo
+    const t = tx({ lastKind: 'A', accessKey: KEY, dhProc: '2026-08-15 13:00:00', createdAt: '2026-08-15 12:59:00' })
+    deps.storage.save(CNPJ, `${KEY}-nfse.xml`, NFSE_XML, new Date('2026-08-15T13:00:00Z'), 'H', 'America/Sao_Paulo')
+    ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [t], events: [] })
+    expect((await readNfseXml(deps, A, webRef(A, INVOICE))).xml).toBe(NFSE_XML)
   })
 })
 

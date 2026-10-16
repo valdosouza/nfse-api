@@ -14,7 +14,7 @@ import fs from 'fs'
 import { buildDpsId, buildDpsXml, buildCancelEventXml, buildEventId, parseNfseXml, parseEventXml, parseNfseDeclaration, nfseDpsHasIbscbs } from '../authority/dps-builder'
 import type { NfseDeclaredIbscbs, NfseIbscbsValues } from '../authority/types'
 import { ADN_SIGN_ALGORITHM } from '../authority/adn'
-import { asNfseAccessKey, issuerOfAccessKey, sameEmbeddedIssuer } from '../authority/access-key'
+import { asNfseAccessKey, cnpjOfAccessKey, issuerOfAccessKey, sameEmbeddedIssuer } from '../authority/access-key'
 import { cnpjAlphanumericAccepted } from '../authority/layout-calendar'
 import {
   SERVICE_MODEL, VER_APLIC, ServiceInvoiceHeader, DpsBase, EmitterIdentity,
@@ -280,6 +280,15 @@ async function termsWithin(adapter: TaxAuthorityAdapter, ctx: AuthorityContext, 
 
 export function resetMunicipalTermsCache(): void { termsCache.clear(); ceilingCache.clear() }
 
+/**
+ * D-CJ19 (= Q-CJ19 (a), Valdo 2026-10-16): a PASTA de documento JÁ autorizado = o CNPJ EMBUTIDO na chave dele (`cnpjOfAccessKey`) — gravar e
+ * procurar pelo MESMO lugar, que não muda quando o cadastro muda. O cadastro (`emitterCnpj`, leitura tolerante da D-CJ16) só quando a chave
+ * não traz CNPJ na forma canônica (emitente CPF ou chave fora da forma — não acontece com a habilitação PJ de hoje).
+ */
+async function documentCnpj(deps: NfseDeps, institutionId: number, accessKey: string): Promise<string> {
+  return cnpjOfAccessKey(accessKey) ?? await emitterCnpj(deps.pool, institutionId)
+}
+
 /** Arquivo fiscal: falha ao gravar só AVISA (o fato já existe no fisco; a consulta regrava). */
 async function saveXmlSafe(deps: NfseDeps, actor: Actor, cnpj: string, name: string, xml: string, when: Date, environment: AuthorityEnvironment, label: string): Promise<void> {
   try {
@@ -415,7 +424,8 @@ export async function transmitServiceInvoice(deps: NfseDeps, actor: Actor, ref: 
     })
     return reserved.attempt
   })
-  await saveXmlSafe(deps, actor, base.emitter.cnpj, nfseFileName(outcome.accessKey), outcome.nfseXml, new Date(), environment, 'XML da NFS-e autorizada')
+  // D-CJ19: a NFS-e autorizada vai para a pasta do emitente EMBUTIDO na chave (o mesmo lugar onde a 2ª via a procura)
+  await saveXmlSafe(deps, actor, cnpjOfAccessKey(outcome.accessKey) ?? base.emitter.cnpj, nfseFileName(outcome.accessKey), outcome.nfseXml, new Date(), environment, 'XML da NFS-e autorizada')
   logger.info('NFS-e autorizada', { institutionId, invoiceId, attempt: holderAttempt, accessKey: outcome.accessKey, nfseNumber: outcome.nfseNumber })
   return { invoiceId, attempt: holderAttempt, dpsId: reserved.dpsId, accessKey: outcome.accessKey, nfseNumber: outcome.nfseNumber, kind: 'A' }
 }
@@ -647,7 +657,7 @@ async function refreshServiceTransmissionInner(
   // XML no arquivo fiscal (regrava se faltar — o transmit pode ter falhado ao gravar) e evento de cancelamento (Q-N38)
   if (nfse.nfseXml && result.accessKey) {
     try {
-      const cnpj = await emitterCnpj(deps.pool, institutionId)
+      const cnpj = await documentCnpj(deps, institutionId, result.accessKey)      // D-CJ19
       const zone = await erp.institutionZone(deps.pool, s, institutionId)
       const when = utcDate(target.dhProc)
       const hints = [target.dhProc, target.createdAt]
@@ -676,7 +686,7 @@ async function archiveCancelEventIfMissing(deps: NfseDeps, actor: Actor, ref: In
   // R13-06 do gate adversarial: best-effort (Q-N38: falhar ao gravar só avisa) — fisco fora ou A1 vencido não fazem a consulta
   // de um estado FINAL falhar; a próxima consulta tenta de novo
   try {
-    const cnpj = await emitterCnpj(deps.pool, institutionId)
+    const cnpj = await documentCnpj(deps, institutionId, tx.accessKey)           // D-CJ19
     const zone = await erp.institutionZone(deps.pool, s, institutionId)
     const hints = [tx.dhProc, tx.createdAt]
     if (deps.storage.find(cnpj, cancelEventFileName(tx.accessKey), hints, tx.environment, zone)) return
@@ -842,8 +852,9 @@ export async function cancelServiceInvoiceAtAuthority(deps: NfseDeps, actor: Act
     // o K→N deixava uma janela: processo caído entre os dois = K vivo sem A1, o estado que a guarda do DELETE impede)
     await openIssuer(estDeps(deps), institutionId, SERVICE_MODEL, { conn, forUpdate: true, schemaName: s })
     // D-CJ7 (gate adversarial da onda 1, LOW): o autor do pedido (CNPJAutor) segue o leiaute do EVENTO do ambiente — CNPJ com letra onde o
-    // leiaute ainda é numérico = 422 legível ANTES do K (antes o cinto do montador lançava Error cru DEPOIS da reserva → N + 500)
-    const author = await erp.establishmentCnpj(conn, institutionId)
+    // leiaute ainda é numérico = 422 legível ANTES do K (antes o cinto do montador lançava Error cru DEPOIS da reserva → N + 500).
+    // D-CJ19: o autor é o emitente EMBUTIDO na chave da nota (o cadastro só se a chave não trouxer CNPJ na forma)
+    const author = cnpjOfAccessKey(tx.accessKey) ?? await erp.establishmentCnpj(conn, institutionId)
     if (author && /[A-Z]/.test(author) && !cnpjAlphanumericAccepted('EVENT', tx.environment, new Date())) {
       throw new HttpError(422, `O leiaute do pedido de cancelamento de ${tx.environment === 'P' ? 'PRODUÇÃO' : 'homologação'} ainda não aceita CNPJ com letras — nada foi reservado nem enviado ao fisco`,
         [{ field: 'emitter.cnpj', message: 'CNPJ alfanumérico do estabelecimento: o leiaute do evento deste ambiente ainda é numérico' }], ErrorCodes.FISCAL_DPS_INVALID)
@@ -881,7 +892,9 @@ export async function cancelServiceInvoiceAtAuthority(deps: NfseDeps, actor: Act
       const limit = utcDate(tx.dhProc).getTime() + cancelDays * 86_400_000
       if (limit < Date.now()) warnings.push(`Prazo de cancelamento do município (${cancelDays} dias após ${tx.dhProc}) já passou — o fisco pode recusar`)
     }
-    signed = buildSignedCancel(tx.accessKey!, motive, dhEvento, tx.environment, identity.cnpj, opened)
+    // D-CJ19 (= Q-CJ19 (a)): o CNPJAutor é o emitente da NOTA (embutido na chave), nunca o cadastro de HOJE — cadastro trocado para outro CNPJ
+    // mandaria o pedido com um autor que não emitiu a nota
+    signed = buildSignedCancel(tx.accessKey!, motive, dhEvento, tx.environment, cnpjOfAccessKey(tx.accessKey!) ?? identity.cnpj, opened)
   } catch (err) {
     await release(`Pedido de cancelamento não enviado: ${err instanceof HttpError ? errMsg(err) : 'falha interna no preparo'}`)
     throw err
@@ -919,7 +932,7 @@ export async function cancelServiceInvoiceAtAuthority(deps: NfseDeps, actor: Act
 
   // (4) Q-N38: o evento GERADO pelo fisco no arquivo fiscal (mesma pasta da NFS-e — mês da autorização)
   if (registered.eventXml) {
-    await saveXmlSafe(deps, actor, identity.cnpj, cancelEventFileName(tx.accessKey!), registered.eventXml, utcDate(tx.dhProc), tx.environment, 'XML do evento de cancelamento')
+    await saveXmlSafe(deps, actor, cnpjOfAccessKey(tx.accessKey!) ?? identity.cnpj, cancelEventFileName(tx.accessKey!), registered.eventXml, utcDate(tx.dhProc), tx.environment, 'XML do evento de cancelamento')   // D-CJ19
   }
 
   // (5) o fisco cancelou (irreversível): a VOZ C. O C local é do setes-api, que o app chama em seguida.
@@ -1155,7 +1168,7 @@ export async function getServiceFiscalView(deps: NfseDeps, actor: Actor, ref: In
   const withKey = [...transmissions].reverse().find(t => t.accessKey) ?? null
   if (withKey?.accessKey) {
     try {
-      xmlAvailable = !!deps.storage.find(await emitterCnpj(deps.pool, institutionId), nfseFileName(withKey.accessKey), [withKey.dhProc, withKey.createdAt], withKey.environment, zone)
+      xmlAvailable = !!deps.storage.find(await documentCnpj(deps, institutionId, withKey.accessKey), nfseFileName(withKey.accessKey), [withKey.dhProc, withKey.createdAt], withKey.environment, zone)
     } catch { xmlAvailable = false }
   }
   const txKeys = ['dhProc', 'createdAt', 'lastQueriedAt', 'lastDh', 'lastEventAt'] as const
@@ -1185,7 +1198,7 @@ async function ibscbsViewOf(
   let groupInDps: boolean | null = null
   try {
     const file = tx.accessKey
-      ? deps.storage.find(await emitterCnpj(deps.pool, institutionId), nfseFileName(tx.accessKey), [tx.dhProc, tx.createdAt], tx.environment, zone)
+      ? deps.storage.find(await documentCnpj(deps, institutionId, tx.accessKey), nfseFileName(tx.accessKey), [tx.dhProc, tx.createdAt], tx.environment, zone)
       : null
     if (file) {
       const doc = parseXml(deps.storage.read(file))
@@ -1208,7 +1221,7 @@ function sameIssuerKey(a: string, b: string): boolean {
 async function substituteKeyOf(deps: NfseDeps, institutionId: number, tx: TransmissionRow, zone: string): Promise<string | null> {
   if (!tx.accessKey) return null
   try {
-    const file = deps.storage.find(await emitterCnpj(deps.pool, institutionId), cancelEventFileName(tx.accessKey), [tx.dhProc, tx.createdAt], tx.environment, zone)
+    const file = deps.storage.find(await documentCnpj(deps, institutionId, tx.accessKey), cancelEventFileName(tx.accessKey), [tx.dhProc, tx.createdAt], tx.environment, zone)
     if (!file) return null
     const key = parseEventXml(fs.readFileSync(file, 'utf8')).substituteKey
     // R13-04 do gate adversarial: a própria chave não é a substituta. D-F85 (= Q-F91, Valdo 2026-10-10): a substituta é do MESMO
@@ -1227,7 +1240,7 @@ export async function readNfseXml(deps: NfseDeps, actor: Actor, ref: InvoiceRef)
   const withKey = [...transmissions].reverse().find(t => t.accessKey) ?? null
   if (!withKey?.accessKey) throw new HttpError(404, `Nota ${invoiceId} sem NFS-e autorizada no fisco`, undefined, ErrorCodes.FISCAL_NFSE_NOT_FOUND)
   const zone = life ? await erp.institutionZone(deps.pool, s, institutionId) : DEFAULT_TIME_ZONE
-  const file = deps.storage.find(await emitterCnpj(deps.pool, institutionId), nfseFileName(withKey.accessKey), [withKey.dhProc, withKey.createdAt], withKey.environment, zone)
+  const file = deps.storage.find(await documentCnpj(deps, institutionId, withKey.accessKey), nfseFileName(withKey.accessKey), [withKey.dhProc, withKey.createdAt], withKey.environment, zone)
   if (!file) throw new HttpError(404, `XML da NFS-e ${withKey.accessKey} não está no arquivo fiscal — consulte a nota para regravar`, undefined, ErrorCodes.FISCAL_NFSE_NOT_FOUND)
   // A8: cancelada = a voz vigente de quem DETÉM a chave é C (o arquivo não sabe do cancelamento)
   return { accessKey: withKey.accessKey, xml: deps.storage.read(file), cancelled: fiscalStateOf(withKey) === 'cancelled' }

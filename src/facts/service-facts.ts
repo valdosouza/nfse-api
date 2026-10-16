@@ -206,6 +206,8 @@ function emitterCnpjProblem(fact: FederalIdFact): FieldError | null {
  * L4 do socrático da Onda 3: leituras (XML, DANFSe, tela, arquivamento da voz) só precisam do CNPJ do emitente — a PASTA do arquivo fiscal.
  * D-CJ16 (= Q-CJ16 (b), 2026-10-16): leitura de documento JÁ autorizado canonicaliza o CNPJ gravado (máscara sai, minúscula sobe, SEM DV,
  * nunca apaga) — a 2ª via não depende de o cadastro de hoje estar na forma; a EMISSÃO (`buildEmitter`) segue estrita.
+ * D-CJ19 (= Q-CJ19 (a), 2026-10-16 — supera em parte a D-CJ16): documento JÁ autorizado tem a pasta pelo emitente EMBUTIDO na chave
+ * (`cnpjOfAccessKey`, via `documentCnpj` da transmissão); esta leitura do cadastro é só o RECURSO quando a chave não traz CNPJ na forma.
  */
 export async function emitterCnpj(q: Queryable, institutionId: number): Promise<string> {
   const cnpj = await erp.establishmentCnpj(q, institutionId)          // VÁLIDO na forma canônica, ou null
