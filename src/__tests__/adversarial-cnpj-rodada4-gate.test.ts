@@ -310,7 +310,7 @@ describe('D-CJ24 / recusa E0812 do cancelamento', () => {
     ]
     for (const [name, err] of cases) {
       const e = await refusedWith(err)
-      expect([name, e?.statusCode, e?.code, /envie o A1 do emitente da nota ou cancele pelo Emissor Nacional/.test(e?.message ?? '')])
+      expect([name, e?.statusCode, e?.code, /cancele pelo Emissor Nacional com o acesso ou o certificado do emitente da nota/.test(e?.message ?? '')])
         .toEqual([name, 409, 'FISCAL_CANCEL_REFUSED', true])
     }
     expect(kindsWritten().filter(k => k === 'N')).toHaveLength(cases.length)
@@ -340,7 +340,7 @@ describe('D-CJ24 / recusa E0812 do cancelamento', () => {
     const e = await refusedWith(refusal(['E0840: Data do evento inválida', 'E0812: Certificado não pertence à raiz do CNPJ do emitente'],
       '{"erros":[{"codigo":"E0840"},{"codigo":"E0812"}]}'))
     expect(e).toMatchObject({ statusCode: 409, code: 'FISCAL_CANCEL_REFUSED' })
-    expect(e.message).toMatch(/envie o A1 do emitente da nota ou cancele pelo Emissor Nacional/)     // hoje: só o texto do fisco
+    expect(e.message).toMatch(/cancele pelo Emissor Nacional com o acesso ou o certificado do emitente da nota/)     // hoje: só o texto do fisco
   })
 })
 

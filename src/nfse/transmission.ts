@@ -232,12 +232,16 @@ export type { AuthorityOutcome } from 'fiscal-api'
  * D-CJ24 (= Q-CJ24 (b), Valdo 2026-10-16): a recusa do fisco ao pedido de cancelamento por certificado de OUTRA raiz de CNPJ que o emitente da
  * nota (E0812 — Anexo II; o autor agora é o emitente da NOTA, D-CJ19) volta com a SAÍDA — o texto do fisco sozinho não diz o que fazer. A
  * conferência local da raiz (antes do K) entra junto da leitura do titular por consenso (D-CJ6).
+ * D-CJ28 (= Q-CJ28 (a), 2026-10-16): só a saída que EXISTE — o Emissor Nacional com o acesso do emitente da nota. "Envie o A1 do emitente da
+ * nota" NÃO é caminho: o upload exige o CNPJ EXATO do cadastro e há UM A1 por estabelecimento (D-N31) — seguir ao pé da letra pararia a
+ * emissão corrente. Certificado só para eventos de documento antigo = fase própria junto da D-CJ6, no 1º caso real.
  */
 function cancelRefusalWayOut(err: AuthorityHttpError): string {
   // gates da rodada 4 (LOW): o E0812 em QUALQUER posição da recusa (o fisco pode listar outro código antes) — nos fields ou no corpo
   const e0812 = /\bE0812\b/
   return (err.fields ?? []).some(f => e0812.test(f.message)) || e0812.test(err.body ?? '')
-    ? ' — o certificado A1 deste estabelecimento não é da raiz de CNPJ do emitente desta nota: envie o A1 do emitente da nota ou cancele pelo Emissor Nacional'
+    ? ' — o certificado A1 deste estabelecimento (o do CNPJ do cadastro de hoje) não é da raiz de CNPJ do emitente desta nota: cancele pelo '
+      + 'Emissor Nacional com o acesso ou o certificado do emitente da nota'
     : ''
 }
 
@@ -1044,6 +1048,10 @@ const ceilingCache = new Map<number, { at: number; value: Ceiling | null; pendin
  * UMA consulta por vez (quem chega espera a mesma), espera de no máximo CEILING_LOOKUP_TIMEOUT_MS, valor implausível
  * descartado e o teto NUNCA menor que o padrão (60 — Curitiba) nem menor que o último prazo conhecido por causa de uma
  * falha: uma leitura errada ou ausente do convênio só pode ALARGAR a revisita (assunção A13).
+ * LIMITE CONHECIDO (D-CJ29 = Q-CJ29 (b), Valdo 2026-10-16 — frente do CNPJ alfanumérico): o município aqui é o do CADASTRO de hoje
+ * (`buildEmitter`), não o cMun das CHAVES como no cancelamento (D-CJ25 — o E0822 fala do "município emissor da NFS-e"). Mantido de propósito: o
+ * teto nunca fica abaixo do padrão e cadastro incompleto cai no padrão. Reabrir no 1º estabelecimento que mude de município emissor sem trocar
+ * a habilitação — aí o prazo é o das chaves da janela (o maior).
  */
 async function cancelDaysOf(deps: NfseDeps, actor: Actor): Promise<Ceiling> {
   const inst = actor.institutionId

@@ -395,7 +395,7 @@ describe('D-CJ19 — documento JÁ autorizado pela chave dele, nunca pelo cadast
   })
 
   // D-CJ24 (= Q-CJ24 (b)): a recusa E0812 (certificado de OUTRA raiz que o emitente da nota) volta com a SAÍDA
-  it('D-CJ24: fisco recusa o cancelamento com E0812 → 409 com a saída (A1 do emitente da nota ou Emissor Nacional); outra recusa, só o texto do fisco', async () => {
+  it('D-CJ24/D-CJ28: fisco recusa o cancelamento com E0812 → 409 com a saída REAL (Emissor Nacional com o acesso do emitente da nota — nunca "envie o A1"); outra recusa, só o texto do fisco', async () => {
     const key = keyOf(CNPJ)
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A', accessKey: key, dhProc: '2026-08-15 13:00:00' }))
     ;(repo.getTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'K', accessKey: key }))
@@ -404,7 +404,8 @@ describe('D-CJ19 — documento JÁ autorizado pela chave dele, nunca pelo cadast
       `{"erros":[{"codigo":"${code}","descricao":"recusa"}]}`, [{ field: 'evento', message: `${code}: recusa` }])
     adapter.registerEvent.mockRejectedValueOnce(refused('E0812'))
     const e1 = await cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'cliente desistiu do serviço').then(() => null, x => x)
-    expect(e1).toMatchObject({ statusCode: 409, code: 'FISCAL_CANCEL_REFUSED', message: expect.stringMatching(/E0812.*envie o A1 do emitente da nota ou cancele pelo Emissor Nacional/) })
+    expect(e1).toMatchObject({ statusCode: 409, code: 'FISCAL_CANCEL_REFUSED', message: expect.stringMatching(/E0812.*cancele pelo Emissor Nacional com o acesso ou o certificado do emitente da nota/) })
+    expect(e1.message).not.toMatch(/envie o A1/)                                        // D-CJ28: o upload do A1 exige o CNPJ do cadastro — não é saída
     adapter.registerEvent.mockRejectedValueOnce(refused('E0840'))
     const e2 = await cancelServiceInvoiceAtAuthority(deps, A, webRef(A, INVOICE), 'cliente desistiu do serviço').then(() => null, x => x)
     expect(e2).toMatchObject({ statusCode: 409, code: 'FISCAL_CANCEL_REFUSED' })
