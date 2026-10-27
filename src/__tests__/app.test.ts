@@ -131,7 +131,7 @@ describe('autorização de AÇÃO e licença (D-F13/D-F14)', () => {
     expect(tx.refreshOpenServiceTransmissions).not.toHaveBeenCalled()
   })
 
-  it('D-F46: a PASSADA só consulta os ramos em que quem pede pode agir (contratado + privilégio); o resto não vai de carona', async () => {
+  it('D-F46: a PASSADA só consulta os ramos em que quem pede pode agir (contratado + privilégio CONSULTAR — D-PV40); o resto não vai de carona', async () => {
     ;(tx.refreshOpenServiceTransmissions as jest.Mock).mockResolvedValue({ checked: 0, changed: 0, errors: [], stoppedEarly: false, skipped: false })
     const app = createApp(ctx())
     // contratados: service-orders e orders; o usuário só tem TRANSMITIR em service-orders

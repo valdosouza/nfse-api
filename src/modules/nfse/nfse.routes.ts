@@ -7,11 +7,13 @@ import { renderDanfse } from '../../nfse/danfse'
 import { emitterDisplay } from '../../facts/service-facts'
 import { requireBranchPrivilege, requireBranchInterface, passScope, requireCutover, visibleInterfaces, parseInvoiceId } from '../guards'
 import { parseWith } from '../validate'
+import { PRIVILEGE_CONSULTAR } from '../privileges'
 import { cancelDto, refreshPassDto, pendingQueryDto } from './nfse.dto'
 
 /**
  * /v1/nfse — o ciclo da NFS-e de uma nota do ERP (contrato: openapi/nfse-api.v1.yaml). O app manda só
- * a REFERÊNCIA da nota (D-F10). Ações: privilégio do RAMO (TRANSMITIR/CANCELAR — D-F13); leituras: a
+ * a REFERÊNCIA da nota (D-F10). Ações: privilégio do RAMO (TRANSMITIR/CANCELAR — D-F13; D-PV40: consultar o fisco sem mudar
+ * estado nele = CONSULTAR — `refresh` por nota e a passada do rodízio); leituras: a
  * interface do ramo contratada (Q-N32/D-F14). Router fino: a política vive em `nfse/transmission.ts`.
  */
 
@@ -60,7 +62,7 @@ export function nfseRoutes(ctx: AppContext): Router {
     const inst = institutionOf(req)
     const ref = webRefOf(inst, req.params.invoiceId)
     await requireCutover(ctx, inst, SERVICE_ISSUER_MODEL)
-    await requireBranchPrivilege(ctx, inst, ref, erp.PRIVILEGE_TRANSMITIR)
+    await requireBranchPrivilege(ctx, inst, ref, PRIVILEGE_CONSULTAR)      // D-PV40: consultar ≠ transmitir
     sendOk(res, await tx.refreshServiceTransmission(ctx, actorOf(inst), ref, 'Q', { origin: 'consulta' }))   // D-F95
   }))
 
@@ -102,7 +104,7 @@ export function nfseRoutes(ctx: AppContext): Router {
   router.post('/refresh', route('POST /v1/nfse/refresh', async (req, res) => {
     const inst = institutionOf(req)
     await requireCutover(ctx, inst, SERVICE_ISSUER_MODEL)
-    const scope = await passScope(ctx, inst, PASS_INTERFACES, erp.PRIVILEGE_TRANSMITIR)       // D-F46/D-F47
+    const scope = await passScope(ctx, inst, PASS_INTERFACES, PRIVILEGE_CONSULTAR)           // D-F46/D-F47 · D-PV40: a passada CONSULTA
     const body = parseWith(refreshPassDto, req.body)
     sendOk(res, await tx.refreshOpenServiceTransmissions(ctx, actorOf(inst), { terminal: WEB_TERMINAL, minMinutes: body.minMinutes, limit: body.limit, ...scope }))
   }))

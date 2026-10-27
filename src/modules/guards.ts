@@ -58,7 +58,8 @@ export async function visibleInterfaces(ctx: AppContext, inst: InstitutionPayloa
 }
 
 /**
- * Escopo da PASSADA do rodízio (rota sem nota específica):
+ * Escopo da PASSADA do rodízio (rota sem nota específica). D-PV40 (2026-10-20): o par conferido é (interface do ramo ×
+ * CONSULTAR) — a passada PERGUNTA ao fisco, não transmite; quem chama passa o privilégio (`PRIVILEGE_CONSULTAR`).
  *  - [interfaces] = ramos em que quem pede pode agir — contratados (D-F14/D-F37) E com o privilégio (ou admin): TODAS as
  *    candidatas deles (D-F46 — ramo não contratado não ganha serviço fiscal de carona);
  *  - [liveOnlyInterfaces] = ramos NÃO contratados: só as tentativas JÁ VIVAS (sem voz/S/K) — D-F47 (= Q-F57 (b), Valdo
