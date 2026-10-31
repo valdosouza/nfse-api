@@ -9,6 +9,7 @@ import { generateKeyPairSync, randomBytes } from 'crypto'
 import jwt from 'jsonwebtoken'
 import request from 'supertest'
 import * as fiscal from 'fiscal-api'
+import { wireAccess } from './access-stub'
 import { MasterKeyRing, ProductTokenVerifier, FsFiscalStorage } from 'fiscal-api'
 import * as tx from '../nfse/transmission'
 import { createApp, loadOpenApi } from '../app'
@@ -21,9 +22,10 @@ jest.mock('fiscal-api', () => {
   const actual = jest.requireActual('fiscal-api')
   return {
     __esModule: true, ...actual,
+    access: { ...actual.access, accessVerdict: jest.fn(), reachableKeys: jest.fn(), grantedKeys: jest.fn(), liveIdentity: jest.fn() },
     logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
     emissionStillInErp: jest.fn(), anyEmissionStillInErp: jest.fn(),
-    erp: { ...actual.erp, orderInterface: jest.fn(), userHasPrivilege: jest.fn(), institutionHasInterface: jest.fn(), assertInstitutionSchema: jest.fn() },
+    erp: { ...actual.erp, orderInterface: jest.fn(), assertInstitutionSchema: jest.fn() },
   }
 })
 jest.mock('../nfse/transmission', () => {
@@ -37,6 +39,9 @@ jest.mock('../nfse/transmission', () => {
 })
 
 const erpM = fiscal.erp as unknown as Record<string, jest.Mock>
+const licensedM = jest.fn()   // licença (interface contratada) — costura A1: o veredito é `access.*`, dublado por ./access-stub
+const grantedM = jest.fn()    // concessão do verbo (pelo NOME — D-PV53)
+wireAccess(fiscal.access, licensedM, grantedM)
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
 const privPem = privateKey.export({ type: 'pkcs8', format: 'pem' }) as string
 const pubPem = publicKey.export({ type: 'spki', format: 'pem' }) as string
@@ -55,8 +60,8 @@ const ctx = (over: Partial<AppContext> = {}): AppContext => ({
 beforeEach(() => {
   jest.clearAllMocks()
   erpM.orderInterface.mockResolvedValue('service-orders')
-  erpM.userHasPrivilege.mockResolvedValue(false)
-  erpM.institutionHasInterface.mockResolvedValue(true)        // ramo contratado por padrão; a negação é explícita onde se testa
+  grantedM.mockResolvedValue(false)
+  licensedM.mockResolvedValue(true)        // ramo contratado por padrão; a negação é explícita onde se testa
   ;(fiscal.emissionStillInErp as unknown as jest.Mock).mockResolvedValue(false)   // D-F39: virada (o padrão dos testes)
   ;(fiscal.anyEmissionStillInErp as unknown as jest.Mock).mockResolvedValue(false) // o grão do estabelecimento (A1 — D-NE10)
   ;(tx.transmitServiceInvoice as jest.Mock).mockResolvedValue({ invoiceId: 10, attempt: 1, dpsId: 'D', accessKey: 'K', nfseNumber: '1', kind: 'A' })
@@ -77,23 +82,31 @@ describe('autenticação — JWT do produto (D-F13)', () => {
     expect(tx.transmitServiceInvoice).not.toHaveBeenCalled()
   })
 
-  it('identidade conferida no banco quando ligada (schema do token × institution)', async () => {
-    erpM.assertInstitutionSchema.mockRejectedValueOnce(new fiscal.HttpError(401, 'Token não corresponde', undefined, 'INSTITUTION_MISMATCH'))
+  it('D-UC9 (costura A1): com a conferência ligada, a SESSÃO viva decide — vínculo morto = 401 SESSION_REVOKED', async () => {
+    const live = fiscal.access.liveIdentity as unknown as jest.Mock
+    live.mockRejectedValueOnce(new fiscal.HttpError(401, 'Sessão revogada', undefined, 'SESSION_REVOKED'))
     const r = await request(createApp(ctx({ checkIdentity: true }))).get('/v1/nfse/invoices/10').set('Authorization', `Bearer ${token({ role: 'admin' })}`)
     expect(r.status).toBe(401)
-    expect(r.body.code).toBe('INSTITUTION_MISMATCH')
+    expect(r.body.code).toBe('SESSION_REVOKED')
+    expect(live).toHaveBeenCalledWith(pool, expect.objectContaining({ institutionId: 1, userId: 7, schemaName: 'setes_setes' }))
+  })
+
+  it('D-AU3 (costura A1): o PERFIL VIVO troca o do token — admin rebaixado a user perde o emitente NA HORA', async () => {
+    ;(fiscal.access.liveIdentity as unknown as jest.Mock).mockImplementationOnce(async (_q: unknown, p: any) => ({ ...p, role: 'user' }))
+    const r = await request(createApp(ctx({ checkIdentity: true }))).get('/v1/emitter').set('Authorization', `Bearer ${token({ role: 'admin' })}`)
+    expect([r.status, r.body.code]).toEqual([403, 'ADMIN_REQUIRED'])
   })
 })
 
 describe('autorização de AÇÃO e licença (D-F13/D-F14)', () => {
   it('usuário SEM TRANSMITIR na interface do RAMO → 403 PRIVILEGE_REQUIRED; COM → 201 com o ator do token', async () => {
     const app = createApp(ctx())
-    erpM.institutionHasInterface.mockResolvedValue(true)
+    licensedM.mockResolvedValue(true)
     const no = await request(app).post('/v1/nfse/invoices/10/transmit').set('Authorization', `Bearer ${token()}`)
     expect(no.status).toBe(403)
     expect(no.body.code).toBe('PRIVILEGE_REQUIRED')
-    expect(erpM.userHasPrivilege).toHaveBeenCalledWith(pool, 'setes_setes', 7, 'service-orders', fiscal.erp.PRIVILEGE_TRANSMITIR)
-    erpM.userHasPrivilege.mockResolvedValue(true)
+    expect(grantedM).toHaveBeenCalledWith(pool, 'setes_setes', 7, 'service-orders', 'TRANSMITIR')
+    grantedM.mockResolvedValue(true)
     const ok = await request(app).post('/v1/nfse/invoices/10/transmit').set('Authorization', `Bearer ${token()}`)
     expect(ok.status).toBe(201)
     expect(ok.body).toEqual({ ok: true, data: expect.objectContaining({ kind: 'A' }) })
@@ -103,23 +116,23 @@ describe('autorização de AÇÃO e licença (D-F13/D-F14)', () => {
   it('D-F37: admin passa o PRIVILÉGIO, nunca a LICENÇA; leitura exige a interface CONTRATADA (Q-N32); cancelar exige CANCELAR', async () => {
     const app = createApp(ctx())
     expect((await request(app).post('/v1/nfse/invoices/10/transmit').set('Authorization', `Bearer ${token({ role: 'admin' })}`)).status).toBe(201)
-    expect(erpM.userHasPrivilege).not.toHaveBeenCalled()                             // admin: sem conferir privilégio
-    erpM.institutionHasInterface.mockResolvedValue(false)
+    expect(grantedM).not.toHaveBeenCalled()                             // admin: sem conferir privilégio
+    licensedM.mockResolvedValue(false)
     for (const role of ['admin', 'user']) {
       const tr = await request(app).post('/v1/nfse/invoices/10/transmit').set('Authorization', `Bearer ${token({ role })}`)
       expect([role, tr.status, tr.body.code]).toEqual([role, 403, 'INTERFACE_NOT_ALLOWED'])
       const view = await request(app).get('/v1/nfse/invoices/10').set('Authorization', `Bearer ${token({ role })}`)
       expect([role, view.status, view.body.code]).toEqual([role, 403, 'INTERFACE_NOT_ALLOWED'])
     }
-    erpM.institutionHasInterface.mockResolvedValue(true)
+    licensedM.mockResolvedValue(true)
     expect((await request(app).get('/v1/nfse/invoices/10').set('Authorization', `Bearer ${token()}`)).status).toBe(200)
     await request(app).post('/v1/nfse/invoices/10/cancel').set('Authorization', `Bearer ${token()}`).send({ reason: 'erro na emissão' })
-    expect(erpM.userHasPrivilege).toHaveBeenLastCalledWith(pool, 'setes_setes', 7, 'service-orders', fiscal.erp.PRIVILEGE_CANCELAR)
+    expect(grantedM).toHaveBeenLastCalledWith(pool, 'setes_setes', 7, 'service-orders', 'CANCELAR')
   })
 
   it('licença também nas AÇÕES (gates da F1): privilégio antigo em ramo NÃO contratado → 403 INTERFACE_NOT_ALLOWED, nada executado', async () => {
-    erpM.userHasPrivilege.mockResolvedValue(true)
-    erpM.institutionHasInterface.mockResolvedValue(false)
+    grantedM.mockResolvedValue(true)
+    licensedM.mockResolvedValue(false)
     const app = createApp(ctx())
     for (const [p, body] of [['/v1/nfse/invoices/10/transmit', undefined], ['/v1/nfse/invoices/10/cancel', { reason: 'erro na emissão' }],
       ['/v1/nfse/invoices/10/refresh', undefined], ['/v1/nfse/invoices/10/reconfirm', undefined], ['/v1/nfse/refresh', {}]] as const) {
@@ -135,8 +148,8 @@ describe('autorização de AÇÃO e licença (D-F13/D-F14)', () => {
     ;(tx.refreshOpenServiceTransmissions as jest.Mock).mockResolvedValue({ checked: 0, changed: 0, errors: [], stoppedEarly: false, skipped: false })
     const app = createApp(ctx())
     // contratados: service-orders e orders; o usuário só tem TRANSMITIR em service-orders
-    erpM.institutionHasInterface.mockImplementation(async (_p: any, _s: string, _i: number, key: string) => key !== 'order-returns')
-    erpM.userHasPrivilege.mockImplementation(async (_p: any, _s: string, _u: number, key: string) => key === 'service-orders')
+    licensedM.mockImplementation(async (_p: any, _s: string, _i: number, key: string) => key !== 'order-returns')
+    grantedM.mockImplementation(async (_p: any, _s: string, _u: number, key: string) => key === 'service-orders')
     expect((await request(app).post('/v1/nfse/refresh').set('Authorization', `Bearer ${token()}`).send({})).status).toBe(200)
     expect(tx.refreshOpenServiceTransmissions).toHaveBeenLastCalledWith(expect.anything(), { schemaName: 'setes_setes', institutionId: 1, userId: 7 },
       expect.objectContaining({ terminal: WEB, interfaces: ['service-orders'], liveOnlyInterfaces: ['order-returns'] }))   // D-F47: cortado só com viva
@@ -145,14 +158,14 @@ describe('autorização de AÇÃO e licença (D-F13/D-F14)', () => {
     expect(tx.refreshOpenServiceTransmissions).toHaveBeenLastCalledWith(expect.anything(), expect.anything(),
       expect.objectContaining({ terminal: WEB, interfaces: ['service-orders', 'orders'] }))
     // devolução contratada com privilégio entra (o MESMO domínio da rota por nota — erp.orderInterface)
-    erpM.institutionHasInterface.mockResolvedValue(true)
-    erpM.userHasPrivilege.mockImplementation(async (_p: any, _s: string, _u: number, key: string) => key === 'order-returns')
+    licensedM.mockResolvedValue(true)
+    grantedM.mockImplementation(async (_p: any, _s: string, _u: number, key: string) => key === 'order-returns')
     await request(app).post('/v1/nfse/refresh').set('Authorization', `Bearer ${token()}`).send({})
     expect(tx.refreshOpenServiceTransmissions).toHaveBeenLastCalledWith(expect.anything(), expect.anything(),
       expect.objectContaining({ terminal: WEB, interfaces: ['order-returns'] }))
     // contratado sem privilégio em nenhum → 403 PRIVILEGE_REQUIRED, passada não roda
     ;(tx.refreshOpenServiceTransmissions as jest.Mock).mockClear()
-    erpM.userHasPrivilege.mockResolvedValue(false)
+    grantedM.mockResolvedValue(false)
     const r = await request(app).post('/v1/nfse/refresh').set('Authorization', `Bearer ${token()}`).send({})
     expect([r.status, r.body.code]).toEqual([403, 'PRIVILEGE_REQUIRED'])
     expect(tx.refreshOpenServiceTransmissions).not.toHaveBeenCalled()
@@ -201,19 +214,19 @@ describe('pendentes do lote — PAGINADOS (regra da casa) e só dos ramos visív
   })
 
   it('envelope { ok, data, page, pageSize, total }; default page 1 / pageSize 25; admin vê só os ramos CONTRATADOS (D-F37)', async () => {
-    erpM.institutionHasInterface.mockImplementation(async (_p: any, _s: string, _i: number, key: string) => key === 'service-orders')
+    licensedM.mockImplementation(async (_p: any, _s: string, _i: number, key: string) => key === 'service-orders')
     const r = await request(createApp(ctx())).get('/v1/nfse/invoices/pending').set('Authorization', `Bearer ${token({ role: 'admin' })}`)
     expect(r.body).toEqual({ ok: true, data: [{ invoiceId: 10 }], page: 1, pageSize: 25, total: 41 })
     expect(tx.listPending).toHaveBeenCalledWith(expect.anything(), { schemaName: 'setes_setes', institutionId: 1, userId: 7 }, WEB, { page: 1, pageSize: 25 }, ['service-orders'])
   })
 
   it('usuário comum: só os ramos CONTRATADOS chegam à consulta; nenhum contratado → lista vazia (não 403)', async () => {
-    erpM.institutionHasInterface.mockImplementation(async (_p: any, _s: string, _i: number, key: string) => key === 'orders')
+    licensedM.mockImplementation(async (_p: any, _s: string, _i: number, key: string) => key === 'orders')
     const app = createApp(ctx())
     const r = await request(app).get('/v1/nfse/invoices/pending?page=2&pageSize=10').set('Authorization', `Bearer ${token()}`)
     expect(r.status).toBe(200)
     expect(tx.listPending).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), WEB, { page: 2, pageSize: 10 }, ['orders'])
-    erpM.institutionHasInterface.mockResolvedValue(false)
+    licensedM.mockResolvedValue(false)
     await request(app).get('/v1/nfse/invoices/pending').set('Authorization', `Bearer ${token()}`)
     expect(tx.listPending).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), WEB, { page: 1, pageSize: 25 }, [])
   })

@@ -7,7 +7,7 @@
 //  A. D-F46 (b) + D-F47 + D-F51 da 3ª sessão de 2026-10-04 (a D-F47 desta sessão — licença só na transmissão nova — foi
 //     REVOGADA na reconciliação): ramo fora do contrato = 403 para todos nas rotas por nota; a PASSADA do admin fecha só as
 //     tentativas vivas (em voo interrompida → F por consulta); a autorizada não volta ao rodízio. O fim do contrato é
-//     SIMULADO por `jest.spyOn(erp.institutionHasInterface)` (o ERP não é escrito).
+//     SIMULADO por `spyContractCut` (as leituras do veredito — costura A1) (o ERP não é escrito).
 //  B. M2 — decisão do cancelamento: estado (idempotente/recusas) ANTES de `openIssuer` travante; corrida de cancelamentos e
 //     cancelar × DELETE do A1 × PUT/DELETE da habilitação.
 //  C. L1 — passo 5 do ato (`UPDATE … model IN (?)` pela PK) — nenhuma trava de FAIXA (o SQL é LIDO do script).
@@ -37,7 +37,7 @@ import { spawnSync } from 'child_process'
 import * as fiscal from 'fiscal-api'
 import { AuthorityHttpError, FsFiscalStorage, FiscalStorage, HttpError, createFiscalPool, dbConfigFromEnv, withTransaction, ISSUER_MODELS } from 'fiscal-api'
 import { contextFromEnv, AppContext } from '../context'
-import { disposableFiscalDb, DisposableFiscalDb, FISCAL_COPY_TABLES } from './live-harness'
+import { disposableFiscalDb, DisposableFiscalDb, FISCAL_COPY_TABLES, licensedFact, spyContractCut } from './live-harness'
 import { createApp } from '../app'
 import type { TaxAuthorityAdapter, AuthorityContext } from '../authority/types'
 import { transmitServiceInvoice, refreshOpenServiceTransmissions, resetMunicipalTermsCache } from '../nfse/transmission'
@@ -289,7 +289,7 @@ d('GATE ADVERSARIAL r11 (o "r8" de 2026-10-10) — delta da sessão 2026-10-10 (
       const id = Number(r.id)
       if (busy.has(id)) continue
       const key = await fiscal.erp.orderInterface(ctx.pool, SCHEMA, fiscal.invoiceRef(INST, id, fiscal.WEB_TERMINAL))
-      if (!(await fiscal.erp.institutionHasInterface(ctx.pool, SCHEMA, INST, key))) continue
+      if (!(await licensedFact(ctx.pool, SCHEMA, INST, key))) continue
       if (!X) {
         try {
           const h = await svc.readServiceInvoice(ctx.pool, SCHEMA, refOf(INST, id))
@@ -336,9 +336,9 @@ d('GATE ADVERSARIAL r11 (o "r8" de 2026-10-10) — delta da sessão 2026-10-10 (
   describe('A. D-F46 (b) + D-F47 + D-F51 — contrato do ramo ENCERRADO (simulado): bloqueio total; a PASSADA só fecha o que estava vivo', () => {
     // Reconciliação 2026-10-10: a D-F47 desta máquina (licença barra só a transmissão nova) foi REVOGADA — vale a D-F46 (b)
     // da 3ª sessão de 2026-10-04. Estes testes provam AO VIVO o código daquela sessão (que só tinha rodado unitário na nuvem).
-    let spy: jest.SpyInstance
+    let spy: { mockRestore(): void }
     beforeAll(async () => { await purge([X, Z, Z2]); await purge([Z], OTHER); await restoreIssuerFromReal(); await restoreCertFromReal(); await turnCopy() })
-    beforeEach(() => { spy = jest.spyOn(fiscal.erp, 'institutionHasInterface').mockResolvedValue(false) })
+    beforeEach(() => { spy = spyContractCut(fiscal) })
     afterEach(() => spy.mockRestore())
     afterAll(async () => { await purge([X, Z, Z2]); await purge([Z], OTHER); await restoreIssuerFromReal(); await restoreCertFromReal() })
 
@@ -401,7 +401,7 @@ d('GATE ADVERSARIAL r11 (o "r8" de 2026-10-10) — delta da sessão 2026-10-10 (
       expect(after.kinds[0]).toBe('F')
       expect(after.attempts).toBe(2)
       expect(after.sent).toBe(1)
-      spy = jest.spyOn(fiscal.erp, 'institutionHasInterface').mockResolvedValue(false)
+      spy = spyContractCut(fiscal)
     })
 
     it('sem achado (D-F47): a AUTORIZADA (A) de ramo cortado NÃO volta ao rodízio — a passada do admin não a consulta nem carimba', async () => {
@@ -418,7 +418,7 @@ d('GATE ADVERSARIAL r11 (o "r8" de 2026-10-10) — delta da sessão 2026-10-10 (
       const control = (await request(app).post('/v1/nfse/refresh').set(bearer(tok())).send({})).body?.data
       expect(control.checked).toBeGreaterThanOrEqual(1)
       expect(await queriedAt(Z)).not.toBeNull()
-      spy = jest.spyOn(fiscal.erp, 'institutionHasInterface').mockResolvedValue(false)
+      spy = spyContractCut(fiscal)
     })
 
     it('sem achado: tentativa de OUTRA institution na MESMA nota não abre nada — e a institution 2 também é barrada pela licença', async () => {

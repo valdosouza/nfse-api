@@ -115,3 +115,28 @@ export async function disposableFiscalDb(root: string, name: string, opts: { tur
     },
   }
 }
+
+/**
+ * Costura A1 da auth-api (D-AU6, 2026-10-31): o veredito de acesso é a biblioteca `access` do núcleo (views do produto). Os ataques ao
+ * vivo que SIMULAM "o contrato do ramo encerrou" (sem escrever no ERP) espiam as TRÊS leituras dela — alcance, verbo por ramo e
+ * veredito —, no lugar da antiga `erp.institutionHasInterface`.
+ */
+export function spyContractCut(fiscalApi: any): { mockRestore(): void } {
+  const spies = [
+    jest.spyOn(fiscalApi.access, 'reachableKeys').mockResolvedValue([]),
+    jest.spyOn(fiscalApi.access, 'grantedKeys').mockResolvedValue([]),
+    jest.spyOn(fiscalApi.access, 'accessVerdict').mockResolvedValue('not-contracted'),
+  ]
+  return { mockRestore: () => spies.forEach(s => s.mockRestore()) }
+}
+
+/** O FATO do contrato (a interface está contratada para o estabelecimento?) — só para o teste calcular o esperado. */
+export async function licensedFact(q: Pool, schemaName: string, institutionId: number, key: string): Promise<boolean> {
+  if (!/^setes_[a-z0-9_]+$/.test(schemaName)) throw new Error(`schema inválido: ${schemaName}`)
+  const [rows] = await q.query(
+    `SELECT 1 FROM \`${schemaName}\`.tb_institution_has_interface ihi
+       JOIN setes_central.tb_interface i ON i.id = ihi.tb_interface_id AND i.deleted = 'N'
+      WHERE ihi.tb_institution_id = ? AND i.i18n_key = ? AND ihi.active = 'S' AND ihi.deleted = 'N' LIMIT 1`,
+    [institutionId, key]) as any
+  return Array.isArray(rows) && rows.length > 0
+}

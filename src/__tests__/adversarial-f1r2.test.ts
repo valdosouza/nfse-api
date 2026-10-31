@@ -13,6 +13,7 @@ import forge from 'node-forge'
 import jwt from 'jsonwebtoken'
 import request from 'supertest'
 import * as fiscal from 'fiscal-api'
+import { wireAccess } from './access-stub'
 import * as repo from '../nfse/repository'
 import { FsFiscalStorage, MasterKeyRing, ProductTokenVerifier } from 'fiscal-api'
 import { refreshOpenServiceTransmissions, resetMunicipalTermsCache, NfseDeps } from '../nfse/transmission'
@@ -25,6 +26,7 @@ jest.mock('fiscal-api', () => {
   const erpFns = Object.fromEntries(Object.entries(actual.erp).map(([k, v]) => [k, typeof v === 'function' ? jest.fn(v as any) : v]))
   return {
     __esModule: true, ...actual,
+    access: { ...actual.access, accessVerdict: jest.fn(), reachableKeys: jest.fn(), grantedKeys: jest.fn(), liveIdentity: jest.fn() },
     logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
     signXml: jest.fn((xml: string) => xml),
     openIssuer: jest.fn(),
@@ -38,6 +40,9 @@ jest.mock('../nfse/repository', () => {
 })
 
 const erpM = fiscal.erp as unknown as Record<string, jest.Mock>
+const licensedM = jest.fn()   // licença (interface contratada) — costura A1: o veredito é `access.*`, dublado por ./access-stub
+const grantedM = jest.fn()    // concessão do verbo (pelo NOME — D-PV53)
+wireAccess(fiscal.access, licensedM, grantedM)
 const repoM = repo as unknown as Record<string, jest.Mock>
 const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nfse-adv-r2-'))
 afterAll(() => fs.rmSync(storageRoot, { recursive: true, force: true }))
@@ -89,8 +94,8 @@ beforeEach(() => {
   // D-F41: o comando do aluguel chega pela CONEXÃO emprestada (runShortCommand) — ela repassa ao pool o que for do aluguel
   conn.query.mockImplementation(async (sql: string) => (/refresh_lease_until|AS token/.test(String(sql)) ? pool.query(sql) : [[]]))
   erpM.orderInterface.mockResolvedValue('orders')
-  erpM.institutionHasInterface.mockResolvedValue(true)
-  erpM.userHasPrivilege.mockResolvedValue(true)
+  licensedM.mockResolvedValue(true)
+  grantedM.mockResolvedValue(true)
   erpM.establishmentCnpj.mockResolvedValue(CNPJ)
   erpM.institutionZone.mockResolvedValue('America/Sao_Paulo')
   erpM.invoiceLife.mockResolvedValue({ invoiceId: INVOICE, invoiceDeleted: false, lifeEvent: 1, lastEvent: 1, lastKind: 'E' })

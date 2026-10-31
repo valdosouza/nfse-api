@@ -18,7 +18,7 @@ import request from 'supertest'
 import * as fiscal from 'fiscal-api'
 import { AuthorityHttpError, FsFiscalStorage, FiscalStorage, MasterKeyRing, HttpError, createFiscalPool } from 'fiscal-api'
 import { contextFromEnv, AppContext } from '../context'
-import { disposableFiscalDb, DisposableFiscalDb } from './live-harness'
+import { disposableFiscalDb, DisposableFiscalDb, licensedFact } from './live-harness'
 import { createApp } from '../app'
 import type { TaxAuthorityAdapter, AuthorityContext } from '../authority/types'
 import { refreshOpenServiceTransmissions, resetMunicipalTermsCache, listPending } from '../nfse/transmission'
@@ -330,7 +330,7 @@ d('GATE ADVERSARIAL F1 — banco real + fisco falso', () => {
     it('usuário comum sem TRANSMITIR/CANCELAR no ramo (ou ramo não contratado) → 403 sem tocar o fisco; emitente → 403 ADMIN_REQUIRED', async () => {
       const user = bearer(tok({ role: 'user', userId: 266 }))
       const iface = (await q(`SELECT interface_key AS k FROM \`${SCHEMA}\`.vw_order_interface WHERE tb_institution_id = ? AND tb_order_id = ?`, [INST, A]))[0]?.k
-      const expected = (await fiscal.erp.institutionHasInterface(ctx.pool, SCHEMA, INST, iface)) ? 'PRIVILEGE_REQUIRED' : 'INTERFACE_NOT_ALLOWED'
+      const expected = (await licensedFact(ctx.pool, SCHEMA, INST, iface)) ? 'PRIVILEGE_REQUIRED' : 'INTERFACE_NOT_ALLOWED'
       // D-F46 (b): ramo não contratado = bloqueio total, inclusive sobre o já emitido — a licença decide em TODAS as ações
       for (const [m, p, body] of [
         ['post', `/v1/nfse/invoices/${A}/transmit`, undefined],
@@ -351,7 +351,7 @@ d('GATE ADVERSARIAL F1 — banco real + fisco falso', () => {
     it('[corrigido — LOW] LICENÇA (D-F14): o lote de pendentes do usuário comum traz SÓ os ramos contratados', async () => {
       const user = bearer(tok({ role: 'user', userId: 266 }))
       const contracted: string[] = []
-      for (const k of ['service-orders', 'orders']) if (await fiscal.erp.institutionHasInterface(ctx.pool, SCHEMA, INST, k)) contracted.push(k)
+      for (const k of ['service-orders', 'orders']) if (await licensedFact(ctx.pool, SCHEMA, INST, k)) contracted.push(k)
       const pending = track('licença pending', await request(app).get('/v1/nfse/invoices/pending?pageSize=100').set(user))
       expect(pending.status).toBe(200)
       const keys = new Set<string>((pending.body.data ?? []).map((x: any) => x.interfaceKey))
@@ -382,7 +382,7 @@ d('GATE ADVERSARIAL F1 — banco real + fisco falso', () => {
 
     it('[D-F37] LICENÇA para todos + DADO acertado: `service-orders` contratada na institution 1 — o ADMIN transmite a OS porque o ramo é contratado, não porque é admin', async () => {
       const iface = (await q(`SELECT interface_key AS k FROM \`${SCHEMA}\`.vw_order_interface WHERE tb_institution_id = ? AND tb_order_id = ?`, [INST, A]))[0]?.k
-      const contracted = await fiscal.erp.institutionHasInterface(ctx.pool, SCHEMA, INST, iface)
+      const contracted = await licensedFact(ctx.pool, SCHEMA, INST, iface)
       // eslint-disable-next-line no-console
       console.log('[adv] interface do ramo', iface, 'contratada?', contracted)
       expect(contracted).toBe(true)

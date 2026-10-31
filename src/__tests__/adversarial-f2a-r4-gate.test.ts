@@ -12,6 +12,7 @@ import path from 'path'
 import jwt from 'jsonwebtoken'
 import request from 'supertest'
 import * as fiscal from 'fiscal-api'
+import { wireAccess } from './access-stub'
 import * as repo from '../nfse/repository'
 import * as txMod from '../nfse/transmission'
 import { FsFiscalStorage, MasterKeyRing, ProductTokenVerifier, corsFor } from 'fiscal-api'
@@ -28,6 +29,7 @@ jest.mock('fiscal-api', () => {
   const actual = jest.requireActual('fiscal-api')
   return {
     __esModule: true, ...actual,
+    access: { ...actual.access, accessVerdict: jest.fn(), reachableKeys: jest.fn(), grantedKeys: jest.fn(), liveIdentity: jest.fn() },
     logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
     openIssuer: jest.fn(actual.openIssuer),
     createFiscalPool: jest.fn(() => ({ query: jest.fn(), getConnection: jest.fn() })),
@@ -35,7 +37,7 @@ jest.mock('fiscal-api', () => {
     erp: {
       ...actual.erp,
       lockInvoice: jest.fn(), invoiceLife: jest.fn(), institutionZone: jest.fn(),
-      orderInterface: jest.fn(), userHasPrivilege: jest.fn(), institutionHasInterface: jest.fn(), assertInstitutionSchema: jest.fn(),
+      orderInterface: jest.fn(), assertInstitutionSchema: jest.fn(),
     },
   }
 })
@@ -47,6 +49,9 @@ jest.mock('../nfse/repository', () => {
 const failing: jest.It['failing'] = process.env.ADV_SHOW === '1' ? (it as any) : it.failing
 const actualFiscal = jest.requireActual('fiscal-api')
 const erpM = fiscal.erp as unknown as Record<string, jest.Mock>
+const licensedM = jest.fn()   // licença (interface contratada) — costura A1: o veredito é `access.*`, dublado por ./access-stub
+const grantedM = jest.fn()    // concessão do verbo (pelo NOME — D-PV53)
+wireAccess(fiscal.access, licensedM, grantedM)
 const fM = fiscal as unknown as Record<string, jest.Mock>
 const repoM = repo as unknown as Record<string, jest.Mock>
 const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nfse-adv-r4-'))
@@ -62,7 +67,7 @@ const ctx = (corsOrigins: string[] = []): AppContext => ({
   pool, keyring: MasterKeyRing.of({ 1: randomBytes(32) }), storage: new FsFiscalStorage(storageRoot), adapter: {} as any,
   fiscalDb: 'fiscal_api', verifier: ProductTokenVerifier.of({ k1: pubPem }), corsOrigins, checkIdentity: false,
 })
-const contracted = (...keys: string[]) => erpM.institutionHasInterface.mockImplementation(async (_p: any, _s: string, _i: number, k: string) => keys.includes(k))
+const contracted = (...keys: string[]) => licensedM.mockImplementation(async (_p: any, _s: string, _i: number, k: string) => keys.includes(k))
 
 beforeEach(() => {
   jest.clearAllMocks()

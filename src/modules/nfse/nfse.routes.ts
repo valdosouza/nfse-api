@@ -7,7 +7,6 @@ import { renderDanfse } from '../../nfse/danfse'
 import { emitterDisplay } from '../../facts/service-facts'
 import { requireBranchPrivilege, requireBranchInterface, passScope, requireCutover, visibleInterfaces, parseInvoiceId } from '../guards'
 import { parseWith } from '../validate'
-import { PRIVILEGE_CONSULTAR } from '../privileges'
 import { cancelDto, refreshPassDto, pendingQueryDto } from './nfse.dto'
 
 /**
@@ -54,7 +53,7 @@ export function nfseRoutes(ctx: AppContext): Router {
     const inst = institutionOf(req)
     const ref = webRefOf(inst, req.params.invoiceId)
     await requireCutover(ctx, inst, SERVICE_ISSUER_MODEL)
-    await requireBranchPrivilege(ctx, inst, ref, erp.PRIVILEGE_TRANSMITIR)
+    await requireBranchPrivilege(ctx, inst, ref, 'TRANSMITIR')
     sendOk(res, await tx.transmitServiceInvoice(ctx, actorOf(inst), ref), 201)
   }))
 
@@ -62,7 +61,7 @@ export function nfseRoutes(ctx: AppContext): Router {
     const inst = institutionOf(req)
     const ref = webRefOf(inst, req.params.invoiceId)
     await requireCutover(ctx, inst, SERVICE_ISSUER_MODEL)
-    await requireBranchPrivilege(ctx, inst, ref, PRIVILEGE_CONSULTAR)      // D-PV40: consultar ≠ transmitir
+    await requireBranchPrivilege(ctx, inst, ref, 'CONSULTAR')      // D-PV40: consultar ≠ transmitir
     sendOk(res, await tx.refreshServiceTransmission(ctx, actorOf(inst), ref, 'Q', { origin: 'consulta' }))   // D-F95
   }))
 
@@ -70,7 +69,7 @@ export function nfseRoutes(ctx: AppContext): Router {
     const inst = institutionOf(req)
     const ref = webRefOf(inst, req.params.invoiceId)
     await requireCutover(ctx, inst, SERVICE_ISSUER_MODEL)
-    await requireBranchPrivilege(ctx, inst, ref, erp.PRIVILEGE_CANCELAR)
+    await requireBranchPrivilege(ctx, inst, ref, 'CANCELAR')
     sendOk(res, await tx.reconfirmBeforeLocalCancel(ctx, actorOf(inst), ref))
   }))
 
@@ -78,7 +77,7 @@ export function nfseRoutes(ctx: AppContext): Router {
     const inst = institutionOf(req)
     const ref = webRefOf(inst, req.params.invoiceId)
     await requireCutover(ctx, inst, SERVICE_ISSUER_MODEL)
-    await requireBranchPrivilege(ctx, inst, ref, erp.PRIVILEGE_CANCELAR)
+    await requireBranchPrivilege(ctx, inst, ref, 'CANCELAR')
     const body = parseWith(cancelDto, req.body)
     sendOk(res, await tx.cancelServiceInvoiceAtAuthority(ctx, actorOf(inst), ref, body.reason))
   }))
@@ -104,7 +103,7 @@ export function nfseRoutes(ctx: AppContext): Router {
   router.post('/refresh', route('POST /v1/nfse/refresh', async (req, res) => {
     const inst = institutionOf(req)
     await requireCutover(ctx, inst, SERVICE_ISSUER_MODEL)
-    const scope = await passScope(ctx, inst, PASS_INTERFACES, PRIVILEGE_CONSULTAR)           // D-F46/D-F47 · D-PV40: a passada CONSULTA
+    const scope = await passScope(ctx, inst, PASS_INTERFACES, 'CONSULTAR')           // D-F46/D-F47 · D-PV40: a passada CONSULTA
     const body = parseWith(refreshPassDto, req.body)
     sendOk(res, await tx.refreshOpenServiceTransmissions(ctx, actorOf(inst), { terminal: WEB_TERMINAL, minMinutes: body.minMinutes, limit: body.limit, ...scope }))
   }))

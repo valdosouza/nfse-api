@@ -32,8 +32,11 @@ cancelamento no fisco (D-F10).
 ## Regras inegociáveis
 
 1. Toda leitura do ERP vive na fonte de fatos — nenhum `tb_invoice`/`tb_order`/`tb_entity*` fora dela.
-2. Privilégio TRANSMITIR/CANCELAR do RAMO conferido no schema do cliente (admin passa); licença =
-   interface do ramo contratada (D-F14).
+2. Privilégio TRANSMITIR/CONSULTAR/CANCELAR do RAMO (admin passa); licença = interface do ramo contratada (D-F14). Desde a costura
+   A1 da auth-api (D-AU3/D-AU6, 2026-10-31) a REGRA não mora aqui: as guardas (`src/modules/guards.ts`) leem o veredito pela biblioteca
+   `access` do núcleo (views do produto, vivas — sem cache) e citam o verbo pelo NOME (D-PV53 — nenhum número de privilégio nesta API);
+   o middleware lê a sessão viva (`access.liveIdentity` — 401 `SESSION_REVOKED`, perfil vivo). GRANT em `setes_central` só nas tabelas
+   lidas (D-AU12 — `ops/grants.sql` 1a; cerca `src/__tests__/grants-d-au12.test.ts`).
 3. Transmitir × cancelar local se serializam pelo `FOR UPDATE` na linha da nota (`tb_invoice` do cliente),
    1ª coisa da transação (D-F27; a trava nomeada do §12.4 foi aposentada). Ordem: nota → emissor → DPS → tentativa.
 4. Herdadas da Onda 3 (D-N1…D-N38, `prompt_onda3_nfse_adn.md`): ambíguo nunca fecha, F só conclusivo,

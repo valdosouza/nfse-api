@@ -1,4 +1,4 @@
-import { HttpError, ErrorCodes, InstitutionPayload, isAdmin, isSuper, erp, emissionStillInErp, anyEmissionStillInErp, IssuerModel, InvoiceRef } from 'fiscal-api'
+import { HttpError, ErrorCodes, InstitutionPayload, isAdmin, erp, access, emissionStillInErp, anyEmissionStillInErp, IssuerModel, InvoiceRef } from 'fiscal-api'
 import type { AppContext } from '../context'
 
 /**
@@ -9,27 +9,31 @@ import type { AppContext } from '../context'
  * não contratada. Leituras e ações exigem a interface do ramo CONTRATADA (Q-N32).
  *
  * A-PV1 (Valdo 2026-10-18 — `Infra-IA/prompts/prompt_privilegios_interfaces.md`, D-PV3: "o super deve escapar de todas as
- * verificações"): o SUPER passa também a LICENÇA — revê a D-F37 SÓ para ele, na MESMA regra do setes-api
- * (`setes-api/src/shared/auth/require-privilege.ts`, `licensedFor`). Admin e regular seguem como estavam. Aqui as chaves são
- * sempre interfaces reais (`erp.orderInterface` normaliza para orders/service-orders/order-returns; o rodízio e a lista de
- * pendentes usam listas fixas), então o super não precisa da conferência "existe no catálogo" do setes-api. A cerca da
- * virada (`requireCutover`) NÃO é licença — vale para o super como para todos.
+ * verificações"): o SUPER passa também a LICENÇA — revê a D-F37 SÓ para ele. A cerca da virada (`requireCutover`) NÃO é licença — vale para
+ * o super como para todos.
+ *
+ * COSTURA A1 da auth-api (D-AU3/D-AU6/D-AU8, Valdo 2026-10-31 — `prompt_frente_auth_api.md`): a REGRA deixou de ser copiada aqui. O
+ * veredito (licença × perfil × concessão) é a biblioteca ÚNICA do núcleo (`access` — a pilha de views publicada no banco do produto, lida
+ * VIVA, sem cache); a "licença sozinha" das leituras (Q-N32) é o ALCANCE (`access.reachableKeys`). O privilégio é citado pelo NOME do verbo
+ * (D-PV49/D-PV53 — nenhum número de privilégio nas APIs fiscais). O perfil (`isAdmin` do `requireAdmin`) é o VIVO: o middleware troca o
+ * `role` do token pelo da sessão (`access.liveIdentity`).
  */
 
-/** A-PV1: a interface vale para quem pede? Super → sempre (chaves reais); admin e regular → CONTRATADA (D-F14/D-F37). */
+/** A-PV1/D-F14/D-F37: a interface está ao ALCANCE de quem pede? (super → todas; admin e regular → CONTRATADA). */
 async function licensed(ctx: AppContext, inst: InstitutionPayload, key: string): Promise<boolean> {
-  if (isSuper(inst)) return true
-  return erp.institutionHasInterface(ctx.pool, inst.schemaName, inst.institutionId, key)
+  return (await access.reachableKeys(ctx.pool, inst, [key])).length > 0
 }
 
-export async function requireBranchPrivilege(ctx: AppContext, inst: InstitutionPayload, ref: InvoiceRef, privilegeId: number): Promise<void> {
+export async function requireBranchPrivilege(
+  ctx: AppContext, inst: InstitutionPayload, ref: InvoiceRef, privilege: access.PrivilegeName,
+): Promise<void> {
   const key = await erp.orderInterface(ctx.pool, inst.schemaName, ref)
-  // licença (D-F14/D-F37) nas AÇÕES: privilégio (ou admin) em ramo NÃO contratado não emite — o super passa (A-PV1)
-  if (!(await licensed(ctx, inst, key))) {
+  // licença (D-F14/D-F37) antes do privilégio — a ordem do diagnóstico mora na biblioteca (403 INTERFACE_NOT_ALLOWED × PRIVILEGE_REQUIRED)
+  const verdict = await access.accessVerdict(ctx.pool, inst, [key], privilege)
+  if (verdict === 'not-contracted') {
     throw new HttpError(403, `Interface ${key} não contratada para este estabelecimento`, undefined, ErrorCodes.INTERFACE_NOT_ALLOWED)
   }
-  if (isAdmin(inst)) return                       // admin passa o PRIVILÉGIO (D32), não a licença (D-F37)
-  if (!(await erp.userHasPrivilege(ctx.pool, inst.schemaName, inst.userId, key, privilegeId))) {
+  if (verdict === 'no-privilege') {
     throw new HttpError(403, `Privilégio necessário para esta ação na interface ${key}`, undefined, ErrorCodes.PRIVILEGE_REQUIRED)
   }
 }
@@ -50,11 +54,9 @@ export async function requireCutover(ctx: AppContext, inst: InstitutionPayload, 
   }
 }
 
-/** Ramos (interfaces) que quem pede pode ver: só os CONTRATADOS (D-F14) — inclusive para o admin (D-F37); o super vê todos (A-PV1). */
+/** Ramos (interfaces) que quem pede pode ver: só os ao ALCANCE (contratados — D-F14 —, inclusive para o admin — D-F37; o super vê todos). */
 export async function visibleInterfaces(ctx: AppContext, inst: InstitutionPayload, keys: string[]): Promise<string[] | null> {
-  const out: string[] = []
-  for (const key of keys) if (await licensed(ctx, inst, key)) out.push(key)
-  return out
+  return access.reachableKeys(ctx.pool, inst, keys)
 }
 
 /**
@@ -70,15 +72,12 @@ export async function visibleInterfaces(ctx: AppContext, inst: InstitutionPayloa
  * PRIVILEGE_REQUIRED), SALVO o admin com NADA contratado: ele roda a passada só sobre as vivas dos ramos cortados (D-F47).
  * A-PV1: para o super todo ramo conta como contratado — todas as chaves vão para [interfaces] (nenhuma "só vivas").
  */
-export async function passScope(ctx: AppContext, inst: InstitutionPayload, keys: readonly string[], privilegeId: number)
+export async function passScope(ctx: AppContext, inst: InstitutionPayload, keys: readonly string[], privilege: access.PrivilegeName)
   : Promise<{ interfaces: string[]; liveOnlyInterfaces: string[] }> {
-  let contracted = false
-  const interfaces: string[] = [], liveOnlyInterfaces: string[] = []
-  for (const key of keys) {
-    if (!(await licensed(ctx, inst, key))) { liveOnlyInterfaces.push(key); continue }
-    contracted = true
-    if (isAdmin(inst) || await erp.userHasPrivilege(ctx.pool, inst.schemaName, inst.userId, key, privilegeId)) interfaces.push(key)
-  }
+  const reach = new Set(await access.reachableKeys(ctx.pool, inst, keys))
+  const liveOnlyInterfaces = keys.filter(k => !reach.has(k))
+  const contracted = reach.size > 0
+  const interfaces = contracted ? await access.grantedKeys(ctx.pool, inst, keys.filter(k => reach.has(k)), privilege) : []
   if (interfaces.length > 0 || (isAdmin(inst) && !contracted)) return { interfaces, liveOnlyInterfaces }
   if (!contracted) throw new HttpError(403, 'Nenhuma interface fiscal contratada para este estabelecimento', undefined, ErrorCodes.INTERFACE_NOT_ALLOWED)
   throw new HttpError(403, 'Privilégio necessário para esta ação', undefined, ErrorCodes.PRIVILEGE_REQUIRED)
@@ -92,13 +91,11 @@ export async function requireBranchInterface(ctx: AppContext, inst: InstitutionP
 }
 
 export async function requireAnyInterface(ctx: AppContext, inst: InstitutionPayload, keys: string[]): Promise<void> {
-  for (const key of keys) {
-    if (await licensed(ctx, inst, key)) return
-  }
+  if ((await access.reachableKeys(ctx.pool, inst, keys)).length > 0) return
   throw new HttpError(403, 'Nenhuma interface fiscal contratada para este estabelecimento', undefined, ErrorCodes.INTERFACE_NOT_ALLOWED)
 }
 
-/** Emitente (A1 + habilitação) é ato do ADMIN do estabelecimento (adminGuard do produto). */
+/** Emitente (A1 + habilitação) é ato do ADMIN do estabelecimento (adminGuard do produto) — pelo perfil VIVO (`access.liveIdentity`). */
 export function requireAdmin(inst: InstitutionPayload): void {
   if (!isAdmin(inst)) throw new HttpError(403, 'Ação exclusiva do administrador do estabelecimento', undefined, ErrorCodes.ADMIN_REQUIRED)
 }

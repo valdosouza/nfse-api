@@ -25,6 +25,7 @@ import { generateKeyPairSync, randomBytes } from 'crypto'
 import jwt from 'jsonwebtoken'
 import request from 'supertest'
 import * as fiscal from 'fiscal-api'
+import { wireAccess } from './access-stub'
 import * as repo from '../nfse/repository'
 import * as txMod from '../nfse/transmission'
 import { FsFiscalStorage, MasterKeyRing, ProductTokenVerifier } from 'fiscal-api'
@@ -39,6 +40,7 @@ jest.mock('fiscal-api', () => {
   const actual = jest.requireActual('fiscal-api')
   return {
     __esModule: true, ...actual,
+    access: { ...actual.access, accessVerdict: jest.fn(), reachableKeys: jest.fn(), grantedKeys: jest.fn(), liveIdentity: jest.fn() },
     logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
     openIssuer: jest.fn(actual.openIssuer),
     createFiscalPool: jest.fn(),
@@ -46,7 +48,7 @@ jest.mock('fiscal-api', () => {
     erp: {
       ...actual.erp,
       lockInvoice: jest.fn(), invoiceLife: jest.fn(), institutionZone: jest.fn(),
-      orderInterface: jest.fn(), userHasPrivilege: jest.fn(), institutionHasInterface: jest.fn(), assertInstitutionSchema: jest.fn(),
+      orderInterface: jest.fn(), assertInstitutionSchema: jest.fn(),
     },
   }
 })
@@ -62,6 +64,9 @@ jest.mock('../nfse/repository', () => {
 const actualFiscal = jest.requireActual('fiscal-api')
 const actualRepo = jest.requireActual('../nfse/repository')
 const erpM = fiscal.erp as unknown as Record<string, jest.Mock>
+const licensedM = jest.fn()   // licença (interface contratada) — costura A1: o veredito é `access.*`, dublado por ./access-stub
+const grantedM = jest.fn()    // concessão do verbo (pelo NOME — D-PV53)
+wireAccess(fiscal.access, licensedM, grantedM)
 const fM = fiscal as unknown as Record<string, jest.Mock>
 const repoM = repo as unknown as Record<string, jest.Mock>
 const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nfse-adv-r9-'))
@@ -323,10 +328,10 @@ describe('D-F47 — semântica de "viva": a passada × a guarda do emitente', ()
 describe('D-F47 — passScope: partição dos ramos, admin sem nada contratado, cerca antes de tudo', () => {
   const ctxLite = { pool: {} } as unknown as AppContext
   const inst = (role = 'user') => ({ institutionId: 1, userId: 7, role, schemaName: 'setes_setes' }) as any
-  const contracted = (...keys: string[]) => erpM.institutionHasInterface.mockImplementation(async (_p: any, _s: string, _i: number, k: string) => keys.includes(k))
-  const privileged = (...keys: string[]) => erpM.userHasPrivilege.mockImplementation(async (_p: any, _s: string, _u: number, k: string) => keys.includes(k))
+  const contracted = (...keys: string[]) => licensedM.mockImplementation(async (_p: any, _s: string, _i: number, k: string) => keys.includes(k))
+  const privileged = (...keys: string[]) => grantedM.mockImplementation(async (_p: any, _s: string, _u: number, k: string) => keys.includes(k))
   const KEYS = ['service-orders', 'orders', 'order-returns']
-  const run = (role: string) => passScope(ctxLite, inst(role), KEYS, 1).then(r => r, (e: any) => [e.statusCode, e.code])
+  const run = (role: string) => passScope(ctxLite, inst(role), KEYS, 'CONSULTAR').then(r => r, (e: any) => [e.statusCode, e.code])
 
   it('resistiu: contratado SEM privilégio não cai em NENHUMA lista (nem vira "vivas de cortado"); cortado só em liveOnly', async () => {
     contracted('service-orders', 'orders'); privileged('service-orders')
@@ -374,7 +379,7 @@ describe('D-F47 — passScope: partição dos ramos, admin sem nada contratado, 
       replica = true; contracted()
       const r = await request(createApp(ctx())).post('/v1/nfse/refresh').set('Authorization', `Bearer ${token({ role: 'admin' })}`).send({})
       expect([r.status, r.body.code]).toEqual([409, 'FISCAL_CUTOVER_PENDING'])
-      expect(erpM.institutionHasInterface).not.toHaveBeenCalled()
+      expect(licensedM).not.toHaveBeenCalled()
       expect(spy).not.toHaveBeenCalled()
     })
 

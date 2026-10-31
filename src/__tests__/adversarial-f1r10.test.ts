@@ -19,6 +19,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import * as fiscal from 'fiscal-api'
+import { wireAccess } from './access-stub'
 import * as repo from '../nfse/repository'
 import * as txMod from '../nfse/transmission'
 import { FsFiscalStorage, MasterKeyRing } from 'fiscal-api'
@@ -37,6 +38,7 @@ jest.mock('fiscal-api', () => {
   const actual = jest.requireActual('fiscal-api')
   return {
     __esModule: true, ...actual,
+    access: { ...actual.access, accessVerdict: jest.fn(), reachableKeys: jest.fn(), grantedKeys: jest.fn(), liveIdentity: jest.fn() },
     logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
     openIssuer: jest.fn(actual.openIssuer),
     createFiscalPool: jest.fn(),
@@ -44,7 +46,7 @@ jest.mock('fiscal-api', () => {
     erp: {
       ...actual.erp,
       lockInvoice: jest.fn(), invoiceLife: jest.fn(), institutionZone: jest.fn(),
-      orderInterface: jest.fn(), userHasPrivilege: jest.fn(), institutionHasInterface: jest.fn(), assertInstitutionSchema: jest.fn(),
+      orderInterface: jest.fn(), assertInstitutionSchema: jest.fn(),
     },
   }
 })
@@ -60,6 +62,9 @@ jest.mock('../nfse/repository', () => {
 
 const actualFiscal = jest.requireActual('fiscal-api')
 const erpM = fiscal.erp as unknown as Record<string, jest.Mock>
+const licensedM = jest.fn()   // licença (interface contratada) — costura A1: o veredito é `access.*`, dublado por ./access-stub
+const grantedM = jest.fn()    // concessão do verbo (pelo NOME — D-PV53)
+wireAccess(fiscal.access, licensedM, grantedM)
 const fM = fiscal as unknown as Record<string, jest.Mock>
 const repoM = repo as unknown as Record<string, jest.Mock>
 const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nfse-adv-r10-'))

@@ -4,7 +4,8 @@
 --
 -- 1. Usuário das APIs fiscais (nfse-api hoje; nfe-api amanhã):
 --    - controle TOTAL só no banco `fiscal_api` (D-F7) — cria o banco e aplica as migrations no boot;
---    - LEITURA no ERP: setes_central + todos os schemas de cliente (`setes\_%` — o '\_' casa o '_' literal);
+--    - LEITURA no ERP: todos os schemas de cliente (`setes\_%` — o '\_' casa o '_' literal) e, em `setes_central`, SÓ as tabelas
+--      listadas na seção 1a (D-AU12);
 --    - D-F31: a API fiscal NÃO escreve dado no ERP — a única coisa além de ler é a trava `SELECT … FOR UPDATE`
 --      na linha da nota (`tb_invoice`) + `LOCK IN SHARE MODE` no último evento.
 --    ⚠️ MariaDB 10.4 (dev, provado em 2026-10-04): FOR UPDATE / LOCK IN SHARE MODE funcionam só com SELECT.
@@ -13,8 +14,31 @@
 --       (não dá escrita de dado) — conferir na F3 (risco (3) do §12.7).
 CREATE USER IF NOT EXISTS 'fiscal_api'@'%' IDENTIFIED BY '<SENHA_FISCAL_API>';
 GRANT ALL PRIVILEGES ON `fiscal_api`.* TO 'fiscal_api'@'%';
-GRANT SELECT ON `setes_central`.* TO 'fiscal_api'@'%';
 GRANT SELECT ON `setes\_%`.* TO 'fiscal_api'@'%';
+
+-- 1a. D-AU12 (Valdo 2026-10-31 — `prompt_frente_auth_api.md`; costura A1 da auth-api): em `setes_central` o usuário fiscal LISTA só as
+--     tabelas que o código LÊ — NUNCA `tb_user` (o hash da senha), a recuperação de senha (`tb_user_password_reset*`), o vínculo e as
+--     concessões (o veredito vem da view `vw_user_link`/views do cliente, SQL SECURITY DEFINER — o SELECT na view basta).
+--     ⚠️ CONHECIMENTO NEGATIVO (achado HIGH do guardião, provado em banco descartável — setes-api `scripts/prove-user-access-views.ts`,
+--     item 6): o curinga `setes\_%` da linha acima CASA `setes_central` ("setes_" + qualquer coisa) — tirar só o antigo
+--     `GRANT SELECT ON setes_central.*` NÃO estreitava nada. O que estreita é uma linha de BANCO ESPECÍFICA para `setes_central` (o motor
+--     usa a linha de banco mais específica, que SOMBREIA o curinga) SEM o SELECT: aqui ela fica só com `SHOW VIEW`. Ordem idempotente:
+--     garante a linha específica (SELECT + SHOW VIEW) → tira o SELECT dela (fica o SHOW VIEW — se ficasse vazia o motor APAGAVA a linha e o
+--     curinga voltava a valer) → SELECT tabela a tabela. A LISTA vem de VARREDURA do código de produção do núcleo e da nfse-api — cerca
+--     `src/__tests__/grants-d-au12.test.ts` (tabela de setes_central lida pelo código ⊂ esta lista; tabela nova lida = linha nova aqui).
+--     Conferência: com o usuário do serviço, `SELECT password FROM setes_central.tb_user` tem de dar ER_TABLEACCESS_DENIED_ERROR.
+GRANT SELECT, SHOW VIEW ON `setes_central`.* TO 'fiscal_api'@'%';
+REVOKE SELECT ON `setes_central`.* FROM 'fiscal_api'@'%';
+GRANT SELECT ON `setes_central`.`tb_institution`          TO 'fiscal_api'@'%';
+GRANT SELECT ON `setes_central`.`tb_entity`               TO 'fiscal_api'@'%';
+GRANT SELECT ON `setes_central`.`tb_company`              TO 'fiscal_api'@'%';
+GRANT SELECT ON `setes_central`.`tb_person`               TO 'fiscal_api'@'%';
+GRANT SELECT ON `setes_central`.`tb_address`              TO 'fiscal_api'@'%';
+GRANT SELECT ON `setes_central`.`tb_city`                 TO 'fiscal_api'@'%';
+GRANT SELECT ON `setes_central`.`tb_state`                TO 'fiscal_api'@'%';
+GRANT SELECT ON `setes_central`.`tb_interface`            TO 'fiscal_api'@'%';
+GRANT SELECT ON `setes_central`.`tb_interface_has_config` TO 'fiscal_api'@'%';
+GRANT SELECT ON `setes_central`.`vw_user_link`            TO 'fiscal_api'@'%';
 -- (MySQL 8 apenas, se a leitura travante for recusada:)
 -- GRANT LOCK TABLES ON `setes\_%`.* TO 'fiscal_api'@'%';
 
@@ -40,6 +64,8 @@ GRANT ALL PRIVILEGES ON `fiscal\_api\_adv%`.* TO 'fiscal_api'@'%';
 --    tem que dar ER_TABLEACCESS_DENIED_ERROR; um SELECT … FOR UPDATE em setes_<cliente>.tb_invoice tem que passar.
 --    D-F53: `CREATE DATABASE fiscal_api_adv_conferencia` + `DROP DATABASE fiscal_api_adv_conferencia` têm que passar;
 --    `CREATE DATABASE setes_conferencia` tem que dar ER_DBACCESS_DENIED_ERROR. `SHOW GRANTS FOR 'fiscal_api'@'%'` lista as 4.
+--    D-AU12: `SELECT password FROM setes_central.tb_user` tem que dar ER_TABLEACCESS_DENIED_ERROR e
+--    `SELECT * FROM setes_central.vw_user_link LIMIT 1` tem que passar.
 --
 -- Ordem na implantação: este script ANTES do 1º boot da nfse-api (o boot cria o `fiscal_api` e aplica as migrations).
 -- É idempotente (CREATE USER IF NOT EXISTS; GRANT repetido não duplica) — pode rodar de novo a cada ambiente.

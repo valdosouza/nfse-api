@@ -55,7 +55,7 @@ import forge from 'node-forge'
 import * as fiscal from 'fiscal-api'
 import { AuthorityHttpError, FsFiscalStorage, FiscalStorage, HttpError, createFiscalPool, dbConfigFromEnv, withTransaction } from 'fiscal-api'
 import { contextFromEnv, AppContext } from '../context'
-import { disposableFiscalDb, DisposableFiscalDb, FISCAL_COPY_TABLES } from './live-harness'
+import { disposableFiscalDb, DisposableFiscalDb, FISCAL_COPY_TABLES, licensedFact } from './live-harness'
 import { createApp } from '../app'
 import type { TaxAuthorityAdapter, AuthorityContext } from '../authority/types'
 import {
@@ -307,7 +307,7 @@ d('GATE ADVERSARIAL r7 — delta da sessão 2026-10-04 (cópia descartável fisc
       const id = Number(r.id)
       if (busy.has(id)) continue
       const key = await fiscal.erp.orderInterface(ctx.pool, SCHEMA, fiscal.invoiceRef(INST, id, fiscal.WEB_TERMINAL))
-      if (!(await fiscal.erp.institutionHasInterface(ctx.pool, SCHEMA, INST, key))) continue
+      if (!(await licensedFact(ctx.pool, SCHEMA, INST, key))) continue
       if (!X) {
         try {
           const h = await svc.readServiceInvoice(ctx.pool, SCHEMA, refOf(INST, id))

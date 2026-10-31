@@ -11,6 +11,7 @@ import { generateKeyPairSync } from 'crypto'
 import jwt from 'jsonwebtoken'
 import request from 'supertest'
 import * as fiscal from 'fiscal-api'
+import { wireAccess } from './access-stub'
 import * as repo from '../nfse/repository'
 import { FsFiscalStorage, MasterKeyRing, ProductTokenVerifier } from 'fiscal-api'
 import {
@@ -26,6 +27,7 @@ jest.mock('fiscal-api', () => {
   const erpFns = Object.fromEntries(Object.entries(actual.erp).map(([k, v]) => [k, typeof v === 'function' ? jest.fn(v as any) : v]))
   return {
     __esModule: true, ...actual,
+    access: { ...actual.access, accessVerdict: jest.fn(), reachableKeys: jest.fn(), grantedKeys: jest.fn(), liveIdentity: jest.fn() },
     logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
     signXml: jest.fn((xml: string) => xml),
     openIssuer: jest.fn(),
@@ -39,6 +41,9 @@ jest.mock('../nfse/repository', () => {
 })
 
 const erpM = fiscal.erp as unknown as Record<string, jest.Mock>
+const licensedM = jest.fn()   // licença (interface contratada) — costura A1: o veredito é `access.*`, dublado por ./access-stub
+const grantedM = jest.fn()    // concessão do verbo (pelo NOME — D-PV53)
+wireAccess(fiscal.access, licensedM, grantedM)
 const repoM = repo as unknown as Record<string, jest.Mock>
 const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nfse-adv-unit-'))
 afterAll(() => fs.rmSync(storageRoot, { recursive: true, force: true }))
@@ -254,7 +259,7 @@ describe('licença (D-F14) nas AÇÕES — usuário (gates da F1) e ADMIN (D-F37
 
   beforeEach(() => {
     erpM.orderInterface.mockResolvedValue('service-orders')
-    erpM.institutionHasInterface.mockResolvedValue(false)      // ramo NÃO contratado (é o caso real da institution 1 no dev)
+    licensedM.mockResolvedValue(false)      // ramo NÃO contratado (é o caso real da institution 1 no dev)
     pool.query.mockImplementation(async () => [[]])            // a nota nem existe — basta ver se a guarda deixa passar
   })
 
@@ -265,7 +270,7 @@ describe('licença (D-F14) nas AÇÕES — usuário (gates da F1) e ADMIN (D-F37
   })
 
   it('usuário com TRANSMITIR (vínculo antigo) mas ramo não contratado → 403 INTERFACE_NOT_ALLOWED', async () => {
-    erpM.userHasPrivilege.mockResolvedValue(true)
+    grantedM.mockResolvedValue(true)
     const r = await request(appFor()).post(`/v1/nfse/invoices/${INVOICE}/transmit`).set('Authorization', `Bearer ${token({ role: 'user' })}`)
     expect([r.status, r.body.code]).toEqual([403, 'INTERFACE_NOT_ALLOWED'])
   })

@@ -11,6 +11,7 @@ import path from 'path'
 import jwt from 'jsonwebtoken'
 import request from 'supertest'
 import * as fiscal from 'fiscal-api'
+import { wireAccess } from './access-stub'
 import { MasterKeyRing, ProductTokenVerifier, FsFiscalStorage } from 'fiscal-api'
 import * as tx from '../nfse/transmission'
 import { createApp } from '../app'
@@ -25,9 +26,10 @@ jest.mock('fiscal-api', () => {
   const actual = jest.requireActual('fiscal-api')
   return {
     __esModule: true, ...actual,
+    access: { ...actual.access, accessVerdict: jest.fn(), reachableKeys: jest.fn(), grantedKeys: jest.fn(), liveIdentity: jest.fn() },
     logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
     emissionStillInErp: jest.fn(), anyEmissionStillInErp: jest.fn(),
-    erp: { ...actual.erp, orderInterface: jest.fn(), userHasPrivilege: jest.fn(), institutionHasInterface: jest.fn(), assertInstitutionSchema: jest.fn() },
+    erp: { ...actual.erp, orderInterface: jest.fn(), assertInstitutionSchema: jest.fn() },
   }
 })
 jest.mock('../nfse/transmission', () => {
@@ -41,6 +43,9 @@ jest.mock('../nfse/transmission', () => {
 })
 
 const erpM = fiscal.erp as unknown as Record<string, jest.Mock>
+const licensedM = jest.fn()   // licença (interface contratada) — costura A1: o veredito é `access.*`, dublado por ./access-stub
+const grantedM = jest.fn()    // concessão do verbo (pelo NOME — D-PV53)
+wireAccess(fiscal.access, licensedM, grantedM)
 const stillInErp = fiscal.emissionStillInErp as unknown as jest.Mock
 const anyStillInErp = fiscal.anyEmissionStillInErp as unknown as jest.Mock
 const KEYS = ['service-orders', 'orders', 'order-returns']
@@ -74,8 +79,8 @@ const httpCtx = (): AppContext => ({
 beforeEach(() => {
   jest.clearAllMocks()
   erpM.orderInterface.mockResolvedValue('service-orders')
-  erpM.institutionHasInterface.mockResolvedValue(false)          // NADA contratado
-  erpM.userHasPrivilege.mockResolvedValue(false)
+  licensedM.mockResolvedValue(false)          // NADA contratado
+  grantedM.mockResolvedValue(false)
   stillInErp.mockResolvedValue(false); anyStillInErp.mockResolvedValue(false)
   ;(tx.transmitServiceInvoice as jest.Mock).mockResolvedValue({ invoiceId: 10, attempt: 1, kind: 'A' })
   ;(tx.listPending as jest.Mock).mockResolvedValue({ data: [], page: 1, pageSize: 25, total: 0 })
@@ -85,19 +90,19 @@ beforeEach(() => {
 describe('[RESISTIU] super FALSO / papel forjado não herda a A-PV1 nas guardas', () => {
   it.each(FORGED_ROLES.map(p => [JSON.stringify(p), p]))('%s: nada contratado → 403 INTERFACE_NOT_ALLOWED em toda guarda', async (_n, who) => {
     const ref = webRef({ institutionId: 1 }, 77)
-    erpM.userHasPrivilege.mockResolvedValue(true)                 // nem o vínculo antigo salva: a licença barra
-    expect(await outcome(requireBranchPrivilege(gctx, who, ref, 9))).toEqual([403, 'INTERFACE_NOT_ALLOWED'])
+    grantedM.mockResolvedValue(true)                 // nem o vínculo antigo salva: a licença barra
+    expect(await outcome(requireBranchPrivilege(gctx, who, ref, 'TRANSMITIR'))).toEqual([403, 'INTERFACE_NOT_ALLOWED'])
     expect(await outcome(requireBranchInterface(gctx, who, ref))).toEqual([403, 'INTERFACE_NOT_ALLOWED'])
     expect(await outcome(requireAnyInterface(gctx, who, KEYS))).toEqual([403, 'INTERFACE_NOT_ALLOWED'])
     expect(await visibleInterfaces(gctx, who, KEYS)).toEqual([])
-    expect(await outcome(passScope(gctx, who, KEYS, 9))).toEqual([403, 'INTERFACE_NOT_ALLOWED'])
-    expect(erpM.institutionHasInterface).toHaveBeenCalled()          // a licença foi de fato consultada
+    expect(await outcome(passScope(gctx, who, KEYS, 'TRANSMITIR'))).toEqual([403, 'INTERFACE_NOT_ALLOWED'])
+    expect(licensedM).toHaveBeenCalled()          // a licença foi de fato consultada
   })
 
   it('super FALSO com o ramo contratado e SEM vínculo → 403 PRIVILEGE_REQUIRED (não vira admin)', async () => {
-    erpM.institutionHasInterface.mockResolvedValue(true)
+    licensedM.mockResolvedValue(true)
     const ref = webRef({ institutionId: 2 }, 77)
-    expect(await outcome(requireBranchPrivilege(gctx, FORGED_ROLES[0], ref, 9))).toEqual([403, 'PRIVILEGE_REQUIRED'])
+    expect(await outcome(requireBranchPrivilege(gctx, FORGED_ROLES[0], ref, 'TRANSMITIR'))).toEqual([403, 'PRIVILEGE_REQUIRED'])
   })
 })
 
