@@ -88,7 +88,15 @@ describe('autenticação — JWT do produto (D-F13)', () => {
     const r = await request(createApp(ctx({ checkIdentity: true }))).get('/v1/nfse/invoices/10').set('Authorization', `Bearer ${token({ role: 'admin' })}`)
     expect(r.status).toBe(401)
     expect(r.body.code).toBe('SESSION_REVOKED')
-    expect(live).toHaveBeenCalledWith(pool, expect.objectContaining({ institutionId: 1, userId: 7, schemaName: 'setes_setes' }))
+    expect(live).toHaveBeenCalledWith(pool, expect.objectContaining({ institutionId: 1, userId: 7, schemaName: 'setes_setes' }), expect.any(Number))   // D-EA7: o iat do token
+  })
+
+  it('D-EA7: token SEM iat (o instante de emissão) → 401 — a revogação por troca de senha não pode virar falha aberta', async () => {
+    const noIat = jwt.sign({ institutionId: 1, userId: 7, role: 'admin', schemaName: 'setes_setes' }, privPem,
+      { algorithm: 'RS256', keyid: 'k1', expiresIn: '1h', noTimestamp: true })
+    const r = await request(createApp(ctx({ checkIdentity: true }))).get('/v1/nfse/invoices/10').set('Authorization', `Bearer ${noIat}`)
+    expect([r.status, r.body.code]).toEqual([401, 'UNAUTHORIZED'])
+    expect(fiscal.access.liveIdentity).not.toHaveBeenCalled()
   })
 
   it('D-AU3 (costura A1): o PERFIL VIVO troca o do token — admin rebaixado a user perde o emitente NA HORA', async () => {

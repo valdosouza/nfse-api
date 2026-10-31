@@ -30,7 +30,7 @@ export function createApp(ctx: AppContext): Express {
   // D-UC9/D-AU3 (costura A1): a SESSÃO viva a cada requisição — vínculo, credencial e estabelecimento ativos (senão 401 SESSION_REVOKED)
   // e o PERFIL vivo no lugar do `role` do token; substitui a conferência só do schema (`erp.assertInstitutionSchema`)
   const auth = productAuth(ctx.verifier, ctx.checkIdentity
-    ? p => access.liveIdentity(ctx.pool, p)
+    ? (p, iat) => access.liveIdentity(ctx.pool, p, iat)   // D-EA7: o iat derruba o token anterior à troca de senha
     : undefined)
   app.use('/v1/emitter', auth, emitterRoutes(ctx))
   app.use('/v1/nfse', auth, nfseRoutes(ctx))
