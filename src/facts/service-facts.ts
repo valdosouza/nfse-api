@@ -3,6 +3,7 @@ import {
   LIVE_VOICE_KINDS, AUTHORIZED_KINDS, sqlKindList, readFederalIdFact, FederalIdFact, FederalIdKind,
 } from 'fiscal-api'
 import type { DpsInput, DpsIbscbs, DpsToma, DpsTotTrib, AuthorityEnvironment } from '../authority/types'
+import { dpsText } from '../authority/dps-builder'
 
 /**
  * FONTE DE FATOS DO RAMO DE SERVIÇO (D-F10) — o que a nfse-api lê do ERP para montar o DPS. Com a
@@ -138,7 +139,8 @@ export function declarationForDps(d: ServiceBranchRow['declaration']): { ibscbs?
 /**
  * Rejeições do Anexo I que o GRUPO IBS/CBS abre e que se sabem NA MONTAGEM (gate adversarial da IB-3, MEDIUM — molde da E0322 e das
  * E0166/E0712 da Onda 3): 422 local com o campo, nunca um DPS que o fisco vai rejeitar. Sem o grupo, a mesma nota segue como antes.
- *  - RN 255 / E0234: com estes cIndOp o ENDEREÇO do tomador é obrigatório (`buildRecipient` omite `toma.end` quando o cadastro está
+ *  - RN 255 / E0234 (no pacote de 20/10/2026 a E0234 sai e entram E0239/E0241/E0243, pela indicação de tributação da Calculadora — o cinto
+ *    pela lista fica CONSERVADOR nos dois leiautes; D-IB110): com estes cIndOp o ENDEREÇO do tomador é obrigatório (`buildRecipient` omite `toma.end` quando o cadastro está
  *    incompleto — o XSD o deixa opcional) — Anexo I, aba "RN DPS_NFS-e", regra 255;
  *  - RN 547 / E0903: serviço dos subitens 25.05 / 15.09 / 17.12 / 10.05 (cTribNac) exige `tpOper` no grupo — o montador não o emite
  *    (fora do 1º release da IB-3): recusa "ainda não suportado" em vez de rejeição do fisco — Anexo I, regra 547.
@@ -150,8 +152,8 @@ export const TP_OPER_SERVICE_SUBITEMS: ReadonlySet<string> = new Set(['2505', '1
 
 export function assertIbscbsGroupDeliverable(g: DpsIbscbs, toma: DpsToma, nationalCode: string): void {
   if (CIND_OP_REQUIRES_RECIPIENT_ADDRESS.has(g.cIndOp) && !toma.end) {
-    throw new HttpError(422, `O indicador de operação IBS/CBS ${g.cIndOp} exige o endereço completo do tomador (E0234) — complete o cadastro (CEP, logradouro, número, bairro e cidade)`,
-      [{ field: 'recipient.address', message: 'Endereço completo obrigatório para o grupo IBS/CBS (E0234)' }], ErrorCodes.FISCAL_RECIPIENT_INCOMPLETE)
+    throw new HttpError(422, `O indicador de operação IBS/CBS ${g.cIndOp} exige o endereço completo do tomador (E0234; E0243 no pacote de 20/10/2026) — complete o cadastro (CEP, logradouro, número, bairro e cidade)`,
+      [{ field: 'recipient.address', message: 'Endereço completo obrigatório para o grupo IBS/CBS (E0234/E0243)' }], ErrorCodes.FISCAL_RECIPIENT_INCOMPLETE)
   }
   const subitem = String(nationalCode ?? '').slice(0, 4)
   if (TP_OPER_SERVICE_SUBITEMS.has(subitem)) {
@@ -298,6 +300,8 @@ export async function buildRecipient(q: Queryable, entityId: number): Promise<Dp
   }
   const xNome = (full?.nameCompany ?? full?.nickTrade ?? '').trim()
   if (!xNome) missing.push({ field: 'recipient.name', message: 'Tomador sem nome' })
+  // ADV-NT009-01: o nome que o SANEAMENTO do DPS esvazia (só caracteres fora do Latin-1 — emoji, cirílico, CJK) não vai ao fisco
+  else if (!dpsText(xNome)) missing.push({ field: 'recipient.name', message: 'Nome do tomador sem nenhum caractere aceito pelo fisco (o leiaute só aceita letras do Latin-1)' })
   if (missing.length) {
     throw new HttpError(422, `Cadastro do tomador ${entityId} incompleto para o DPS — complete o cadastro da entidade`,
       missing, ErrorCodes.FISCAL_RECIPIENT_INCOMPLETE)
@@ -377,7 +381,9 @@ export async function buildDpsBase(
       cServ: {
         cTribNac: b.nationalCode,
         ...(municipalDigits ? { cTribMun: municipalDigits } : {}),
-        xDescServ: (b.description ?? '').trim() || 'Serviços',
+        // ADV-NT009-01: "Serviços" também quando o SANEAMENTO do DPS esvazia a descrição (só emoji/cirílico/U+200B…) — o que valida é o
+        // que grava (`dpsText` = o saneamento do montador); antes, o montador omitia o xDescServ obrigatório e o DPS ia fora do esquema
+        xDescServ: dpsText((b.description ?? '').trim(), true) ? (b.description ?? '').trim() : 'Serviços',
         ...(declared.cNBS ? { cNBS: declared.cNBS } : {}),
       },
     },

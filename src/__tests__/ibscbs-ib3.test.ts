@@ -59,8 +59,10 @@ function followsXsd(got: string[], seq: string[], required: string[]): void {
   for (const r of required) expect(got).toContain(r)
 }
 
+// D-IB110: este arquivo confere a forma do pacote de 09/02/2026 (o XSD acima) — o de PRODUÇÃO (P). O pacote de 20/10/2026 (H desde
+// 20/10/2026) tem a conferência dele em `leiaute-nt009.test.ts`.
 const base: DpsInput = {
-  environment: 'H', dhEmi: '2026-12-20T10:15:30-03:00', verAplic: 'nfse-api', serie: 1, nDps: 42, dCompet: '2026-12-20',
+  environment: 'P', dhEmi: '2026-12-20T10:15:30-03:00', verAplic: 'nfse-api', serie: 1, nDps: 42, dCompet: '2026-12-20',
   tpEmit: '1', cLocEmi: '4106902',
   prest: { cnpj: '12345678000195', regTrib: { opSimpNac: '3', regApTribSN: '1', regEspTrib: '0' } },
   toma: { cnpj: '98765432000198', xNome: 'Cliente' },
@@ -117,8 +119,8 @@ describe('montador do grupo IBS/CBS (D-IB2/D-IB62 — ordem e forma contra o XSD
 describe('calendário de leiaute (D-IB81)', () => {
   it('versão por documento × ambiente × INSTANTE; o DPS e o evento levam a versão do calendário', () => {
     for (const env of ['H', 'P'] as const) {
-      expect(layoutAt('DPS', env, new Date('2026-12-20T13:00:00Z'))).toBe('1.01')
-      expect(layoutAt('EVENT', env, new Date('2027-02-01T00:00:00Z'))).toBe('1.01')
+      expect(layoutAt('DPS', env, new Date('2026-12-20T13:00:00Z')).version).toBe('1.01')
+      expect(layoutAt('EVENT', env, new Date('2027-02-01T00:00:00Z')).version).toBe('1.01')
     }
     expect(buildDpsXml(base, DPS_ID)).toContain('versao="1.01"')
     expect(buildCancelEventXml({
