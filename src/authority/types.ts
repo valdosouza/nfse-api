@@ -88,8 +88,11 @@ export interface DpsValores {
 /**
  * TCRTCInfoIBSCBS — a DECLARAÇÃO que o ERP congelou no ramo (IB-2: `classification_code`, `place_indicator_code`). SÓ os dois códigos
  * ESCOLHIDOS: `finNFSe` (0 — D-IB17), `indDest` (0 — o próprio tomador) e o CST (prefixo do cClassTrib — E0959) são DERIVADOS pelo
- * montador, por construção (nunca entrada — maquete nº 3 do §3.1). Nunca `tpRetPisCofins` (D-IB19) nem `cCredPres`/`gTribRegular`/
- * `gDif` (§5 da fase). O grupo EXIGE a NBS (`serv.cServ.cNBS` — E0322): quem monta confere.
+ * montador, por construção (nunca entrada — maquete nº 3 do §3.1), na FORMA do leiaute que o calendário dá (D-IB110 — o `finNFSe` vai
+ * dentro do grupo no pacote de 09/02/2026 e no `infDPS` no de 20/10/2026, onde o grupo leva também o `gIBSCBS` vazio — D-IB112). Nunca
+ * `tpRetPisCofins` (D-IB19) nem `cCredPres`/`gTribRegular`/`gDif` (§5 da fase). O grupo EXIGE a NBS (`serv.cServ.cNBS` — E0322): quem
+ * monta confere. O par chega só com CST de `ind_gIBSCBS = 1`: pela D-IB113 o ERP recusa o indicador 0 antes de congelar (execução no
+ * setes-api em sessão própria; pela D-IB115 a D-IB98 — nenhum serviço classificado em P — só cai depois dela E da prova em H).
  */
 export interface DpsIbscbs {
   cIndOp:     string                          // 6 dígitos (Anexo VII)

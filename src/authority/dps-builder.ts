@@ -3,16 +3,19 @@ import {
   AuthorityEnvironment, CancelEventInput, DpsIbscbs, DpsInput, DpsTpInsc, NfseDeclaredIbscbs, NfseIbscbsValues, ParsedEvent, ParsedNfse,
   ParsedNfseIbscbs,
 } from './types'
-import { layoutAt } from './layout-calendar'
+import { layoutAt, unknownLayout, NfseLayout } from './layout-calendar'
 import { asNfseAccessKey } from './access-key'
 
 /**
  * Montagem do XML do DPS v1.01 e do pedido de registro de evento (cancelamento
- * e101101), FIEL ao XSD (Infra-IA/setes-api/integracoes/nfse-adn/xsd/Schemas/1.01):
- * ordem dos elementos = ordem do `xs:sequence`; opcional só entra se veio;
- * decimais com 2 casas e ponto; strings escapadas; sem espaço/quebra entre
- * tags (Manual 2022 §6.1 d: "não incluir caracteres de formatação").
- * Sem lib de XML: o leiaute é fixo e pequeno — um escapador basta.
+ * e101101), FIEL ao XSD do LEIAUTE vigente (D-IB110 — dois pacotes oficiais, ambos `versao="1.01"`:
+ * Infra-IA/setes-api/integracoes/nfse-adn/xsd/Schemas/1.01 = 09/02/2026 e
+ * …/producao-restrita-20261020/xsd = 20/10/2026): ordem dos elementos = ordem do `xs:sequence`;
+ * opcional só entra se veio; decimais com 2 casas e ponto; strings escapadas; sem espaço/quebra
+ * entre tags (Manual 2022 §6.1 d: "não incluir caracteres de formatação").
+ * Sem lib de XML: o leiaute é fixo e pequeno — um escapador basta. UM montador: os pacotes diferem em
+ * TRÊS costuras (`finNFSe` no `infDPS`, ordem do `cServ`, forma do grupo IBS/CBS), cada uma um `switch`
+ * exaustivo sobre o leiaute do calendário — nunca sobre o ambiente nem sobre a versão.
  */
 
 export const NFSE_NS      = 'http://www.sped.fazenda.gov.br/nfse'
@@ -88,6 +91,20 @@ function text(s: string, multiline = false): string {
   const cleaned = multiline ? t.replace(/[^\S\n]+\n/g, '\n') : t.replace(/[\n\t]+/g, ' ')
   return cleaned.trim()
 }
+/** O texto como ele IRÁ ao DPS (o mesmo saneamento do montador) — quem decide antes (a fonte de fatos) confere por ESTA função: o que valida
+ *  é o que grava (ADV-NT009-01). */
+export const dpsText = text
+
+/**
+ * Texto OBRIGATÓRIO no esquema (ADV-NT009-01 — gate adversarial do leiaute, 2026-11-01): o saneamento TSString pode esvaziar um texto que
+ * não era vazio ("🚀", cirílico, U+200B, "™") e o `el()` o OMITIRIA — o DPS iria ao fisco fora do esquema (R E1235; em P, o alarme
+ * `[D-IB111]` acusaria uma troca de leiaute que não houve). Cinto: a fonte de fatos recusa/substitui antes; aqui é erro de programação.
+ */
+function requiredText(value: string, label: string, max: number | null, multiline = false): string {
+  const t = max === null ? text(value, multiline) : cut(text(value, multiline), max)
+  if (!t) throw new Error(`${label} obrigatório ficou vazio depois do saneamento TSString — a fonte de fatos deveria ter recusado ou substituído`)
+  return t
+}
 
 function digits(s: string | number, label: string, len?: number): string {
   const d = String(s ?? '').replace(/\D/g, '')
@@ -159,7 +176,8 @@ function prestXml(p: DpsInput['prest']): string {
 function tomaXml(t: NonNullable<DpsInput['toma']>): string {
   if (!!t.cnpj === !!t.cpf) throw new Error('Tomador exige CNPJ ou CPF (exatamente um)')
   let inner = t.cnpj ? el('CNPJ', digits(t.cnpj, 'CNPJ do tomador', 14)) : el('CPF', digits(t.cpf!, 'CPF do tomador', 11))
-  inner += el('IM', t.im ? text(t.im) : null) + el('xNome', text(t.xNome))
+  // xNome: obrigatório no TCInfoPessoa do pacote de 09/02; opcional pelo esquema no de 20/10, mas a E0233 o exige com CNPJ/CPF (sempre aqui)
+  inner += el('IM', t.im ? text(t.im) : null) + el('xNome', requiredText(t.xNome, 'xNome do tomador', null))
   if (t.end) {
     inner += grp('end',
       grp('endNac', el('cMun', digits(t.end.cMun, 'cMun do tomador', 7)) + el('CEP', digits(t.end.cep, 'CEP do tomador', 8))) +
@@ -169,13 +187,21 @@ function tomaXml(t: NonNullable<DpsInput['toma']>): string {
   return grp('toma', inner)
 }
 
-function servXml(s: DpsInput['serv']): string {
+/** Costura 2 (D-IB110): `TCCServ` — no pacote de 20/10/2026 o `xDescServ` passou para DEPOIS de `cNBS`/`cIntContrib`. */
+function cServXml(c: DpsInput['serv']['cServ'], layout: NfseLayout): string {
+  const trib = el('cTribNac', digits(c.cTribNac, 'cTribNac', 6)) + el('cTribMun', c.cTribMun ? digits(c.cTribMun, 'cTribMun', 3) : null)
+  const desc = el('xDescServ', requiredText(c.xDescServ, 'xDescServ', 2000, true))
+  const nbs = el('cNBS', c.cNBS ? exactDigits(c.cNBS, 'cNBS', 9) : null)
+  switch (layout) {
+    case 'xsd-20260209': return grp('cServ', trib + desc + nbs)
+    case 'xsd-20261020': return grp('cServ', trib + nbs + desc)
+    default: return unknownLayout(layout)
+  }
+}
+
+function servXml(s: DpsInput['serv'], layout: NfseLayout): string {
   let inner = grp('locPrest', el('cLocPrestacao', digits(s.locPrest.cLocPrestacao, 'cLocPrestacao', 7)))
-  inner += grp('cServ',
-    el('cTribNac', digits(s.cServ.cTribNac, 'cTribNac', 6)) +
-    el('cTribMun', s.cServ.cTribMun ? digits(s.cServ.cTribMun, 'cTribMun', 3) : null) +
-    el('xDescServ', cut(text(s.cServ.xDescServ, true), 2000)) +
-    el('cNBS', s.cServ.cNBS ? exactDigits(s.cServ.cNBS, 'cNBS', 9) : null))
+  inner += cServXml(s.cServ, layout)
   if (s.infoCompl && (s.infoCompl.docRef || s.infoCompl.xPed || s.infoCompl.xInfComp)) {
     inner += grp('infoCompl',
       el('docRef', s.infoCompl.docRef ? cut(text(s.infoCompl.docRef), 255) : null) +
@@ -202,10 +228,18 @@ function valoresXml(v: DpsInput['valores']): string {
 }
 
 /**
- * TCRTCInfoIBSCBS (IB-3 — D-IB2/D-IB62): o grupo IBS/CBS DECLARADO, ÚLTIMO filho de `infDPS`, na ordem do XSD (`finNFSe`, `indFinal`?,
- * `cIndOp`, `tpOper`?, `gRefNFSe`?, `tpEnteGov`?, `indDest`, `dest`?, `imovel`?, `valores`). Derivados por construção: `finNFSe` = 0 (NFS-e
- * regular — D-IB17), `indDest` = 0 (o destinatário é o próprio tomador; quando o ERP tiver o conceito, vira fato da NOTA) e `CST` = os 3
- * primeiros dígitos do cClassTrib (E0959). Opcionais fora do 1º release (§5 da fase) nunca saem.
+ * TCRTCInfoIBSCBS (IB-3 — D-IB2/D-IB62): o grupo IBS/CBS DECLARADO, ÚLTIMO filho de `infDPS`, na ordem do XSD do leiaute (costura 3 —
+ * D-IB110). Pacote de 09/02/2026: `finNFSe`, `indFinal`?, `cIndOp`, `tpOper`?, `gRefNFSe`?, `tpEnteGov`?, `indDest`, `dest`?, `imovel`?,
+ * `valores/trib/gIBSCBS{CST, cClassTrib, …}`. Pacote de 20/10/2026: o `finNFSe` sai do grupo (vai para o `infDPS`), `cIndOp` vira opcional
+ * pelo esquema e `valores/trib{CST, cClassTrib, gIBSCBS?{…só opcionais}}`. Derivados por construção: `finNFSe` = 0 (NFS-e regular —
+ * D-IB17), `indDest` = 0 (o destinatário é o próprio tomador; quando o ERP tiver o conceito, vira fato da NOTA) e `CST` = os 3 primeiros
+ * dígitos do cClassTrib (E0959). Opcionais fora do 1º release (§5 da fase) nunca saem.
+ * No pacote de 20/10/2026 o grupo declarado SEMPRE leva `cIndOp` e o `gIBSCBS` VAZIO: as regras E0859/E0860 e E0960/E0961 os exigem com
+ * `ind_gIBSCBS = 1` e os proíbem com 0 — e pela D-IB113 o ERP recusa CST com indicador 0 antes de congelar (execução no setes-api em sessão
+ * própria; pela D-IB115 a D-IB98 — nada classificado em P — só cai depois dela E da prova em H), então grupo declarado ⇒ indicador 1, por construção (a nfse-api nunca
+ * consulta o indicador — D-IB41). Vazio porque os filhos (`cCredPres`, `gTribRegular`, `gDif`) são
+ * opcionais e nenhum cabe no 1º release (D-IB112 — a prova da 8014 em H confirma; se o fisco recusar o vazio, omitir no mesmo leiaute).
+ * Escrito `<gIBSCBS></gIBSCBS>` (a forma canônica — a assinatura canonicaliza de qualquer jeito).
  */
 /** Cinto ESTRITO (gate adversarial da IB-3, LOW): o código do grupo é CONFERIDO, nunca normalizado — `digits()` descartava o que não é
  *  dígito ("000-001" saía 000001). A fonte de fatos já recusa com 422; aqui é erro de programação de outro chamador. */
@@ -214,13 +248,27 @@ function exactDigits(s: string, label: string, len: number): string {
   return s
 }
 
-function ibscbsXml(g: DpsIbscbs): string {
+function ibscbsXml(g: DpsIbscbs, layout: NfseLayout): string {
   const cClassTrib = exactDigits(g.cClassTrib, 'cClassTrib', 6)
-  return grp('IBSCBS',
-    el('finNFSe', '0') +
-    el('cIndOp', exactDigits(g.cIndOp, 'cIndOp', 6)) +
-    el('indDest', '0') +
-    grp('valores', grp('trib', grp('gIBSCBS', el('CST', cClassTrib.slice(0, 3)) + el('cClassTrib', cClassTrib)))))
+  const cIndOp = el('cIndOp', exactDigits(g.cIndOp, 'cIndOp', 6))
+  const classification = el('CST', cClassTrib.slice(0, 3)) + el('cClassTrib', cClassTrib)
+  switch (layout) {
+    case 'xsd-20260209':
+      return grp('IBSCBS', el('finNFSe', '0') + cIndOp + el('indDest', '0') + grp('valores', grp('trib', grp('gIBSCBS', classification))))
+    case 'xsd-20261020':
+      return grp('IBSCBS', cIndOp + el('indDest', '0') + grp('valores', grp('trib', classification + grp('gIBSCBS', ''))))
+    default: return unknownLayout(layout)
+  }
+}
+
+/** Costura 1 (D-IB110): `TCInfDPS` — no pacote de 20/10/2026 o `finNFSe` é OBRIGATÓRIO em TODO DPS (com ou sem o grupo IBS/CBS), entre
+ *  `cMotivoEmisTI` e `chNFSeRej` (o Anexo I PRODREST imprime o caminho dele dentro do `IBSCBS` — vale o XSD). Só "0" (NFS-e regular — D-IB17). */
+function infDpsFinNFSe(layout: NfseLayout): string {
+  switch (layout) {
+    case 'xsd-20260209': return ''                       // neste pacote o finNFSe só existe DENTRO do grupo IBSCBS
+    case 'xsd-20261020': return el('finNFSe', '0')
+    default: return unknownLayout(layout)
+  }
 }
 
 /**
@@ -235,23 +283,25 @@ export function buildDpsXml(input: DpsInput, id: string): string {
   // E0322: o grupo IBS/CBS EXIGE a NBS — a fonte de fatos confere antes (422); aqui é cinto (erro de programação)
   if (input.ibscbs && !input.serv.cServ.cNBS) throw new Error('Grupo IBS/CBS sem cNBS (E0322) — a fonte de fatos deveria ter recusado')
   const dhEmi = formatDateTimeTz(input.dhEmi)
+  // o leiaute pelo INSTANTE do dhEmi e pelo ambiente da tentativa (D-IB81/D-IB110) — antes de montar: a forma depende dele
+  const { layout, version } = layoutAt('DPS', input.environment, new Date(dhEmi))
   const inf =
     el('tpAmb', tpAmbOf(input.environment)) +
     el('dhEmi', dhEmi) +
     el('verAplic', cut(text(input.verAplic), 20)) +
-    // [INCERTO] série SEM zero à esquerda no elemento (o Id leva 5 posições); TSSerieDPS aceita ambos
+    // [INCERTO] série SEM zero à esquerda no elemento (o Id leva 5 posições); TSSerieDPS aceita ambos (nos dois pacotes)
     el('serie', String(serie)) +
     el('nDPS', String(nDps)) +
     el('dCompet', /^\d{4}-\d{2}-\d{2}$/.test(input.dCompet) ? input.dCompet : (() => { throw new Error(`dCompet inválida: ${input.dCompet}`) })()) +
     el('tpEmit', input.tpEmit) +
+    infDpsFinNFSe(layout) +
     el('cLocEmi', digits(input.cLocEmi, 'cLocEmi', 7)) +
     prestXml(input.prest) +
     (input.toma ? tomaXml(input.toma) : '') +
-    servXml(input.serv) +
+    servXml(input.serv, layout) +
     valoresXml(input.valores) +
-    (input.ibscbs ? ibscbsXml(input.ibscbs) : '')
-  const versao = layoutAt('DPS', input.environment, new Date(dhEmi))
-  return XML_DECLARATION + grp('DPS', grp('infDPS', inf, ` Id="${id}"`), ` xmlns="${NFSE_NS}" versao="${versao}"`)
+    (input.ibscbs ? ibscbsXml(input.ibscbs, layout) : '')
+  return XML_DECLARATION + grp('DPS', grp('infDPS', inf, ` Id="${id}"`), ` xmlns="${NFSE_NS}" versao="${version}"`)
 }
 
 // ---------------------------------------------------------------------------
@@ -292,8 +342,19 @@ export function buildCancelEventXml(input: CancelEventInput): string {
     (input.cnpjAutor ? el('CNPJAutor', digits(input.cnpjAutor, 'CNPJ do autor', 14)) : el('CPFAutor', digits(input.cpfAutor!, 'CPF do autor', 11))) +
     el('chNFSe', chave) +
     grp(`e${EVENT_CANCEL}`, el('xDesc', 'Cancelamento de NFS-e') + el('cMotivo', input.cMotivo) + el('xMotivo', motive))
-  const versao = layoutAt('EVENT', input.environment, new Date(dhEvento))
-  return XML_DECLARATION + grp('pedRegEvento', grp('infPedReg', inf, ` Id="${buildEventId(chave, EVENT_CANCEL)}"`), ` xmlns="${NFSE_NS}" versao="${versao}"`)
+  const { layout, version } = layoutAt('EVENT', input.environment, new Date(dhEvento))
+  assertCancelEventForm(layout)
+  return XML_DECLARATION + grp('pedRegEvento', grp('infPedReg', inf, ` Id="${buildEventId(chave, EVENT_CANCEL)}"`), ` xmlns="${NFSE_NS}" versao="${version}"`)
+}
+
+/** O pedido de cancelamento é IDÊNTICO nos dois pacotes (D-IB110 — `tiposEventos`/`pedRegEvento` iguais byte a byte); o `switch` exaustivo
+ *  obriga a decidir a forma do evento quando um pacote novo entrar na união. */
+function assertCancelEventForm(layout: NfseLayout): void {
+  switch (layout) {
+    case 'xsd-20260209':
+    case 'xsd-20261020': return
+    default: unknownLayout(layout)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -419,6 +480,9 @@ export function parseNfseIbscbs(xml: string | XmlNode): ParsedNfseIbscbs {
 /**
  * A declaração IBS/CBS que FOI ENVIADA (IB-3 — tela "No fisco" e DANFSe): lida por CAMINHO do DPS embutido na NFS-e autorizada
  * (`infNFSe/DPS/infDPS/IBSCBS` + `serv/cServ/cNBS`). null = o DPS não levou o grupo; texto fora da forma = null (só exibição).
+ * D-IB110: o XML autorizado dos DOIS leiautes convive para sempre — lê-se pela FORMA do documento, nunca pelo calendário (a versão é
+ * a mesma): `valores/trib/gIBSCBS/{CST, cClassTrib}` (pacote de 09/02/2026) × `valores/trib/{CST, cClassTrib}` (pacote de 20/10/2026). As
+ * duas formas são excludentes pelo XSD — documento com as duas (forma mista) não é legível (null).
  */
 export function parseNfseDeclaration(xml: string | XmlNode): NfseDeclaredIbscbs | null {
   const doc = typeof xml === 'string' ? parseXml(xml) : xml
@@ -427,8 +491,12 @@ export function parseNfseDeclaration(xml: string | XmlNode): NfseDeclaredIbscbs 
   const group = infDps ? childOf(infDps, 'IBSCBS') : null
   if (!group) return null
   const txt = (...p: string[]) => { const e = pathOf(group, ...p); return e ? textOf(e) : '' }
-  const cst = txt('valores', 'trib', 'gIBSCBS', 'CST')
-  const classificationCode = txt('valores', 'trib', 'gIBSCBS', 'cClassTrib')
+  const direct = pathOf(group, 'valores', 'trib', 'CST') !== null || pathOf(group, 'valores', 'trib', 'cClassTrib') !== null
+  const nested = pathOf(group, 'valores', 'trib', 'gIBSCBS', 'CST') !== null || pathOf(group, 'valores', 'trib', 'gIBSCBS', 'cClassTrib') !== null
+  if (direct && nested) return null
+  const holder = direct ? ['valores', 'trib'] : ['valores', 'trib', 'gIBSCBS']
+  const cst = txt(...holder, 'CST')
+  const classificationCode = txt(...holder, 'cClassTrib')
   const placeIndicatorCode = txt('cIndOp')
   if (!/^\d{3}$/.test(cst) || !/^\d{6}$/.test(classificationCode) || !/^\d{6}$/.test(placeIndicatorCode)) return null
   const nbsEl = pathOf(infDps!, 'serv', 'cServ', 'cNBS')

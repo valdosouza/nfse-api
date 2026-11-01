@@ -236,6 +236,23 @@ export function firstAuthorityCode(err: AuthorityHttpError): string | null {
   return m ? m[1] : (err.authorityStatus ? String(err.authorityStatus) : null)
 }
 
+/**
+ * D-IB111 (Valdo 2026-11-01): E1235 ("Falha no esquema XML do DF-e") em PRODUÇÃO = o fisco recusou o documento PELO ESQUEMA — pode ser P
+ * tendo adotado um pacote XSD que o calendário (`authority/layout-calendar.ts`) ainda não tem, OU um dado fora do esquema (ex.: campo do
+ * cadastro além do tamanho do XSD). A saída é o ALARME (rótulo fixo, sem o corpo da resposta — D-F100) e um OPERADOR que confere a mensagem
+ * do validador gravada na voz R da tentativa (elemento esperado × recebido) e a página oficial de produção antes de publicar a linha nova por
+ * deploy; a voz segue R (a nota é retransmissível). CONHECIMENTO NEGATIVO: nunca remontar no outro leiaute e retransmitir sozinho ao ver o
+ * E1235 — o calendário passaria a ser decidido pela voz do fisco (um E1235 por dado trocaria o leiaute e derrubaria toda emissão em P).
+ * Em H o E1235 é o fisco de teste mudando antes: fica só a voz R. Vale para o DPS e para o pedido de EVENTO (a linha do evento também muda
+ * por deploy — gate socrático, Q-c).
+ */
+export const LAYOUT_REJECTED_ALARM = '[D-IB111] E1235 em PRODUÇÃO no DPS — o fisco recusou pelo ESQUEMA: conferir a mensagem do validador na voz R da tentativa e a página oficial de produção × o calendário de leiaute antes de publicar linha nova (pode ser dado fora do esquema)'
+export const EVENT_LAYOUT_REJECTED_ALARM = '[D-IB111] E1235 em PRODUÇÃO no pedido de EVENTO — o fisco recusou pelo ESQUEMA: conferir a mensagem do validador e a página oficial de produção × a linha EVENT do calendário de leiaute antes de publicar linha nova'
+export function isLayoutRejectedInProduction(environment: AuthorityEnvironment, err: AuthorityHttpError): boolean {
+  if (environment !== 'P') return false
+  return (err.fields ?? []).some(f => /\bE1235\b/.test(f.message)) || /\bE1235\b/.test(err.body ?? '')
+}
+
 export function authorityMessage(err: AuthorityHttpError): string {
   const parts = (err.fields ?? []).map(f => f.message).filter(Boolean)
   return (parts.length ? parts.join(' — ') : err.message).slice(0, 255)
@@ -380,6 +397,10 @@ export async function transmitServiceInvoice(deps: NfseDeps, actor: Actor, ref: 
     // (g') AMBÍGUO: o fisco PODE ter gerado a NFS-e — a reserva fica EM VOO; a consulta por dps_id reconcilia
     if (cls === 'ambiguous') throw err
     const aerr = err as AuthorityHttpError
+    // D-IB111: o alarme ANTES da gravação da voz (gate socrático, L6 — se a transação da voz R falhar, o sinal não some)
+    if (isLayoutRejectedInProduction(environment, aerr)) {
+      logger.error(LAYOUT_REJECTED_ALARM, { institutionId, invoiceId, attempt: reserved.attempt, environment })
+    }
     await withInvoiceTx(deps, 'voz do fisco (recusa)', actor, ref, async itx => {
       await insertTransmissionEvent(itx, reserved.attempt, userId, {
         kind: OUTCOME_KIND[cls], source: 'P', authorityCode: firstAuthorityCode(aerr), message: authorityMessage(aerr),
@@ -890,6 +911,10 @@ export async function cancelServiceInvoiceAtAuthority(deps: NfseDeps, actor: Act
     switch (cls) {
       case 'rejected': {
         const aerr = err as AuthorityHttpError
+        // D-IB111 (gate socrático, Q-c): a linha EVENT do calendário também muda por deploy — o mesmo alarme, rótulo próprio, antes da gravação
+        if (isLayoutRejectedInProduction(tx.environment, aerr)) {
+          logger.error(EVENT_LAYOUT_REJECTED_ALARM, { institutionId, invoiceId, attempt: tx.attempt, environment: tx.environment })
+        }
         await release(`Fisco recusou o cancelamento: ${authorityMessage(aerr)}`)
         throw new HttpError(409, `Fisco recusou o cancelamento: ${authorityMessage(aerr)}`, aerr.fields, ErrorCodes.FISCAL_CANCEL_REFUSED)
       }

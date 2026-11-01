@@ -143,7 +143,7 @@ describe('(f) calendário de leiaute', () => {
   it('a constante não se altera em execução (push/escrita numa linha lançam)', () => {
     expect(() => (LAYOUT_CALENDAR as any).push({ document: 'DPS', environment: 'P', validFrom: '2026-01-01T00:00:00Z', version: '9.99' })).toThrow()
     expect(() => { (LAYOUT_CALENDAR[1] as any).version = '9.99' }).toThrow()
-    expect(layoutAt('DPS', 'P', new Date())).toBe('1.01')
+    expect(layoutAt('DPS', 'P', new Date())).toEqual({ layout: 'xsd-20260209', version: '1.01' })
   })
   it('nada liga o grupo por DATA nem por variável: presença do grupo = presença da declaração, em qualquer instante/ambiente', () => {
     process.env.IBSCBS_ENABLED = '0'; process.env.NFSE_IBSCBS = 'off'
