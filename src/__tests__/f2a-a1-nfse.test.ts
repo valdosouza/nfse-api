@@ -8,15 +8,23 @@
 // Puro: sem banco (driver simulado), sem fisco.
 import fs from 'fs'
 import path from 'path'
-import { SERVICE_VOICE_WRITE_KINDS, SERVICE_VOICE_FAMILY, assertServiceVoiceDomainsEnforced } from '../nfse/voice-family'
+import {
+  SERVICE_VOICE_WRITE_KINDS, SERVICE_VOICE_FAMILY, assertServiceVoiceDomainsEnforced, assertServiceStrictSession, SERVICE_KEY_LENGTH_PROBE_KEY,
+} from '../nfse/voice-family'
 
 const SRC = path.resolve(__dirname, '..')
 const read = (rel: string) => fs.readFileSync(path.join(SRC, rel), 'utf8')
 const checkErr = (name: string) => Object.assign(new Error(`CONSTRAINT \`${name}\` failed for \`fiscal_api\`.\`t\``), { errno: 4025 })
 /** A constraint que recusa cada sonda (pelo valor e pela tabela do INSERT) — o motor simulado com os CHECKs da 005. */
-function engine(opts: { kindCi?: boolean; noChecks?: boolean; codePadSpace?: boolean } = {}) {
+function engine(opts: { kindCi?: boolean; noChecks?: boolean; codePadSpace?: boolean; strict?: boolean } = {}) {
   return async (sql: string, p?: unknown[]): Promise<any> => {
     if (!/^INSERT/.test(sql)) return [{}]
+    if (/^INSERT INTO tb_invoice_service_transmission \(.*access_key/.test(sql)) {
+      // D-NE172: a sessão ESTRITA (padrão) recusa a chave maior que o VARCHAR(50) — 1406; sem ela o motor CORTA calado e aceita
+      const key = String((p as unknown[])[0])
+      if (key.length > 50 && opts.strict !== false) throw Object.assign(new Error("Data too long for column 'access_key' at row 1"), { errno: 1406, code: 'ER_DATA_TOO_LONG' })
+      return [{ affectedRows: 1 }]
+    }
     if (opts.noChecks) return [{ affectedRows: 1 }]
     if (sql.includes(SERVICE_VOICE_FAMILY.eventTable) && sql.includes('authority_code')) {
       // F2A3-ADV-02: o CHECK do código da voz C (006 — exato) × o da 002 (colação _ci, PAD SPACE: '105102 ' passava)
@@ -86,8 +94,27 @@ describe('a sonda do boot (D-F107/D-F120)', () => {
     const at = (s: string) => server.indexOf(s)
     expect(at('await runMigrations(')).toBeGreaterThan(0)
     for (const call of ['await assertIssuerModelDomainEnforced(ctx.pool)', 'await assertIssuerEnvironmentDomainEnforced(ctx.pool)',
-      'await assertServiceVoiceDomainsEnforced(ctx.pool)', 'await assertFamilyViewsReadable(ctx.pool, ctx.fiscalDb)']) {
+      'await assertServiceVoiceDomainsEnforced(ctx.pool)', 'await assertServiceStrictSession(ctx.pool)',
+      'await assertFamilyViewsReadable(ctx.pool, ctx.fiscalDb)']) {
       expect([call, at(call) > at('await runMigrations(')]).toEqual([call, true])
     }
+    // D-NE172: a prova da sessão estrita vem DEPOIS da conferência dos invariantes (que já exige o modo) e antes de ouvir
+    expect(at('await assertServiceStrictSession(ctx.pool)')).toBeGreaterThan(at('await assertSessionInvariants(ctx.pool)'))
+    expect(at('await assertServiceStrictSession(ctx.pool)')).toBeLessThan(at('.listen('))
+  })
+})
+
+describe('D-NE172 — a sonda do boot prova a sessão ESTRITA na chave de acesso da NFS-e', () => {
+  it('a sonda tem 51 posições (a coluna é VARCHAR(50), a chave do fisco tem 50) e grava sem a FK, numa transação desfeita', async () => {
+    expect(SERVICE_KEY_LENGTH_PROBE_KEY).toHaveLength(51)
+    const { conn, pool } = poolWith(engine())
+    await expect(assertServiceStrictSession(pool)).resolves.toBeUndefined()
+    const sqls = conn.query.mock.calls.map(c => c[0] as string)
+    expect(sqls).toContain('SET SESSION foreign_key_checks = 0')
+    expect([conn.rollback.mock.calls.length, conn.release.mock.calls.length, conn.destroy.mock.calls.length]).toEqual([1, 1, 0])
+  })
+  it('motor SEM a sessão estrita (corta nas 50 e aceita): o boot FALHA ALTO', async () => {
+    await expect(assertServiceStrictSession(poolWith(engine({ strict: false })).pool))
+      .rejects.toThrow(/ACEITOU a chave de acesso da tentativa da NFS-e maior que a coluna \(tb_invoice_service_transmission\.access_key com 51 posições\) — a sessão NÃO é estrita/)
   })
 })

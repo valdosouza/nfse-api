@@ -1,4 +1,4 @@
-import { TransmissionEventKind, VoiceEventInput, defineVoiceFamily, SERVICE_VOICE_READING, assertCheckRefuses } from 'fiscal-api'
+import { TransmissionEventKind, VoiceEventInput, defineVoiceFamily, SERVICE_VOICE_READING, assertCheckRefuses, assertLengthRefused } from 'fiscal-api'
 
 /**
  * A FAMÍLIA de SERVIÇO (NFS-e) declara a escrita da voz dela (D-F108 = Q-F114 (a); parte 2 da NE-1a — `prompt_onda_nfe_sefaz.md` §12.8/§12.9.7):
@@ -48,4 +48,21 @@ export async function assertServiceVoiceDomainsEnforced(pool: Parameters<typeof 
     sql: `INSERT INTO ${SERVICE_VOICE_FAMILY.eventTable} (tb_institution_id, tb_invoice_id, terminal, attempt, event, kind, authority_code, source, deleted)`
       + ` VALUES (0, 0, 0, 0, ?, 'C', ?, 'Q', 'N')` })
   await assertCheckRefuses(pool, 'o código do cancelamento na voz C da NFS-e', [code(5, '105102 '), code(6, '1051020')], { withoutForeignKeys: true })
+}
+
+/**
+ * D-NE172 (Valdo 2026-10-31): a sessão do pool do núcleo é ESTRITA, e o boot desta API o PROVA na chave de acesso da NFS-e — a coluna
+ * `VARCHAR(50)` da tentativa (a chave do fisco tem 50 posições; sem CHECK de forma). A sonda grava 51: sem o modo estrito o MariaDB a CORTA
+ * calado nas 50 e aceita (a mesma classe do achado da NE-2 na chave de 44); com ele, 1406. Transação SEMPRE desfeita, sem a FK, PK própria.
+ */
+export const SERVICE_KEY_LENGTH_PROBE_KEY = '4'.repeat(51)
+
+export async function assertServiceStrictSession(pool: Parameters<typeof assertLengthRefused>[0]): Promise<void> {
+  await assertLengthRefused(pool, 'a chave de acesso da tentativa da NFS-e', [{
+    value:  SERVICE_KEY_LENGTH_PROBE_KEY,
+    column: 'tb_invoice_service_transmission.access_key',
+    params: [SERVICE_KEY_LENGTH_PROBE_KEY],
+    sql:    'INSERT INTO tb_invoice_service_transmission (tb_institution_id, tb_invoice_id, terminal, attempt, life_event, environment, access_key, deleted)'
+      + ` VALUES (0, 0, 0, 7, 1, 'H', ?, 'N')`,
+  }], { withoutForeignKeys: true })
 }

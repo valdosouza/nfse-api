@@ -6,7 +6,7 @@ import {
 import { contextFromEnv } from './context'
 import { createApp } from './app'
 import { MIGRATION_SETS } from './migrations'
-import { assertServiceVoiceDomainsEnforced } from './nfse/voice-family'
+import { assertServiceVoiceDomainsEnforced, assertServiceStrictSession } from './nfse/voice-family'
 import { assertCorsOrigins } from './cors-origins'
 
 async function main(): Promise<void> {
@@ -19,6 +19,7 @@ async function main(): Promise<void> {
   await assertIssuerModelDomainEnforced(ctx.pool)          // D-F45/D-NE84: CHECK BINÁRIO do domínio do modelo (migrations 004/005 do núcleo)
   await assertIssuerEnvironmentDomainEnforced(ctx.pool)    // D-F120: CHECK BINÁRIO do ambiente da habilitação (migration 005 do núcleo)
   await assertServiceVoiceDomainsEnforced(ctx.pool)        // D-F107/D-F120: kind (lista da família), source e ambiente da tentativa (005 desta API)
+  await assertServiceStrictSession(ctx.pool)               // D-NE172: a sessão é ESTRITA — a chave de 51 posições é RECUSADA (1406), nunca cortada calada
   await assertFamilyViewsReadable(ctx.pool, ctx.fiscalDb)  // D-F113: as views de cada família do catálogo respondem ao SELECT publicado
   // costura A1 (D-AU3/D-AU12): a sessão viva lida em TODA rota — sem a vw_user_link (script sql/70) ou sem o GRANT nela, o serviço NÃO sobe
   logger.info(`Sessão viva (setes_central.vw_user_link): ${await access.assertSessionViewReadable(ctx.pool)}`)
