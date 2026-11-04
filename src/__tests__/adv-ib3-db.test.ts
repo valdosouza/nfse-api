@@ -10,6 +10,7 @@ import { createFiscalPool, runMigrations, splitStatements, withInvoiceTx, invoic
 import { MIGRATION_SETS, NFSE_MIGRATIONS_DIR } from '../migrations'
 import { fillAuthorityIbscbs, getIbscbsValues, fillAuthorityData, insertTransmissionEvent } from '../nfse/repository'
 import { recordIbscbsValues } from '../nfse/ibscbs-values'
+import { assertServiceStrictSession } from '../nfse/voice-family'
 
 const LIVE = process.env.NFSE_ADV_IB3_DB === '1'
 const d = LIVE ? describe : describe.skip
@@ -85,19 +86,51 @@ d('migration 007 + escritor dos valores IBS/CBS no banco descartável', () => {
        VALUES (?, 9001, 0, 77, '1', '0', '0')`, [INST])).rejects.toThrow(/foreign key/i)
   })
 
-  it('(d4) servidor SEM modo estrito: 16 inteiros direto no banco é CORTADO em silêncio para 999999999999999.99 — o TSDec15V2 do leitor é a única guarda (e ela segura)', async () => {
+  // D-NE172 (Valdo 2026-10-31): a sessão do pool do núcleo é ESTRITA — o que antes o servidor do dev CORTAVA calado agora é RECUSADO.
+  const BIG_INSERT = `INSERT INTO tb_invoice_service_transmission_ibscbs (tb_institution_id, tb_invoice_id, terminal, attempt, total_invoice_value, ibs_total_value, cbs_value)
+         VALUES (?, 9001, 0, 1, '1000000000000000.00', '0', '0')`
+  /** Uma conexão SEPARADA (fora do pool) com o modo do servidor SEM o estrito — o que qualquer escrita por fora do núcleo teria. */
+  async function looseConnection() {
+    const mysql = require(path.join(__dirname, '..', '..', '..', 'fiscal-api', 'node_modules', 'mysql2', 'promise'))
+    const c = cfg()
+    const conn = await mysql.createConnection({ host: c.host, port: c.port, user: c.user, password: c.password, database: DB, timezone: 'Z' })
+    await conn.query(`SET SESSION sql_mode = TRIM(BOTH ',' FROM REPLACE(CONCAT(',', @@SESSION.sql_mode, ','), ',STRICT_ALL_TABLES,', ','))`)
+    const [[m]] = await conn.query('SELECT @@SESSION.sql_mode AS m')
+    expect(String(m.m)).not.toMatch(/STRICT_ALL_TABLES/)
+    return conn
+  }
+  it('(d4) D-NE172: pela sessão do pool (ESTRITA) 16 inteiros direto no banco são RECUSADOS (1264) — antes, o servidor do dev os CORTAVA calado', async () => {
     const conn = await pool.getConnection()
     try {
       await conn.query('START TRANSACTION')
-      await conn.query(
-        `INSERT INTO tb_invoice_service_transmission_ibscbs (tb_institution_id, tb_invoice_id, terminal, attempt, total_invoice_value, ibs_total_value, cbs_value)
-         VALUES (?, 9001, 0, 1, '1000000000000000.00', '0', '0')`, [INST])
+      await expect(conn.query(BIG_INSERT, [INST])).rejects.toMatchObject({ errno: 1264 })
+    } finally {
+      await conn.query('ROLLBACK'); conn.release()
+    }
+  })
+  it('(d4b) CONHECIMENTO NEGATIVO: numa sessão SEM o modo estrito (escrita por fora do pool) os 16 inteiros ainda são CORTADOS para 999999999999999.99 — o TSDec15V2 do leitor segue sendo a guarda de quem escreve por fora', async () => {
+    const conn = await looseConnection()
+    try {
+      await conn.query('START TRANSACTION')
+      await conn.query(BIG_INSERT, [INST])
       const [w] = await conn.query('SHOW WARNINGS')
       const [r] = await conn.query(`SELECT CAST(total_invoice_value AS CHAR) t FROM tb_invoice_service_transmission_ibscbs WHERE tb_invoice_id = 9001`)
       expect((r as any)[0].t).toBe('999999999999999.99')
       expect(JSON.stringify(w)).toMatch(/Out of range/i)
     } finally {
-      await conn.query('ROLLBACK'); conn.release()
+      await conn.query('ROLLBACK'); await conn.end()
+    }
+  })
+  it('(d4c) D-NE172 no motor REAL: a sonda do boot da NFS-e passa pelo pool estrito e FALHA ALTO numa sessão sem o modo (a chave de 51 seria cortada nas 50)', async () => {
+    await expect(assertServiceStrictSession(pool)).resolves.toBeUndefined()
+    const conn = await looseConnection()
+    const loosePool = { getConnection: async () => Object.assign(conn, { release: () => undefined }) } as any
+    try {
+      await expect(assertServiceStrictSession(loosePool)).rejects.toThrow(/ACEITOU a chave de acesso da tentativa da NFS-e maior que a coluna .* a sessão NÃO é estrita/)
+      const [[left]] = await conn.query(`SELECT COUNT(*) AS n FROM tb_invoice_service_transmission WHERE CHAR_LENGTH(access_key) >= 50 AND attempt = 7`)
+      expect(Number(left.n)).toBe(0)                                                    // a sonda foi DESFEITA
+    } finally {
+      await conn.end()
     }
   })
 
