@@ -5,7 +5,10 @@
 Antes de qualquer tarefa neste projeto, consulte `D:\Gestao2027\Infra-IA\INDICE_CENTRAL.md` e
 **`Infra-IA/nfse-api/INDEX.md`** (START HERE). Decisões vigentes: D-F1…D-F108 em
 `Infra-IA/prompts/prompt_apis_fiscais_isoladas.md` §7; plano no §12, modelo no §14, execução da F1 no **§15**. O núcleo comum vive
-em `D:\Gestao2027\fiscal-api` (biblioteca — `Infra-IA/fiscal-api/INDEX.md`).
+em `D:\Gestao2027\fiscal-api` (biblioteca — `Infra-IA/fiscal-api/INDEX.md`) e entra AQUI só pelo **pacote versionado**
+`vendor/fiscal-api-X.Y.Z.tgz` (D-F221…D-F225, 2026-11-05 — §23 do prompt): sem `paths`/`moduleNameMapper` para a pasta irmã; suíte, `dev` e
+build usam o pacote; a produção roda `npm run build` + `npm start` (`node dist`). Mexeu no núcleo? Gere o pacote (no núcleo:
+`node scripts/pack-release.mjs vX.Y.Z <saída>`), troque o arquivo em `vendor/` e rode `npm install`.
 Ao concluir tarefa que gere conhecimento novo, siga `Infra-IA/skills-genericas/atualizar-infra-ia.md`.
 
 ## O que este projeto É (D-F12/D-F17, Valdo 2026-10-03)

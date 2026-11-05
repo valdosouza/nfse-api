@@ -10,31 +10,33 @@ import path from 'path'
 import ts from 'typescript'
 
 const NFSE_SRC = path.resolve(__dirname, '..')
-const CORE_SRC = path.resolve(__dirname, '../../../fiscal-api/src')
+// D-F222 (2026-11-05): o núcleo entra pelo PACOTE versionado — a cerca lê o `dist` INSTALADO (o que vai para produção), nunca a pasta irmã
+const CORE_DIST = path.join(path.dirname(require.resolve('fiscal-api/package.json')), 'dist')
 const GRANTS = fs.readFileSync(path.resolve(__dirname, '../../ops/grants.sql'), 'utf8')
   // o estreitamento dos hosts LOCAIS do dev mora em arquivo próprio (nunca roda em produção)
   + '\n' + fs.readFileSync(path.resolve(__dirname, '../../ops/grants-d-au12-dev-local.sql'), 'utf8')
 
-function tsFiles(dir: string): string[] {
+function codeFiles(dir: string, ext: 'ts' | 'js'): string[] {
   const out: string[] = []
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     const p = path.join(dir, e.name)
-    if (e.isDirectory()) { if (e.name !== '__tests__' && e.name !== 'node_modules') out.push(...tsFiles(p)) }
-    else if (/\.ts$/.test(e.name) && !/\.test\.ts$/.test(e.name)) out.push(p)
+    if (e.isDirectory()) { if (e.name !== '__tests__' && e.name !== 'node_modules') out.push(...codeFiles(p, ext)) }
+    else if (e.name.endsWith(`.${ext}`) && !/\.(test|d)\.[jt]s$/.test(e.name)) out.push(p)
   }
   return out
 }
 
 /** Código sem comentários (o printer do compilador; texto com `//` fica intacto). */
 function codeOf(file: string): string {
-  const sf = ts.createSourceFile(file, fs.readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const kind = file.endsWith('.js') ? ts.ScriptKind.JS : ts.ScriptKind.TS
+  const sf = ts.createSourceFile(file, fs.readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true, kind)
   return ts.createPrinter({ removeComments: true }).printFile(sf)
 }
 
 /** `setes_central.<nome>` (com ou sem crase) lido pelo código de produção — arquivo → nomes. */
 function centralReads(): Map<string, Set<string>> {
   const out = new Map<string, Set<string>>()
-  for (const f of [...tsFiles(NFSE_SRC), ...tsFiles(CORE_SRC)]) {
+  for (const f of [...codeFiles(NFSE_SRC, 'ts'), ...codeFiles(CORE_DIST, 'js')]) {
     for (const m of codeOf(f).matchAll(/setes_central`?\.`?(\$\{|[A-Za-z_][A-Za-z0-9_]*)/g)) {
       const name = m[1]
       if (!out.has(name)) out.set(name, new Set())

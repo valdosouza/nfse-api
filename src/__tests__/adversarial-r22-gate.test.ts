@@ -45,7 +45,9 @@ const NFSE = PROJECT_ROOT
 const SETES = SETES_API_DIR                                                      // D-F117: worktree ou árvore viva
 // D-F117 revisto na A3 da F2a: a composição fiscal do setes-api existe até a A3 (que a remove); depois, null = cerca do "depois"
 const SETES_IT = setesApiPathUntilF2a('src', 'shared', 'invoice-transmission')
-const CORE_KINDS = path.join(WORKSPACE, 'fiscal-api', 'src', 'voice', 'kinds.ts')
+// D-F222 (2026-11-05): o compilador da nfse-api resolve `fiscal-api` pelo PACOTE instalado (sem `paths` para a pasta irmã) — a simulação
+// troca o tipo onde o compilador o LÊ: a declaração publicada do pacote (trocar o `src` irmão não muda mais nada e o ataque passaria cego)
+const CORE_KINDS = path.join(path.dirname(require.resolve('fiscal-api/package.json')), 'dist', 'voice', 'kinds.d.ts')
 const R21_FILE = path.join(SRC_ROOT, '__tests__', 'adversarial-r21-gate.test.ts')
 const read = (f: string) => fs.readFileSync(f, 'utf8')
 const rel = (f: string) => relWorkspace(f)                                  // D-F117: setes-api/… mesmo numa worktree
