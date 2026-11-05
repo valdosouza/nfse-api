@@ -82,6 +82,36 @@ d('D-NE172 — os escritores do fiscal_api na sessão ESTRITA (motor real, banco
     }
   })
 
+  it('D-NE175 no motor REAL: o servidor passa a entregar NO_BACKSLASH_ESCAPES DEPOIS do boot — a conexão nova é DESTRUÍDA e o comando falha alto (nunca grava a quebra de linha como barra + n)', async () => {
+    // simula o servidor sem mexer no GLOBAL: um ouvinte registrado ANTES do da casa liga o modo em toda conexão nova do pool
+    const m2 = require(path.join(__dirname, '..', '..', '..', 'fiscal-api', 'node_modules', 'mysql2', 'promise'))
+    const original = m2.createPool
+    m2.createPool = (opts: unknown) => {
+      const p = original(opts)
+      p.on('connection', (c: any) => c.query(`SET SESSION sql_mode = CONCAT(@@SESSION.sql_mode, ',NO_BACKSLASH_ESCAPES')`))
+      return p
+    }
+    let bad: ReturnType<typeof createFiscalPool> | null = null
+    try {
+      bad = createFiscalPool({ ...cfg(), connectionLimit: 2 })
+      // ⚠️ conhecimento negativo: a destruição pela conferência chega num nextTick DEPOIS de o 1º comando ter sido despachado — por isso o SET
+      // da casa RETIRA o proibido: o comando que escapa roda LIMPO (ou falha alto, se a conexão já caiu). NUNCA grava a barra + 'n'.
+      for (let i = 0; i < 3; i++) {
+        let res: any = null
+        try { res = (await bad.query('SELECT ? AS v, @@SESSION.sql_mode AS m', ['a\nb']))[0] } catch { res = 'falhou alto' }
+        if (res !== 'falhou alto') {
+          expect([res[0].v, String(res[0].m).split(',').includes('NO_BACKSLASH_ESCAPES')]).toEqual(['a\nb', false])
+        }
+      }
+    } finally {
+      m2.createPool = original
+      try { await bad?.end() } catch { /* conexões já destruídas */ }
+    }
+    // o pool da casa, sem o "servidor torto", segue servindo normalmente
+    const [ok] = await pool.query('SELECT ? AS v', ['a\nb'])
+    expect((ok as any)[0].v).toBe('a\nb')
+  })
+
   it('a sessão do pool é a ESTRITA (o que tudo abaixo mede)', async () => {
     const s = await assertSessionInvariants(pool)
     expect(s.sqlMode.split(',')).toContain('STRICT_ALL_TABLES')
