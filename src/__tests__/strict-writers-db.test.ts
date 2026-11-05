@@ -51,6 +51,23 @@ d('D-NE172 — os escritores do fiscal_api na sessão ESTRITA (motor real, banco
     try { await conn.query(`DROP DATABASE IF EXISTS \`${DB}\``) } finally { await conn.end() }
   }, 60_000)
 
+  it('D-NE173: o EXECUTOR de migrations também é estrito — a migration que grava 8 letras num VARCHAR(5) FALHA ALTO (antes gravava "abcde" calada) e não fica registrada', async () => {
+    const os = require('os') as typeof import('os')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'strict-mig-'))
+    try {
+      fs.writeFileSync(path.join(dir, '001_corte.sql'),
+        'CREATE TABLE IF NOT EXISTS `tb_strict_probe` (`k` VARCHAR(5) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\n'
+        + "INSERT INTO `tb_strict_probe` (`k`) VALUES ('abcdefgh');\n")
+      await expect(runMigrations(cfg(), [{ project: 'strict-probe', dir }])).rejects.toMatchObject({ errno: 1406 })
+      const reg = await q1(`SELECT COUNT(*) n FROM _migrations WHERE project = 'strict-probe'`)
+      const rows = await q1(`SELECT COUNT(*) n FROM tb_strict_probe`)
+      expect([Number(reg.n), Number(rows.n)]).toEqual([0, 0])
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+      await pool.query('DROP TABLE IF EXISTS tb_strict_probe')
+    }
+  })
+
   it('a sessão do pool é a ESTRITA (o que tudo abaixo mede)', async () => {
     const s = await assertSessionInvariants(pool)
     expect(s.sqlMode.split(',')).toContain('STRICT_ALL_TABLES')
