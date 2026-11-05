@@ -25,7 +25,7 @@ const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms))
 const keyOf = (n: number) => String(n).padStart(50, '7')
 
 function cfg(): FiscalDbConfig {
-  const dir = process.env.SETES_API_DIR ?? path.join(__dirname, '..', '..', '..', 'setes-api')   // __tests__ → src → nfse-api → raiz do workspace (3 níveis; 4 caía em D:setes-api)
+  const dir = process.env.SETES_API_DIR ?? path.join(__dirname, '..', '..', '..', 'setes-api')   // __tests__ → src → nfse-api → raiz do workspace (3 níveis; 4 caía em D:/setes-api)
   const env = dotenv.parse(fs.readFileSync(path.join(dir, '.env')))
   return { host: env.DB_HOST, port: Number(env.DB_PORT ?? 3306), user: env.DB_USER, password: env.DB_PASSWORD, database: DB, connectionLimit: 20 }
 }
