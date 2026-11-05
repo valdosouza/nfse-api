@@ -96,13 +96,13 @@ d('D-NE172 — os escritores do fiscal_api na sessão ESTRITA (motor real, banco
       bad = createFiscalPool({ ...cfg(), connectionLimit: 2 })
       // ⚠️ conhecimento negativo: a destruição pela conferência chega num nextTick DEPOIS de o 1º comando ter sido despachado — por isso o SET
       // da casa RETIRA o proibido: o comando que escapa roda LIMPO (ou falha alto, se a conexão já caiu). NUNCA grava a barra + 'n'.
+      // gate socrático MEDIUM-1: no pool a destruição chega ANTES do comando de quem pediu (há 4 comandos da casa na frente dele na fila) —
+      // TODA tentativa falha alto; a RETIRADA no SET (a cinta) é provada à parte, no teste seguinte, isolada
+      const outcomes: string[] = []
       for (let i = 0; i < 3; i++) {
-        let res: any = null
-        try { res = (await bad.query('SELECT ? AS v, @@SESSION.sql_mode AS m', ['a\nb']))[0] } catch { res = 'falhou alto' }
-        if (res !== 'falhou alto') {
-          expect([res[0].v, String(res[0].m).split(',').includes('NO_BACKSLASH_ESCAPES')]).toEqual(['a\nb', false])
-        }
+        try { await bad.query('SELECT ? AS v, @@SESSION.sql_mode AS m', ['a\nb']); outcomes.push('respondeu') } catch { outcomes.push('falhou alto') }
       }
+      expect(outcomes).toEqual(['falhou alto', 'falhou alto', 'falhou alto'])
     } finally {
       m2.createPool = original
       try { await bad?.end() } catch { /* conexões já destruídas */ }
@@ -110,6 +110,24 @@ d('D-NE172 — os escritores do fiscal_api na sessão ESTRITA (motor real, banco
     // o pool da casa, sem o "servidor torto", segue servindo normalmente
     const [ok] = await pool.query('SELECT ? AS v', ['a\nb'])
     expect((ok as any)[0].v).toBe('a\nb')
+  })
+
+  it('D-NE175 no motor REAL — a CINTA isolada: o SET da casa RETIRA os proibidos e os combinados que os trazem (ORACLE, ANSI, MSSQL, POSTGRESQL, DB2), e o escape volta a valer', async () => {
+    const { STRICT_SESSION_SQL, SQL_MODES_STRIPPED_FROM_SESSION } = require('fiscal-api')
+    const conn = await pool.getConnection()
+    try {
+      for (const herdado of ['ORACLE,NO_BACKSLASH_ESCAPES', 'ANSI', 'MSSQL,NO_BACKSLASH_ESCAPES', 'POSTGRESQL', 'DB2,ANSI_QUOTES', 'NO_BACKSLASH_ESCAPES']) {
+        await conn.query(`SET SESSION sql_mode = '${herdado}'`)
+        await conn.query(STRICT_SESSION_SQL)
+        const [[m]] = await conn.query('SELECT @@SESSION.sql_mode AS m') as any
+        const items = String(m.m).split(',')
+        expect([herdado, SQL_MODES_STRIPPED_FROM_SESSION.filter((x: string) => items.includes(x)), items.includes('STRICT_ALL_TABLES')]).toEqual([herdado, [], true])
+        const [[r]] = await conn.query('SELECT ? AS v', ["a'b\\c\nd"]) as any
+        expect([herdado, r.v]).toEqual([herdado, "a'b\\c\nd"])
+      }
+    } finally {
+      (conn as any).destroy()                                                            // a sessão foi mexida — nunca volta ao pool
+    }
   })
 
   it('a sessão do pool é a ESTRITA (o que tudo abaixo mede)', async () => {
