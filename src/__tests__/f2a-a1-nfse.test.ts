@@ -120,6 +120,14 @@ describe('D-NE172 — a sonda do boot prova a sessão ESTRITA na chave de acesso
     const hits = roots.flatMap(walk).filter(f => /sql_mode/i.test(fs.readFileSync(f, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')))
     expect(hits).toEqual([])
   })
+  it('cerca dos .sql (gates do delta D-NE173/D-NE174): nenhuma migration desta API cita sql_mode nem usa INSERT IGNORE', () => {
+    const dir = path.join(SRC, 'migrations', 'sql')
+    const hits = fs.readdirSync(dir).filter(f => f.endsWith('.sql')).filter(f => {
+      const sql = fs.readFileSync(path.join(dir, f), 'utf8').replace(/--[^\n]*/g, '')
+      return /sql_mode/i.test(sql) || /INSERT\s+IGNORE/i.test(sql)
+    })
+    expect(hits).toEqual([])
+  })
   it('motor SEM a sessão estrita (corta nas 50 e aceita): o boot FALHA ALTO', async () => {
     await expect(assertServiceStrictSession(poolWith(engine({ strict: false })).pool))
       .rejects.toThrow(/ACEITOU a chave de acesso da tentativa da NFS-e maior que a coluna \(tb_invoice_service_transmission\.access_key com 51 posições\) — a sessão NÃO é estrita/)

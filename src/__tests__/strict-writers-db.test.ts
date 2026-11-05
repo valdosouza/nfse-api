@@ -73,6 +73,9 @@ d('D-NE172 — os escritores do fiscal_api na sessão ESTRITA (motor real, banco
     try {
       await conn.query(`SET SESSION sql_mode = CONCAT(@@SESSION.sql_mode, ',NO_BACKSLASH_ESCAPES')`)
       await expect(conn.query('SELECT ? AS v', ["O'Brien"])).rejects.toMatchObject({ errno: 1064 })   // o driver mandou 'O\'Brien' — o motor leu 'O\' + Brien'
+      // gate socrático L3 — o caso PIOR é o SILENCIOSO: a quebra de linha (o PEM do A1, as mensagens do fisco) chega como barra + 'n' LITERAIS, sem erro
+      const [r] = await conn.query('SELECT ? AS v', ['a\nb'])
+      expect([(r as any)[0].v, String((r as any)[0].v).length]).toEqual(['a\\nb', 4])
       await expect(assertSessionInvariants({ query: (s: string) => conn.query(s) } as any)).rejects.toThrow(/traz NO_BACKSLASH_ESCAPES herdado do servidor — a casa o recusa \(D-NE174/)
     } finally {
       (conn as any).destroy()                                                            // nunca volta ao pool com o modo alterado
