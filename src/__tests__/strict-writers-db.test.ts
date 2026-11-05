@@ -111,8 +111,11 @@ d('D-NE172 — os escritores do fiscal_api na sessão ESTRITA (motor real, banco
       return insertTransmission(itx, 1, 'P', 1)
     })
     expect(attempt).toBe(1)
-    const longMsg = 'Rejeição E0001: ' + 'motivo do fisco com acentuação '.repeat(9) + '😀😀😀😀😀😀😀😀'
-    expect(longMsg.length).toBeGreaterThan(255)
+    // re-gate socrático (LOW 3): o EMOJI fica no CORTE — 254 unidades + '😀' (par substituto nas posições 254–255): o `slice(0, 255)` do
+    // escritor parte o par ao meio e o banco recebe o substituto SOLTO (o mysql2 o grava como U+FFFD) — na sessão estrita nada recusa
+    const head = ('Rejeição E0001: ' + 'motivo do fisco com acentuação '.repeat(9)).slice(0, 254)
+    const longMsg = head + '😀😀😀'
+    expect([head.length, longMsg.slice(0, 255).charCodeAt(254) >= 0xd800 && longMsg.slice(0, 255).charCodeAt(254) <= 0xdbff]).toEqual([254, true])
     await tx(INV, async itx => {
       await insertTransmissionEvent(itx, attempt, 1, { kind: 'R', source: 'P', dh: '2026-11-04 12:00:00', message: longMsg, authorityCode: 'E0001' })
       await insertTransmissionEvent(itx, attempt, 1, { kind: 'K', source: 'P', dh: null, message: null })
