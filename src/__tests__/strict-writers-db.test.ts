@@ -68,6 +68,17 @@ d('D-NE172 — os escritores do fiscal_api na sessão ESTRITA (motor real, banco
     }
   })
 
+  it('D-NE174 no motor REAL: com NO_BACKSLASH_ESCAPES o escape do driver QUEBRA (o \' de "O\'Brien" fecha o texto) — e a conferência da casa RECUSA a sessão', async () => {
+    const conn = await pool.getConnection()
+    try {
+      await conn.query(`SET SESSION sql_mode = CONCAT(@@SESSION.sql_mode, ',NO_BACKSLASH_ESCAPES')`)
+      await expect(conn.query('SELECT ? AS v', ["O'Brien"])).rejects.toMatchObject({ errno: 1064 })   // o driver mandou 'O\'Brien' — o motor leu 'O\' + Brien'
+      await expect(assertSessionInvariants({ query: (s: string) => conn.query(s) } as any)).rejects.toThrow(/traz NO_BACKSLASH_ESCAPES herdado do servidor — a casa o recusa \(D-NE174/)
+    } finally {
+      (conn as any).destroy()                                                            // nunca volta ao pool com o modo alterado
+    }
+  })
+
   it('a sessão do pool é a ESTRITA (o que tudo abaixo mede)', async () => {
     const s = await assertSessionInvariants(pool)
     expect(s.sqlMode.split(',')).toContain('STRICT_ALL_TABLES')
