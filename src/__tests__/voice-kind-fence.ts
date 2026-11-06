@@ -13,8 +13,10 @@
  * LIMITE CONHECIDO: produtor SEMÂNTICO (constante nomeada, shorthand, mapa novo, parâmetro) não tem o literal ao lado do `kind` —
  * nenhuma cerca textual o pega; quem o pega é o TIPO do escritor (D-F106 — `ServiceVoiceWriteKind`, lista positiva da família).
  *
- * ESCOPO = todo lugar que escreve na voz da NFS-e: nfse-api (src, scripts, migrations), núcleo (src, migrations) e o caminho de produção
- * do setes-api até a F2a (a pasta inteira da composição + as migrations dele).
+ * ESCOPO = todo lugar que escreve na voz da NFS-e: nfse-api (src, scripts, migrations) e o caminho de produção do setes-api até a F2a (a
+ * pasta inteira da composição + as migrations dele). D-F228 (Valdo 2026-11-06, "Cada um no seu"): o NÚCLEO saiu do escopo — ele chega
+ * aqui só pelo pacote em `vendor/`, e ler a pasta irmã provava outro artefato; a mesma cerca sobre o fonte do núcleo (`sqlOnly`) mora na
+ * suíte dele: `fiscal-api/src/__tests__/cercas-portadas-dos-consumidores.test.ts`, bloco A.
  */
 import fs from 'fs'
 import path from 'path'
@@ -23,7 +25,6 @@ import ts from 'typescript'
 const SRC_ROOT = path.resolve(__dirname, '..')
 const PROJECT_ROOT = path.resolve(SRC_ROOT, '..')
 export const WORKSPACE = path.resolve(PROJECT_ROOT, '..')
-const CORE_ROOT = path.resolve(WORKSPACE, 'fiscal-api')
 
 /**
  * D-F117 (= Q-F123 (a), Valdo 2026-10-12 — Rodada 1 da F2a): a F2a se desenvolve numa WORKTREE do setes-api; as cercas que vigiam o setes-api
@@ -332,9 +333,9 @@ export const VOICE_SQL_WRITERS = [
  *  de escrita (com S) furaria a D-F106 sem SQL nenhum — a cerca o pega (NE-1a parte 2). */
 export const VOICE_FAMILY_DESCRIPTORS = ['nfse-api/src/nfse/voice-family.ts']
 
-/** Violações da cerca de chamada/escritor único no escopo (fora do NÚCLEO — D-F105; migrations `.sql` ficam fora: DDL, revisar-ddl). */
+/** Violações da cerca de chamada/escritor único no escopo (o núcleo não está nele — D-F105/D-F228; migrations `.sql` ficam fora: DDL, revisar-ddl). */
 export function voiceWriterViolations(files: string[] = voiceFenceScope()): string[] {
-  return files.filter(f => fs.existsSync(f) && f.endsWith('.ts') && !path.resolve(f).startsWith(CORE_ROOT + path.sep))
+  return files.filter(f => fs.existsSync(f) && f.endsWith('.ts'))
     .filter(f => {
       const r = relWorkspace(f)
       return writerCallFlags(fs.readFileSync(f, 'utf8'), {
@@ -350,25 +351,24 @@ export function sqlFileProducesS(sql: string): boolean {
   return clean.split(';').some(sqlWritesS)
 }
 
-/** O CONJUNTO que a cerca varre — todo lugar que escreve na voz da NFS-e. */
+/** O CONJUNTO que a cerca varre — todo lugar que escreve na voz da NFS-e FORA do núcleo (a gêmea sobre o núcleo mora na suíte dele — D-F228). */
 export function voiceFenceScope(): string[] {
-  const W = WORKSPACE
   return [...new Set([
-    ...walkTs(path.join(W, 'nfse-api', 'src')), ...walkTs(path.join(W, 'nfse-api', 'scripts')),
-    ...sqlUnder(path.join(W, 'nfse-api', 'src', 'migrations', 'sql')),
-    ...walkTs(path.join(W, 'fiscal-api', 'src')), ...sqlUnder(path.join(W, 'fiscal-api', 'src', 'migrations', 'sql')),
+    ...walkTs(path.join(PROJECT_ROOT, 'src')), ...walkTs(path.join(PROJECT_ROOT, 'scripts')),
+    ...sqlUnder(path.join(PROJECT_ROOT, 'src', 'migrations', 'sql')),
     // D-F117: o setes-api por `SETES_API_DIR`; a pasta existe até a A3 da F2a (que a remove) — depois, só com a F2a aplicada (D-F110)
     ...(() => { const it = setesApiPathUntilF2a('src', 'shared', 'invoice-transmission'); return it ? walkTs(it) : [] })(),
     ...sqlUnder(setesApiPath('src', 'migrations', 'sql')),
   ].map(f => path.resolve(f)))]
 }
 
-/** Arquivos do escopo que produzem a voz S da NFS-e (relativos ao workspace). Vazio = a D-F102 vale. No núcleo, só SQL (D-F105). */
+/** Arquivos do escopo que produzem a voz S da NFS-e (relativos ao workspace). Vazio = a D-F102 vale. (No núcleo só o SQL conta — D-F105 —
+ *  e a conferência mora na suíte dele: `cercas-portadas-dos-consumidores.test.ts`, bloco A — D-F228.) */
 export function voiceSProducers(files: string[] = voiceFenceScope()): string[] {
   return files.filter(f => fs.existsSync(f))
     .filter(f => {
       const c = fs.readFileSync(f, 'utf8')
-      return f.endsWith('.sql') ? sqlFileProducesS(c) : tsProducesS(c, { sqlOnly: path.resolve(f).startsWith(CORE_ROOT + path.sep) })
+      return f.endsWith('.sql') ? sqlFileProducesS(c) : tsProducesS(c)
     })
     .map(f => relWorkspace(f))
 }

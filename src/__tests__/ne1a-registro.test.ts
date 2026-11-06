@@ -39,11 +39,8 @@ describe('D-NE56 na família de serviço — uma definição do registro, nas du
     expect((repoSql.match(/\bt\.access_key IS (?:NOT )?NULL\b/g) ?? []).length).toBeGreaterThanOrEqual(3)
     expect(repoSql).not.toMatch(/\baccess_key\s*(?:<>|!=|=)\s*''/)                     // nenhuma 2ª definição ("chave vazia")
     expect(SERVICE_AUTHORITY_RECORDED_SQL).toMatch(/^IF\(t\.`access_key` IS NULL, 'N', 'S'\)/)
-    const coreService = path.resolve(__dirname, '..', '..', '..', 'fiscal-api', 'src', 'voice', 'families', 'service.ts')
-    if (!fs.existsSync(coreService)) return
-    const core = fs.readFileSync(coreService, 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '')
-    expect(core).not.toMatch(/!!t\.accessKey/)
-    expect(core).toMatch(/lifeList\.some\(t => authorityRecordedOf\(t\)\)/)
+    // a regra que o NÚCLEO exporta (`lifeList.some(t => authorityRecordedOf(t))`, sem `!!t.accessKey`) — D-F228 ("Cada um no seu"):
+    // conferida na suíte do núcleo (`fiscal-api/src/__tests__/cercas-portadas-dos-consumidores.test.ts`, bloco E)
   })
   it('gates da parte 1 (NE1A-08): a linha INTERNA também falha alto sem o fato ou incoerente com a chave', () => {
     const base = { institutionId: 1, invoiceId: 6200, lifeEvent: 1, environment: 'P', attempt: 1, nfseNotGeneratedAt: null }

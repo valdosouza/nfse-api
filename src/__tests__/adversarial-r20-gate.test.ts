@@ -412,7 +412,9 @@ describe('RESISTIU — D-F100: nada da NFS-e de OUTRO DPS persiste nem sai — b
     expect(JSON.stringify(out)).not.toContain(THIRD_CPF)
   })
   it('resistiu: cerca — nenhum log da nfse-api/núcleo leva o erro INTEIRO nem o corpo/texto/raw da resposta como valor (só `errMsg(err)`, `err.message`/`stack`, `err.code`, status ou tamanho do corpo); a única exceção é a conexão do pool (erro do driver, sem resposta do fisco)', () => {
-    const roots = [SRC_ROOT, path.join(WORKSPACE, 'fiscal-api', 'src')]
+    // D-F228 ("Cada um no seu"): só o código DESTE repositório — a mesma cerca sobre o núcleo (com a exceção do `db/pool.ts`) mora na
+    // suíte dele: `fiscal-api/src/__tests__/cercas-portadas-dos-consumidores.test.ts`, bloco F
+    const roots = [SRC_ROOT]
     const offenders: string[] = []
     for (const f of roots.flatMap(walkTs)) {
       const code = uncomment(fs.readFileSync(f, 'utf8'))
@@ -430,7 +432,7 @@ describe('RESISTIU — D-F100: nada da NFS-e de OUTRO DPS persiste nem sai — b
         if (bare || raw) offenders.push(`${path.relative(WORKSPACE, f).replace(/\\/g, '/')} :: ${args.replace(/\s+/g, ' ').slice(0, 120)}`)
       }
     }
-    // a ÚNICA exceção: pool.ts — conexão nova sem invariante (erro do DRIVER, nunca resposta do fisco)
-    expect(offenders).toEqual([expect.stringMatching(/^fiscal-api\/src\/db\/pool\.ts :: /)])
+    // nenhuma exceção na nfse-api (a do núcleo — `db/pool.ts`, erro do DRIVER — é conferida lá)
+    expect(offenders).toEqual([])
   })
 })

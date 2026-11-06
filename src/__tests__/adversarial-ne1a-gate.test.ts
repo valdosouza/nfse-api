@@ -44,7 +44,6 @@ jest.mock('../nfse/repository', () => {
 const SRC_ROOT = path.resolve(__dirname, '..')
 const PROJECT_ROOT = path.resolve(SRC_ROOT, '..')
 const MIGRATIONS = path.join(SRC_ROOT, 'migrations', 'sql')
-const CORE = path.join(WORKSPACE, 'fiscal-api')
 const read = (f: string) => fs.readFileSync(f, 'utf8')
 const rel = (f: string) => path.relative(WORKSPACE, f).replace(/\\/g, '/')
 const norm = (s: string) => s.replace(/\s+/g, ' ').trim()
@@ -266,9 +265,8 @@ describe('D — D-NE12 na nfse-api: o terminal da web só na borda', () => {
     }
     expect(owners).toEqual([])
     expect(stripComments(read(file)).match(LIT) ?? []).toEqual([])
-    const core = stripComments(read(path.join(CORE, 'src', 'voice', 'event-table.ts')))
-    expect(core.match(LIT) ?? []).toEqual([])
-    expect((core.match(/\bterminal = \?/g) ?? []).length).toBe(3)                 // escritor (MAX+1) + os dois leitores de idempotência
+    // o escritor genérico do núcleo (`voice/event-table.ts`: sem literal, `terminal = ?` no escritor MAX+1 e nos dois leitores de
+    // idempotência) — D-F228 ("Cada um no seu"): conferido na suíte do núcleo (`cercas-portadas-dos-consumidores.test.ts`, bloco D)
   })
 })
 
@@ -277,15 +275,17 @@ describe('D — D-NE12 na nfse-api: o terminal da web só na borda', () => {
 // ===========================================================================
 
 describe('E — runtime: o dist do núcleo está em dia com o delta', () => {
-  const DIST = path.join(CORE, 'dist')
+  // D-F228 ("Cada um no seu"): o `dist` que RODA é o do pacote INSTALADO (`vendor/` → `node_modules/fiscal-api`) — nunca o da pasta irmã;
+  // e ele TEM de existir (o pacote só leva `dist` — sem ele a API não sobe): nada de passar calado
+  const DIST = path.join(path.dirname(require.resolve('fiscal-api/package.json')), 'dist')
   const distJs = (): string[] => {
     const walk = (d: string): string[] => fs.readdirSync(d, { withFileTypes: true }).flatMap(e =>
       e.isDirectory() ? walk(path.join(d, e.name)) : e.name.endsWith('.js') ? [path.join(d, e.name)] : [])
     return fs.existsSync(DIST) ? walk(DIST) : []
   }
-  it('resistiu: todo nome de VALOR que a nfse-api importa do núcleo e que a NE-1a criou ou MUDOU de arquivo existe no `dist` (sem isso o `start` de produção cairia com "is not a function"); o `dist` já lê o terminal por parâmetro e tem a coluna do registro', () => {
+  it('resistiu: todo nome de VALOR que a nfse-api importa do núcleo e que a NE-1a criou ou MUDOU de arquivo existe no `dist` do pacote instalado (sem isso o `start` de produção cairia com "is not a function"); o `dist` já lê o terminal por parâmetro e tem a coluna do registro', () => {
     const files = distJs()
-    if (!files.length) return                                                              // núcleo sem build (só o jest mapeia o src)
+    expect(files.length).toBeGreaterThan(10)                                               // pacote sem `dist` = falha alto
     const exported = new Set(files.flatMap(f => [...read(f).matchAll(/\bexports\.(\w+)\s*=/g)].map(m => m[1])))
     const needed = ['invoiceRef', 'WEB_TERMINAL', 'invoiceRefFilter', 'currentOf', 'fiscalStateOf', 'isLiveTransmission', 'isAuthorized',
       'localCancelPending', 'isSubstitutionCancel', 'CANCEL_EVENT_CODES', 'reconfirmationCandidate', 'reconfirmationProven',

@@ -195,7 +195,6 @@ const r20NegativeHolds = () => !(repo.insertTransmissionEvent as jest.Mock).mock
 
 const SRC_ROOT = path.resolve(__dirname, '..')
 const PROJECT_ROOT = path.resolve(SRC_ROOT, '..')
-const WORKSPACE = path.resolve(PROJECT_ROOT, '..')
 const R20_FILE = path.join(SRC_ROOT, '__tests__', 'adversarial-r20-gate.test.ts')
 // D-F117 revisto na A3 da F2a: a composição fiscal do setes-api existe até a A3 (que a remove); depois, null = cerca do "depois"
 const SETES_COMPOSITION = setesApiPathUntilF2a('src', 'shared', 'invoice-transmission', 'invoice-transmission.ts')
@@ -205,7 +204,8 @@ const walkTs = (dir: string): string[] => (!fs.existsSync(dir) ? [] : fs.readdir
 const uncomment = (code: string) => code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
 /** [CORRIGIDO na sessão — R21-01] a réplica deu lugar à peça COMPARTILHADA `voice-kind-fence.ts` (AST): este é o predicado da cerca. */
 const fenceFlags = (code: string) => tsProducesS(code)
-/** …e este o CONJUNTO dela: todo lugar que escreve na voz (nfse-api src/scripts/migrations, núcleo, setes-api — pasta + migrations). */
+/** …e este o CONJUNTO dela: todo lugar que escreve na voz fora do núcleo (nfse-api src/scripts/migrations, setes-api — pasta + migrations;
+ *  o núcleo tem a gêmea na suíte dele — D-F228). */
 const fenceScope = () => new Set(voiceFenceScope())
 const rel = (f: string) => relWorkspace(f)
 const read = (f: string) => fs.readFileSync(f, 'utf8')
@@ -345,9 +345,34 @@ describe('ATAQUE 1 — ESCAPE da cerca da D-F102: a promessa é "a cerca quebra 
     expect(typeof neverRun).toBe('function')
   })
 
-  it('contexto (histórico — a regex antiga): `uncomment` trata o `/*` do XPath `//*[@Id=…]` (fiscal-api/src/transport/xmldsig.ts:54) como abertura de comentário e engole código de verdade; a cerca nova (AST) não usa mais `uncomment`', () => {
-    const f = path.join(WORKSPACE, 'fiscal-api', 'src', 'transport', 'xmldsig.ts')
-    const code = read(f)
+  /**
+   * D-F228 ("Cada um no seu"): o corpo REAL do `signXml` do núcleo era lido da pasta irmã — o ataque é à PEÇA da cerca, não ao núcleo; o
+   * trecho vai aqui como FIXTURE com a mesma forma (o XPath, o corpo e o fim do JSDoc seguinte, que fecha o "comentário" da regex antiga).
+   */
+  const XMLDSIG_LIKE = [
+    'export function signXml(xml: string, opts: SignXmlOptions): string {',
+    '  assertReferenceId(opts.referenceId)',
+    '  const alg = ALGORITHMS[opts.algorithm]',
+    "  const target = `//*[@Id='${opts.referenceId}']`",
+    '  const sig = new SignedXml({',
+    '    privateKey: opts.key,',
+    '    publicCert: firstCertificatePem(opts.cert),',
+    '    signatureAlgorithm: alg.signature,',
+    '    canonicalizationAlgorithm: C14N_INCLUSIVE,',
+    '  })',
+    '  // xml-crypto lê o Id existente do nó e escreve URI="#<Id>" — nunca inventa um id',
+    "  sig.addReference({ xpath: target, transforms: [ENVELOPED, C14N_INCLUSIVE], digestAlgorithm: alg.digest, uri: `#${opts.referenceId}` })",
+    "  sig.computeSignature(xml, { location: { reference: `${target}/..`, action: 'append' } })",
+    '  return sig.getSignedXml()',
+    '}',
+    '',
+    '/**',
+    ' * Confere a assinatura.',
+    ' */',
+    'export function verifyXml(xml: string): boolean { return true }',
+  ].join('\n')
+  it('contexto (histórico — a regex antiga): `uncomment` trata o `/*` do XPath `//*[@Id=…]` (a forma do `signXml` do núcleo) como abertura de comentário e engole código de verdade; a cerca nova (AST) não usa mais `uncomment`', () => {
+    const code = XMLDSIG_LIKE
     const i = code.split('\n').findIndex(l => l.includes('//*[@Id='))
     expect(i).toBeGreaterThanOrEqual(0)
     for (const real of ['privateKey: opts.key', 'sig.computeSignature(']) {         // o corpo do `signXml` (linhas 55–64)
@@ -356,7 +381,7 @@ describe('ATAQUE 1 — ESCAPE da cerca da D-F102: a promessa é "a cerca quebra 
     }
   })
   it('[CORRIGIDO na sessão] [LOW R21-01] produtor CANÔNICO (`kind: \'S\'`) escrito logo depois do XPath do xmldsig.ts (texto real, injeção em memória) → a cerca o pega', () => {
-    const lines = read(path.join(WORKSPACE, 'fiscal-api', 'src', 'transport', 'xmldsig.ts')).split('\n')
+    const lines = XMLDSIG_LIKE.split('\n')
     const i = lines.findIndex(l => l.includes('//*[@Id='))
     const injected = [...lines.slice(0, i + 1), `  const voice = { kind: 'S', source: 'P' }`, ...lines.slice(i + 1)].join('\n')
     expect(fenceFlags([...lines, `const voice = { kind: 'S', source: 'P' }`].join('\n'))).toBe(true)   // no fim do arquivo: pega
@@ -368,7 +393,8 @@ describe('ATAQUE 1 — ESCAPE da cerca da D-F102: a promessa é "a cerca quebra 
     const sqlUnder = (d: string): string[] => (!fs.existsSync(d) ? [] : fs.readdirSync(d).filter(n => n.endsWith('.sql')).map(n => path.join(d, n)))
     const candidates = [
       ...walkTs(SRC_ROOT), ...walkTs(path.join(PROJECT_ROOT, 'scripts')), ...sqlUnder(path.join(SRC_ROOT, 'migrations', 'sql')),
-      ...walkTs(path.join(WORKSPACE, 'fiscal-api', 'src')), ...sqlUnder(path.join(WORKSPACE, 'fiscal-api', 'src', 'migrations', 'sql')),
+      // D-F228: o núcleo saiu (ele escreve só pela tabela do DESCRITOR — `fiscal-api` `contrato.test.ts` (D-F31) e `adversarial-r22-gate
+      // .test.ts` (nenhuma escrita com o nome da voz); a cerca da voz S sobre ele: `cercas-portadas-dos-consumidores.test.ts`, bloco A)
       ...(SETES_IT ? walkTs(SETES_IT) : []),
       ...sqlUnder(setesApiPath('src', 'migrations', 'sql')),
     ]
@@ -421,11 +447,8 @@ describe('ATAQUE 2 — os escritores de HOJE: nenhum grava S nem kind fora do do
     const calls = [...walkTs(SRC_ROOT), ...walkTs(path.join(PROJECT_ROOT, 'scripts'))].flatMap(f => writerCalls(read(f)).map(c => ({ ...c, f: rel(f) })))
     expect(calls.length).toBeGreaterThanOrEqual(10)
     expect(calls.filter(c => !c.ok)).toEqual([])
-    // as políticas do núcleo: K e N LITERAIS, dh NULL, pelo escritor recebido (a lista da família o tipa) — nenhuma outra escrita lá
-    const policy = read(path.join(WORKSPACE, 'fiscal-api', 'src', 'voice', 'policy.ts'))
-    expect(policy).toMatch(/return write\(itx, attempt, userId, \{ kind: 'K', source: 'P', dh: null, message: CANCEL_REQUEST_IN_FLIGHT \}\)/)
-    expect(policy).toMatch(/await write\(itx, attempt, userId, \{ kind: 'N', source: 'P', dh: null, message: message\.slice\(0, 255\) \}\)/)
-    expect(policy.match(/\bkind: '[A-Z]'/g)).toEqual(["kind: 'K'", "kind: 'N'"])
+    // as políticas do núcleo (K e N LITERAIS, dh NULL, pelo escritor recebido) — D-F228: conferidas na suíte do núcleo
+    // (`fiscal-api/src/__tests__/cercas-portadas-dos-consumidores.test.ts`, bloco B)
   })
   it('resistiu: setes-api (a composição de produção, lida como texto) — idem; com a F2a aplicada, o setes-api não chama escritor da voz nenhum', () => {
     if (!SETES_COMPOSITION) {
@@ -512,12 +535,11 @@ describe('ATAQUE 4 — "quem criar produtor de S dá a ela a saída da D-F51": o
     expect(repo.touchQueriedAt).not.toHaveBeenCalled()                            // sem o carimbo do throttle
     expect(stamps).toEqual([])                                                     // e sem o E2404 (a prova não volta)
   })
-  it('[CORRIGIDO na sessão] [LOW R21-03] o aviso da D-F102 nomeia os DOIS portões da saída (o predicado E a reconferência sob a trava) nos três lugares onde mora (kinds.ts do núcleo; `isInterruptedInFlight` da nfse-api e do setes-api)', () => {
+  it('[CORRIGIDO na sessão] [LOW R21-03] o aviso da D-F102 nomeia os DOIS portões da saída (o predicado E a reconferência sob a trava) nos lugares onde mora (`isInterruptedInFlight` da nfse-api e do setes-api; o do `kinds.ts` do núcleo é conferido na suíte dele — `cercas-portadas-dos-consumidores.test.ts`, bloco C — D-F228)', () => {
     // o bloco de comentário IMEDIATAMENTE acima da âncora (do último parágrafo em branco até ela)
     const near = (file: string, anchor: string) => { const c = read(file).replace(/\r\n/g, '\n'); const i = c.indexOf(anchor); expect(i).toBeGreaterThan(0); return c.slice(Math.max(0, c.lastIndexOf('\n\n', i)), i) }
     const sites = [
       near(path.join(SRC_ROOT, 'nfse', 'transmission.ts'), 'export function isInterruptedInFlight'),
-      near(path.join(WORKSPACE, 'fiscal-api', 'src', 'voice', 'kinds.ts'), 'export type TransmissionEventKind'),
       ...(SETES_COMPOSITION ? [near(SETES_COMPOSITION, 'export function isInterruptedInFlight')] : []),   // morre na A3 da F2a
     ]
     for (const s of sites) {

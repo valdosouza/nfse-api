@@ -16,6 +16,10 @@ import { MIGRATION_SETS } from '../migrations'
 import {
   insertLifeDps, insertTransmission, insertTransmissionEvent, fillAuthorityData, fillAuthorityIbscbs, touchQueriedAt, recordNfseNotGenerated,
 } from '../nfse/repository'
+/** D-F228 ("Cada um no seu"): o `mysql2` que o POOL DO NÚCLEO usa — resolvido a partir do pacote INSTALADO (`node_modules/fiscal-api`),
+ *  a MESMA instância de módulo do `createFiscalPool`; nunca o `node_modules` da pasta irmã (outra instância — trocar o `createPool` dela não
+ *  atinge o pool do núcleo). */
+const CORE_MYSQL2 = require.resolve('mysql2/promise', { paths: [path.dirname(require.resolve('fiscal-api/package.json'))] })
 
 const LIVE = process.env.NFSE_ADV_IB3_DB === '1'
 const d = LIVE ? describe : describe.skip
@@ -45,7 +49,7 @@ d('D-NE172 — os escritores do fiscal_api na sessão ESTRITA (motor real, banco
 
   afterAll(async () => {
     try { await pool?.end() } catch { /* */ }
-    const mysql = require(path.join(__dirname, '..', '..', '..', 'fiscal-api', 'node_modules', 'mysql2', 'promise'))
+    const mysql = require(CORE_MYSQL2)
     const c = cfg()
     const conn = await mysql.createConnection({ host: c.host, port: c.port, user: c.user, password: c.password })
     try { await conn.query(`DROP DATABASE IF EXISTS \`${DB}\``) } finally { await conn.end() }
@@ -84,7 +88,7 @@ d('D-NE172 — os escritores do fiscal_api na sessão ESTRITA (motor real, banco
 
   it('D-NE175 no motor REAL: o servidor passa a entregar NO_BACKSLASH_ESCAPES DEPOIS do boot — a conexão nova é DESTRUÍDA e o comando falha alto (nunca grava a quebra de linha como barra + n)', async () => {
     // simula o servidor sem mexer no GLOBAL: um ouvinte registrado ANTES do da casa liga o modo em toda conexão nova do pool
-    const m2 = require(path.join(__dirname, '..', '..', '..', 'fiscal-api', 'node_modules', 'mysql2', 'promise'))
+    const m2 = require(CORE_MYSQL2)
     const original = m2.createPool
     m2.createPool = (opts: unknown) => {
       const p = original(opts)

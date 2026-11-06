@@ -14,6 +14,10 @@ import { createFiscalPool, runMigrations, withInvoiceTx, invoiceRef, logger, Fis
 import { MIGRATION_SETS } from '../migrations'
 import { fillAuthorityIbscbs, fillAuthorityData, insertTransmissionEvent } from '../nfse/repository'
 import { recordIbscbsValues } from '../nfse/ibscbs-values'
+/** D-F228 ("Cada um no seu"): o `mysql2` que o POOL DO NÚCLEO usa — resolvido a partir do pacote INSTALADO (`node_modules/fiscal-api`),
+ *  a MESMA instância de módulo do `createFiscalPool`; nunca o `node_modules` da pasta irmã (outra instância — trocar o `createPool` dela não
+ *  atinge o pool do núcleo). */
+const CORE_MYSQL2 = require.resolve('mysql2/promise', { paths: [path.dirname(require.resolve('fiscal-api/package.json'))] })
 
 const LIVE = process.env.NFSE_ADV_IB3_DB === '1'
 const d = LIVE ? describe : describe.skip
@@ -83,7 +87,7 @@ d('IB-3 ib3y — escritor dos valores IBS/CBS sob ataque no banco descartável',
 
   afterAll(async () => {
     try { await pool?.end() } catch { /* */ }
-    const mysql = require(path.join(__dirname, '..', '..', '..', 'fiscal-api', 'node_modules', 'mysql2', 'promise'))
+    const mysql = require(CORE_MYSQL2)
     const c = cfg()
     const conn = await mysql.createConnection({ host: c.host, port: c.port, user: c.user, password: c.password })
     try { await conn.query(`DROP DATABASE IF EXISTS \`${DB}\``) } finally { await conn.end() }

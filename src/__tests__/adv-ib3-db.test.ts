@@ -11,6 +11,10 @@ import { MIGRATION_SETS, NFSE_MIGRATIONS_DIR } from '../migrations'
 import { fillAuthorityIbscbs, getIbscbsValues, fillAuthorityData, insertTransmissionEvent } from '../nfse/repository'
 import { recordIbscbsValues } from '../nfse/ibscbs-values'
 import { assertServiceStrictSession } from '../nfse/voice-family'
+/** D-F228 ("Cada um no seu"): o `mysql2` que o POOL DO NÚCLEO usa — resolvido a partir do pacote INSTALADO (`node_modules/fiscal-api`),
+ *  a MESMA instância de módulo do `createFiscalPool`; nunca o `node_modules` da pasta irmã (outra instância — trocar o `createPool` dela não
+ *  atinge o pool do núcleo). */
+const CORE_MYSQL2 = require.resolve('mysql2/promise', { paths: [path.dirname(require.resolve('fiscal-api/package.json'))] })
 
 const LIVE = process.env.NFSE_ADV_IB3_DB === '1'
 const d = LIVE ? describe : describe.skip
@@ -52,7 +56,7 @@ d('migration 007 + escritor dos valores IBS/CBS no banco descartável', () => {
   afterAll(async () => {
     try { await pool?.end() } catch { /* */ }
     // o banco descartável SEMPRE sai (inclusive em falha)
-    const mysql = require(path.join(__dirname, '..', '..', '..', 'fiscal-api', 'node_modules', 'mysql2', 'promise'))
+    const mysql = require(CORE_MYSQL2)
     const c = cfg()
     const conn = await mysql.createConnection({ host: c.host, port: c.port, user: c.user, password: c.password })
     try { await conn.query(`DROP DATABASE IF EXISTS \`${DB}\``) } finally { await conn.end() }
@@ -91,7 +95,7 @@ d('migration 007 + escritor dos valores IBS/CBS no banco descartável', () => {
          VALUES (?, 9001, 0, 1, '1000000000000000.00', '0', '0')`
   /** Uma conexão SEPARADA (fora do pool) com o modo do servidor SEM o estrito — o que qualquer escrita por fora do núcleo teria. */
   async function looseConnection() {
-    const mysql = require(path.join(__dirname, '..', '..', '..', 'fiscal-api', 'node_modules', 'mysql2', 'promise'))
+    const mysql = require(CORE_MYSQL2)
     const c = cfg()
     const conn = await mysql.createConnection({ host: c.host, port: c.port, user: c.user, password: c.password, database: DB, timezone: 'Z' })
     await conn.query(`SET SESSION sql_mode = TRIM(BOTH ',' FROM REPLACE(CONCAT(',', @@SESSION.sql_mode, ','), ',STRICT_ALL_TABLES,', ','))`)

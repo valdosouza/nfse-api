@@ -4,7 +4,8 @@
 //
 // Alvo do delta:
 //  - D-F105 (= Q-F111 (a)): a cerca da voz S vale só para a família NFS-e — `voice-kind-fence.ts`: SQL só em
-//    `invoice_service_transmission_event`; no NÚCLEO (`fiscal-api/`) só SQL (`sqlOnly`) — o `kind: 'S'` de lá é da NF-e.
+//    `invoice_service_transmission_event`; no NÚCLEO (`fiscal-api/`) só SQL (`sqlOnly`) — o `kind: 'S'` de lá é da NF-e. (D-F228,
+//    2026-11-06: a cerca sobre o fonte do núcleo mora na suíte dele — `cercas-portadas-dos-consumidores.test.ts`; aqui, só o predicado.)
 //  - D-F106 (= Q-F112 (b)): a lista POSITIVA da família — `SERVICE_VOICE_WRITE_KINDS = ['A','R','C','K','F','N'] as const satisfies
 //    readonly TransmissionEventKind[]`, `ServiceVoiceWriteKind` DERIVADO dela — tipa `TransmissionEventInput.kind` (nfse-api
 //    `src/nfse/repository.ts` e setes-api `transmission.repository.ts`) e o `OUTCOME_KIND`.
@@ -30,7 +31,7 @@
 import fs from 'fs'
 import path from 'path'
 import ts from 'typescript'
-import { tsProducesS, sqlFileProducesS, voiceFenceScope, voiceSProducers, walkTs, writerCallFlags, VOICE_SQL_WRITERS, WORKSPACE, SETES_API_DIR, setesApiPathUntilF2a, setesApiSources, relWorkspace } from './voice-kind-fence'
+import { tsProducesS, sqlFileProducesS, voiceFenceScope, voiceSProducers, walkTs, writerCallFlags, VOICE_SQL_WRITERS, SETES_API_DIR, setesApiPathUntilF2a, setesApiSources, relWorkspace } from './voice-kind-fence'
 import { insertTransmissionEvent } from '../nfse/repository'
 import type { TransmissionEventInput, ServiceVoiceWriteKind } from '../nfse/repository'
 import { OUTCOME_KIND } from '../nfse/transmission'
@@ -311,11 +312,12 @@ describe('ATAQUE 2 — D-F105: no núcleo a cerca só olha SQL na tabela da NFS-
       expect(core(injected)).toBe(true)
     }
   })
-  it('resistiu: o caminho do núcleo é decidido pelo CAMINHO RESOLVIDO (`fiscal-api` + separador) — um irmão de nome parecido (`fiscal-api-x`) não herda o `sqlOnly`; o código REAL segue sem produtor', () => {
+  it('[REVISTO — D-F228, "Cada um no seu"] o núcleo saiu do escopo da cerca da família (ele chega só pelo pacote em `vendor/`): nenhum arquivo fora deste repositório e do setes-api no escopo, e nenhum `sqlOnly` decidido por caminho; o código REAL segue sem produtor. A cerca `sqlOnly` sobre o fonte do núcleo mora na suíte dele (`fiscal-api/src/__tests__/cercas-portadas-dos-consumidores.test.ts`, bloco A)', () => {
     const fence = read(path.join(SRC_ROOT, '__tests__', 'voice-kind-fence.ts'))
-    expect(fence).toMatch(/path\.resolve\(f\)\.startsWith\(CORE_ROOT \+ path\.sep\)/)
+    expect(fence).not.toMatch(/CORE_ROOT|sqlOnly: path\./)
     expect(voiceSProducers()).toEqual([])
-    expect(voiceFenceScope().filter(f => f.startsWith(path.resolve(WORKSPACE, 'fiscal-api') + path.sep)).length).toBeGreaterThan(10)
+    const outside = voiceFenceScope().filter(f => !f.startsWith(path.resolve(PROJECT_ROOT) + path.sep) && !f.startsWith(path.resolve(SETES) + path.sep))
+    expect(outside.map(rel)).toEqual([])
   })
   it('[CORRIGIDO na sessão] [LOW R22-06] tabela da NFS-e por CONSTANTE (o nome é estático, só não está no literal do SQL) → a cerca pega (no núcleo e fora dele) — a constante string do mesmo arquivo é resolvida no template', () => {
     const src = "const VOICE = 'tb_invoice_service_transmission_event'\nawait q.query(`INSERT INTO ${VOICE} (kind, source) VALUES ('S', 'P')`)"
@@ -455,9 +457,10 @@ describe('ATAQUE 3b — setes-api', () => {
 // ===========================================================================
 
 describe('ATAQUE 4 — casts e formas de chamada no código REAL', () => {
+  // D-F228 ("Cada um no seu"): o núcleo saiu — os casts de `kind` dele são conferidos na suíte dele
+  // (`fiscal-api/src/__tests__/cercas-portadas-dos-consumidores.test.ts`, bloco D)
   const scope = () => [
-    ...walkTs(path.join(NFSE, 'src')), ...walkTs(path.join(NFSE, 'scripts')),
-    ...walkTs(path.join(WORKSPACE, 'fiscal-api', 'src')), ...(SETES_IT ? walkTs(SETES_IT) : []),
+    ...walkTs(path.join(NFSE, 'src')), ...walkTs(path.join(NFSE, 'scripts')), ...(SETES_IT ? walkTs(SETES_IT) : []),
   ]
   /** Toda asserção de tipo (`as X`/`<X>`) que (a) está DENTRO de uma chamada ao escritor, (b) nomeia um tipo da voz ou (c) é o valor de `kind`. */
   function kindCasts(code: string): string[] {
@@ -477,7 +480,7 @@ describe('ATAQUE 4 — casts e formas de chamada no código REAL', () => {
   }
   it('resistiu: NENHUM cast toca a escrita — os únicos casts com tipo da voz são de LEITURA (`… as TransmissionEventRow[]`/`as TransmissionEventRow` no repositório do setes-api; o da nfse-api saiu com o leitor para o núcleo na NE-1a parte 2); nada dentro de chamada ao escritor nem no valor de `kind`', () => {
     const files = scope()
-    expect(files.length).toBeGreaterThan(40)
+    expect(files.length).toBeGreaterThan(20)                                    // sem o núcleo (D-F228): a nfse-api tem ~32
     const hits = files.flatMap(f => kindCasts(read(f)).map(h => `${rel(f)}: ${h}`))
     expect(hits.filter(h => !/^setes-api\/src\/shared\/invoice-transmission\/transmission\.repository\.ts: TransmissionEventRow(?:\[\])? @/.test(h))).toEqual([])
     expect(hits).toHaveLength(SETES_IT ? 3 : 0)                          // os 3 eram da composição do setes-api (morre na A3 da F2a)
@@ -516,9 +519,12 @@ describe('ATAQUE 4 — casts e formas de chamada no código REAL', () => {
     const nfseRepo = read(path.join(SRC_ROOT, 'nfse', 'repository.ts'))
     expect(sigs(path.join(SRC_ROOT, 'nfse', 'repository.ts'))).toEqual([])
     expect(nfseRepo.match(/export const insertTransmissionEvent = [^\r\n]*/g)).toEqual(['export const insertTransmissionEvent = SERVICE_VOICE_FAMILY.insertTransmissionEvent'])   // \r: cópia CRLF no Windows
-    const coreTable = path.join(WORKSPACE, 'fiscal-api', 'src', 'voice', 'event-table.ts')
+    // D-F228 ("Cada um no seu"): o que o COMPILADOR desta API lê é a declaração PUBLICADA do pacote instalado (`dist/voice/event-table
+    // .d.ts`) — conferida aqui; o fonte do núcleo é conferido na suíte dele (`cercas-portadas-dos-consumidores.test.ts`, bloco D)
+    const coreTable = path.join(path.dirname(require.resolve('fiscal-api/package.json')), 'dist', 'voice', 'event-table.d.ts')
     const sf = ts.createSourceFile(coreTable, read(coreTable), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
     const fam = sf.statements.find((s): s is ts.InterfaceDeclaration => ts.isInterfaceDeclaration(s) && s.name.text === 'VoiceFamily')!
+    expect(fam).toBeDefined()
     const members = fam.members.filter(m => m.name?.getText(sf) === 'insertTransmissionEvent')
     expect(members.map(m => ts.SyntaxKind[m.kind])).toEqual(['PropertySignature'])       // nunca MethodSignature (bivariante)
     const fnType = (members[0] as ts.PropertySignature).type!
@@ -550,11 +556,9 @@ describe('ATAQUE 4 — casts e formas de chamada no código REAL', () => {
       ...(SETES_IT ? ['setes-api/src/shared/invoice-transmission/transmission.repository.ts'] : []),   // F2a aplicada: o setes-api não escreve a voz
     ].sort())
     expect(inserters).toEqual([...VOICE_SQL_WRITERS].sort())
-    // o genérico do núcleo: INSERT pela tabela do descritor, e o ÚNICO descritor da tabela da NFS-e é o da família (`voice-family.ts`)
-    const core = read(path.join(WORKSPACE, 'fiscal-api', 'src', 'voice', 'event-table.ts'))
-    expect(core).toMatch(/INSERT INTO \$\{table\}/)
-    expect(core).not.toMatch(/tb_invoice_service_transmission_event/)
-    const descriptors = files.filter(f => /defineVoiceFamily\(/.test(read(f)) && !f.startsWith(path.resolve(WORKSPACE, 'fiscal-api') + path.sep)).map(rel)
+    // o genérico do núcleo (INSERT pela tabela do descritor, sem o literal da NFS-e) é conferido na suíte dele — D-F228
+    // (`fiscal-api/src/__tests__/cercas-portadas-dos-consumidores.test.ts`, bloco D); aqui: o ÚNICO descritor da tabela da NFS-e é o da família
+    const descriptors = files.filter(f => /defineVoiceFamily\(/.test(read(f))).map(rel)
     expect(descriptors).toEqual(['nfse-api/src/nfse/voice-family.ts'])
     const kindUpdates = files.flatMap(f => sqlTexts(read(f)).filter(s => { const m = UPDATE_SET.exec(s); return !!m && /\bkind`?\s*=/i.test(m[1]) }).map(s => `${rel(f)}: ${s.slice(0, 80)}`))
     expect(kindUpdates).toEqual([])

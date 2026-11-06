@@ -109,7 +109,10 @@ put(itx, 1, null, { kind: k, source: 'P' })`,
       "withInvoiceTx(pool, who, ref, { label, ...opts }, fn)",
     ]) expect([src, lockFlags(src)]).toEqual([src, true])
     expect(lockFlags("withLockedInvoice(deps.pool, actor, refOf(actor, ref), { label, requireAlive: opts.requireAlive, lock: erp.lockInvoice }, fn)")).toBe(false)
-    const files = [...walkTs(path.join(WORKSPACE, 'nfse-api', 'src')), ...walkTs(path.join(WORKSPACE, 'nfse-api', 'scripts')), ...walkTs(path.join(WORKSPACE, 'nfe-api', 'src'))]
+    // D-F228 ("Cada um no seu"): cada repositório vigia o próprio código — a nfe-api tem a mesma cerca na suíte dela
+    // (`nfe-api/src/__tests__/voice-kind-fence.test.ts`, `lockFlags` sobre o `voiceFenceScope` dela)
+    const PROJECT = path.resolve(__dirname, '..', '..')
+    const files = [...walkTs(path.join(PROJECT, 'src')), ...walkTs(path.join(PROJECT, 'scripts'))]
     expect(files.length).toBeGreaterThan(20)
     expect(files.filter(f => lockFlags(fs.readFileSync(f, 'utf8'))).map(f => path.relative(WORKSPACE, f))).toEqual([])
   })

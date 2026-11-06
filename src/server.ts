@@ -8,8 +8,11 @@ import { createApp } from './app'
 import { MIGRATION_SETS } from './migrations'
 import { assertServiceVoiceDomainsEnforced, assertServiceStrictSession } from './nfse/voice-family'
 import { assertCorsOrigins } from './cors-origins'
+import { readBuildCheck, assertBuildCurrent } from './build-info'
 
 async function main(): Promise<void> {
+  // D-F222 (achado 3d do gate): versão do núcleo + selo do dist ANTES de qualquer migration (dist de outro commit = não sobe)
+  logger.info(assertBuildCurrent(readBuildCheck(), __filename.endsWith('.js')))
   const ctx = contextFromEnv()
   logger.info(`CORS (origens do app — D-F146): ${assertCorsOrigins(ctx.corsOrigins)}`)
   // migrations: núcleo primeiro, depois a família (trava nomeada — duas instâncias sobem juntas — D-F35)
