@@ -19,8 +19,13 @@ export function readBuildCheck(distDir: string = __dirname, projectRoot: string 
   return { coreVersion, distCommit: seal?.commit ?? null, distDirty: seal?.dirty === true, headCommit }
 }
 
-/** Recusa o `dist` de outro commit; devolve a linha do log da partida. */
-export function assertBuildCurrent(check: BuildCheck, runningFromDist: boolean): string {
+/** Recusa o `dist` de outro commit e (D-F230) núcleo de RASCUNHO em produção; devolve a linha do log da partida. */
+export function assertBuildCurrent(check: BuildCheck, runningFromDist: boolean, production = false): string {
+  // D-F230 (Valdo, 2026-11-06): número de rascunho (`X.Y.Z-frente.N` — D-F226) nunca roda em produção; vale SEM git (a cerca dos testes
+  // depende de git e de alguém rodar a suíte depois do merge)
+  if (production && check.coreVersion.includes('-')) {
+    throw new Error(`núcleo fiscal-api ${check.coreVersion} é número de RASCUNHO — produção só roda versão final (D-F230)`)
+  }
   if (runningFromDist && check.distCommit && check.headCommit && check.distCommit !== check.headCommit) {
     throw new Error(`dist compilado do commit ${check.distCommit.slice(0, 7)}, mas a pasta está no ${check.headCommit.slice(0, 7)} — rode \`npm run build\` antes de \`npm start\``)
   }

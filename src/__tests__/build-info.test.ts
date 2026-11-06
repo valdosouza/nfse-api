@@ -22,6 +22,14 @@ describe('selo do dist (build-info)', () => {
     expect(assertBuildCurrent({ ...base, distCommit: null, headCommit: B }, true)).toMatch(/sem selo — NÃO conferido/)
     expect(assertBuildCurrent({ ...base, distCommit: A, headCommit: B }, false)).toMatch(/tsx \(sem dist\)/)
   })
+  it('[D-F230] núcleo de RASCUNHO: recusa subir em produção (com ou sem git); fora de produção sobe', () => {
+    const draft = { ...base, coreVersion: '1.1.0-ne3.1', distCommit: A, headCommit: null }
+    expect(() => assertBuildCurrent(draft, true, true)).toThrow(/RASCUNHO/)
+    expect(() => assertBuildCurrent(draft, false, true)).toThrow(/RASCUNHO/)
+    expect(assertBuildCurrent(draft, true, false)).toMatch(/1\.1\.0-ne3\.1/)
+    expect(assertBuildCurrent({ ...base, distCommit: A, headCommit: A }, true, true)).toMatch(/1\.0\.0/)
+  })
+
   it('dist compilado de árvore com alteração: dito na linha do log', () => {
     expect(assertBuildCurrent({ ...base, distDirty: true, distCommit: A, headCommit: A }, true)).toMatch(/árvore com alteração/)
   })

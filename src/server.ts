@@ -12,7 +12,7 @@ import { readBuildCheck, assertBuildCurrent } from './build-info'
 
 async function main(): Promise<void> {
   // D-F222 (achado 3d do gate): versão do núcleo + selo do dist ANTES de qualquer migration (dist de outro commit = não sobe)
-  logger.info(assertBuildCurrent(readBuildCheck(), __filename.endsWith('.js')))
+  logger.info(assertBuildCurrent(readBuildCheck(), __filename.endsWith('.js'), process.env.NODE_ENV === 'production'))
   const ctx = contextFromEnv()
   logger.info(`CORS (origens do app — D-F146): ${assertCorsOrigins(ctx.corsOrigins)}`)
   // migrations: núcleo primeiro, depois a família (trava nomeada — duas instâncias sobem juntas — D-F35)
