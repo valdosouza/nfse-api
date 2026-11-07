@@ -18,7 +18,7 @@ import request from 'supertest'
 import * as fiscal from 'fiscal-api'
 import { AuthorityHttpError, FsFiscalStorage, FiscalStorage, HttpError } from 'fiscal-api'
 import { contextFromEnv, AppContext } from '../context'
-import { disposableFiscalDb, DisposableFiscalDb } from './live-harness'
+import { disposableFiscalDb, DisposableFiscalDb, attackSession } from './live-harness'
 import { createApp } from '../app'
 import type { TaxAuthorityAdapter, AuthorityContext } from '../authority/types'
 import { resetMunicipalTermsCache } from '../nfse/transmission'
@@ -33,9 +33,8 @@ jest.mock('../facts/service-facts', () => {
   return {
     __esModule: true, ...actual,
     readServiceInvoice: async (...args: any[]) => {
-      const h = await actual.readServiceInvoice(...args)
-      if (h.branch.municipalCode && !/^\d{3}$/.test(String(h.branch.municipalCode).trim())) h.branch.municipalCode = null
-      return h
+      // D-F231: cTribMun normalizado e ramo do ERP Desktop completado pelo ramo-molde da web — SÓ em memória (live-harness)
+      return jest.requireActual('./live-harness').completeBranchForAttack(await actual.readServiceInvoice(...args), args)
     },
   }
 })
@@ -124,6 +123,7 @@ const bearer = (t: string) => ({ Authorization: `Bearer ${t}` })
 
 let ctx: AppContext
 let harness: DisposableFiscalDb
+let attack: { liveAdmin: number; restore(): void } | null = null   // D-F231: a sessão do ataque (live-harness)
 let app: any            // cerca DESLIGADA (o ataque exercita a máquina da reserva — fisco falso)
 const q = async (sql: string, params: any[] = []) => (await ctx.pool.query(sql, params))[0] as any[]
 
@@ -206,6 +206,7 @@ d('GATE ADVERSARIAL F1 — 3ª rodada — ordem de travas da reserva × escritor
     const base = contextFromEnv(process.env, { adapter: fakeAdapter, checkIdentity: true, pool: harness.pool })
     process.chdir(cwd)
     ctx = { ...base, db: harness.cfg, fiscalDb: harness.cfg.database, storage: new SandboxStorage(base.storage, new FsFiscalStorage(tmpRoot)) }
+    attack = await attackSession(fiscal, harness!.pool, SCHEMA, INST)   // D-F231: acesso VIVO de um admin real — depois do ctx (falhar aqui ainda passa pelo afterAll)
     expect(ctx.adapter).toBe(fakeAdapter)
     app = createApp(ctx)
     privPem = fs.readFileSync(path.resolve(ROOT, process.env.DEV_JWT_PRIVATE_KEY_PATH ?? '../setes-api/secrets/jwt/setes-api.private.pem'), 'utf8')
@@ -266,6 +267,7 @@ d('GATE ADVERSARIAL F1 — 3ª rodada — ordem de travas da reserva × escritor
     } finally {
       // eslint-disable-next-line no-console
       console.log('[adv-r3] CHECKSUM antes', JSON.stringify(sumsBefore), '| depois', JSON.stringify(after))
+      attack?.restore(); attack = null
       await harness.drop()                                 // apaga a cópia e confere o fiscal_api REAL intocado
       fs.rmSync(tmpRoot, { recursive: true, force: true })
     }

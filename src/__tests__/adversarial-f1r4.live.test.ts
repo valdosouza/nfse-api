@@ -22,7 +22,7 @@ import request from 'supertest'
 import * as fiscal from 'fiscal-api'
 import { AuthorityHttpError, FsFiscalStorage, FiscalStorage, HttpError, createFiscalPool, runMigrations, dbConfigFromEnv } from 'fiscal-api'
 import { contextFromEnv, AppContext } from '../context'
-import { disposableFiscalDb, DisposableFiscalDb } from './live-harness'
+import { disposableFiscalDb, DisposableFiscalDb, cancelledAtAuthorityNote, attackSession, trimToOrigin } from './live-harness'
 import { createApp } from '../app'
 import { MIGRATION_SETS } from '../migrations'
 import type { TaxAuthorityAdapter, AuthorityContext } from '../authority/types'
@@ -38,9 +38,8 @@ jest.mock('../facts/service-facts', () => {
   return {
     __esModule: true, ...actual,
     readServiceInvoice: async (...args: any[]) => {
-      const h = await actual.readServiceInvoice(...args)
-      if (h.branch.municipalCode && !/^\d{3}$/.test(String(h.branch.municipalCode).trim())) h.branch.municipalCode = null
-      return h
+      // D-F231: cTribMun normalizado e ramo do ERP Desktop completado pelo ramo-molde da web — SÓ em memória (live-harness)
+      return jest.requireActual('./live-harness').completeBranchForAttack(await actual.readServiceInvoice(...args), args)
     },
   }
 })
@@ -113,6 +112,7 @@ const ACTOR = { schemaName: SCHEMA, institutionId: INST, userId: ADV_USER }
 
 let ctx: AppContext
 let harness: DisposableFiscalDb
+let attack: { liveAdmin: number; restore(): void } | null = null   // D-F231: a sessão do ataque (live-harness)
 let app: any
 const q = async (sql: string, params: any[] = []) => (await ctx.pool.query(sql, params))[0] as any[]
 
@@ -133,6 +133,7 @@ let dbsBefore = ''
 let issuerBefore: any
 const SYN: number[] = []                       // notas frescas que recebem linhas sintéticas (apagadas no fim)
 let X = 0, OLD = 0, RECENT = 0
+let CANCELLED = 0                           // D-F231: a antiga 8011 (e a 8005 da cerca) — escolhida pelo ESTADO
 
 async function restoreIssuer(): Promise<void> {
   const i = issuerBefore
@@ -192,6 +193,7 @@ d('GATE ADVERSARIAL — delta da Rodada 4 (D-F36…D-F40) — banco real (répli
     const base = contextFromEnv(process.env, { adapter: fakeAdapter, checkIdentity: true, pool: harness.pool })
     process.chdir(cwd)
     ctx = { ...base, db: harness.cfg, fiscalDb: harness.cfg.database, storage: new SandboxStorage(base.storage, new FsFiscalStorage(tmpRoot)) }
+    attack = await attackSession(fiscal, harness!.pool, SCHEMA, INST)   // D-F231: acesso VIVO de um admin real — depois do ctx (falhar aqui ainda passa pelo afterAll)
     expect(ctx.adapter).toBe(fakeAdapter)
     app = createApp(ctx)
     privPem = fs.readFileSync(path.resolve(ROOT, process.env.DEV_JWT_PRIVATE_KEY_PATH ?? '../setes-api/secrets/jwt/setes-api.private.pem'), 'utf8')
@@ -233,6 +235,7 @@ d('GATE ADVERSARIAL — delta da Rodada 4 (D-F36…D-F40) — banco real (répli
     expect(fresh.length).toBe(3)
     ;[X, OLD, RECENT] = fresh
     SYN.push(OLD, RECENT)
+    CANCELLED = await cancelledAtAuthorityNote(ctx.pool, SCHEMA, INST)
   })
 
   beforeEach(() => { resetFisco(); resetMunicipalTermsCache(); fiscal.erp.resetErpFactsCache() })
@@ -252,6 +255,7 @@ d('GATE ADVERSARIAL — delta da Rodada 4 (D-F36…D-F40) — banco real (répli
       // eslint-disable-next-line no-console
       console.log('[adv-r4] CHECKSUM fiscal_api antes', JSON.stringify(sumsBefore), '| depois', JSON.stringify(after),
         '\n[adv-r4] CHECKSUM ERP antes', JSON.stringify(erpBefore), '| depois', JSON.stringify(erpAfter), '\n[adv-r4] bancos antes', dbsBefore, '| depois', dbsAfter)
+      attack?.restore(); attack = null
       await harness.drop()
       await rootPool.end()
       fs.rmSync(tmpRoot, { recursive: true, force: true })
@@ -276,7 +280,7 @@ d('GATE ADVERSARIAL — delta da Rodada 4 (D-F36…D-F40) — banco real (répli
       const outs: string[] = []
       for (const [m, p, body] of [
         ['post', `/v1/nfse/invoices/${X}/transmit`, undefined], ['post', `/v1/nfse/invoices/${RECENT}/refresh`, undefined],
-        ['post', `/v1/nfse/invoices/8005/reconfirm`, undefined], ['post', `/v1/nfse/invoices/${RECENT}/cancel`, { reason: 'cerca da virada adversarial r4' }],
+        ['post', `/v1/nfse/invoices/${CANCELLED}/reconfirm`, undefined], ['post', `/v1/nfse/invoices/${RECENT}/cancel`, { reason: 'cerca da virada adversarial r4' }],
         ['post', '/v1/nfse/refresh', {}], ['put', '/v1/emitter/certificate', { pfxBase64: 'QUJD', password: '' }],
         ['delete', '/v1/emitter/certificate', undefined], ['put', '/v1/emitter/issuers/SE', { environment: 'H', serie: '900' }],
         ['delete', '/v1/emitter/issuers/SE', undefined],
@@ -286,7 +290,7 @@ d('GATE ADVERSARIAL — delta da Rodada 4 (D-F36…D-F40) — banco real (répli
         expect([m, p, r.status, r.body.code]).toEqual([m, p, 409, 'FISCAL_CUTOVER_PENDING'])
       }
       const reads: [string, number][] = []
-      for (const p of [`/v1/nfse/invoices/${RECENT}`, `/v1/nfse/invoices/${RECENT}/xml`, '/v1/nfse/invoices/8011', '/v1/nfse/invoices/8011/danfse',
+      for (const p of [`/v1/nfse/invoices/${RECENT}`, `/v1/nfse/invoices/${RECENT}/xml`, `/v1/nfse/invoices/${CANCELLED}`, `/v1/nfse/invoices/${CANCELLED}/danfse`,
         '/v1/nfse/invoices/pending?pageSize=5', '/v1/emitter']) {
         reads.push([p, (await request(app).get(p).set(a)).status])
       }
@@ -300,7 +304,8 @@ d('GATE ADVERSARIAL — delta da Rodada 4 (D-F36…D-F40) — banco real (répli
     it('composição direta: transmitir, consultar, cunhar nDPS e tomar o aluguel RECUSAM a réplica NO NÚCLEO — nada ao fisco, nada gravado', async () => {
       const s0 = await fiscalSums()
       await expect(transmitServiceInvoice(ctx, ACTOR, webRef(ACTOR, X))).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_CUTOVER_PENDING' })
-      await expect(refreshServiceTransmission(ctx, ACTOR, webRef(ACTOR, 8005))).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_CUTOVER_PENDING' })
+      // D-F231: no lugar da antiga 8005, uma tentativa que a consulta ALCANÇA (a cancelada final responde antes da cerca)
+      await expect(refreshServiceTransmission(ctx, ACTOR, webRef(ACTOR, OLD))).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_CUTOVER_PENDING' })
       await expect(refreshServiceTransmission(ctx, ACTOR, webRef(ACTOR, RECENT))).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_CUTOVER_PENDING' })
       await expect(fiscal.withTransaction(ctx.pool, 'adv-r4 nDPS na réplica', {}, conn => fiscal.nextDpsNumber(conn, INST)))
         .rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_CUTOVER_PENDING' })
@@ -426,7 +431,11 @@ d('GATE ADVERSARIAL — delta da Rodada 4 (D-F36…D-F40) — banco real (répli
     const advEnv = () => ({ FISCAL_DB_NAME: ADV_DB, DB_USER: process.env.DB_USER ?? '', DB_PASSWORD: process.env.DB_PASSWORD ?? '' })
     const ownerAdvEnv = () => ({ FISCAL_DB_NAME: ADV_DB, DB_USER: setesUser, DB_PASSWORD: setesPass })
     const COPY = ['tb_establishment_issuer', 'tb_establishment_certificate', 'tb_invoice_service_dps', 'tb_invoice_service_transmission', 'tb_invoice_service_transmission_event']
-    const copyFrom = async (table: string, where = '1=1') => admin.query(`INSERT INTO \`${ADV_DB}\`.${table} SELECT * FROM fiscal_api.${table} WHERE ${where}`)
+    const copyFrom = async (table: string, where = '1=1') => {
+      await admin.query(`INSERT INTO \`${ADV_DB}\`.${table} SELECT * FROM fiscal_api.${table} WHERE ${where}`)
+      // D-F231: a habilitação chega RÉPLICA, como a origem ERA antes da janela da F2a (o real foi virado em 2026-10-14/15)
+      if (table === 'tb_establishment_issuer') await admin.query(`UPDATE \`${ADV_DB}\`.tb_establishment_issuer SET cutover_at = NULL WHERE ${where}`)
+    }
     const advIssuer = async (inst: number) => (await qa(`SELECT DATE_FORMAT(cutover_at, '%Y-%m-%d %H:%i:%s') AS c, deleted, environment, serie, dps_last_number AS n
                                                            FROM tb_establishment_issuer WHERE tb_institution_id = ? AND model = 'SE'`, [inst]))[0] ?? null
 
@@ -439,6 +448,9 @@ d('GATE ADVERSARIAL — delta da Rodada 4 (D-F36…D-F40) — banco real (répli
         expect(await cols(ADV_DB)).toBe(await cols('fiscal_api'))
         await copyFrom(t)
       }
+      // D-F231: a cópia nasce RÉPLICA como a origem ERA antes da janela da F2a (o real foi virado em 2026-10-14/15)
+      await admin.query(`UPDATE \`${ADV_DB}\`.tb_establishment_issuer SET cutover_at = NULL`)
+      await trimToOrigin(admin, ADV_DB, SCHEMA)                    // …e só com o que a origem conhece (sem as vidas de depois da virada)
       advPool = createFiscalPool({ ...ctx.db, database: ADV_DB })                                   // D-F53: ataque com o SERVIÇO
       ctxAdv = { ...ctx, pool: advPool, fiscalDb: ADV_DB, checkIdentity: false }
       appAdv = createApp(ctxAdv)
@@ -545,7 +557,8 @@ d('GATE ADVERSARIAL — delta da Rodada 4 (D-F36…D-F40) — banco real (répli
       expect((await advIssuer(INST)).c).toBeNull()
     })
 
-    it('--cutover SEM a confirmação → falha alto, nada muda; com --dry-run → "virou" e desfez (nada muda)', async () => {
+    // D-F232 (Valdo, 2026-11-07): HISTÓRICO — ensaia o ato da virada/re-sincronia da institution 1 no mundo de ANTES da virada (habilitação SE viva no ERP e A1 no cofre em arquivo do setes-api). A virada real de 2026-10-14/15 retirou os dois e a F2a congelou a origem; verde até 2026-10-14 (prompt §22.51 e §23.10).
+    it.skip('--cutover SEM a confirmação → falha alto, nada muda; com --dry-run → "virou" e desfez (nada muda)', async () => {
       const s0 = await advSums()
       const noFlag = runScript('migrate:setes', ['--cutover', '1'], ownerAdvEnv())
       expect(noFlag.status).not.toBe(0)
@@ -584,8 +597,10 @@ d('GATE ADVERSARIAL — delta da Rodada 4 (D-F36…D-F40) — banco real (répli
       expect(resync.status).toBe(0)
       expect(resync.out).toMatch(/virada — origem congelada/)
       expect(await advSums()).toEqual(s0)
-      // a virada abre o emissor (o fato é lido pelo núcleo)
-      await expect(fiscal.openIssuer({ pool: advPool, keyring: ctx.keyring }, INST, 'SE')).resolves.toBeDefined()
+      // a virada abre o emissor (o fato é lido pelo núcleo) — D-F232 (Valdo, 2026-11-07): asserção HISTÓRICA, desligada (só ela: o teste
+      // prepara a cópia VIRADA dos dois seguintes). A re-sincronia anterior copia a habilitação SE da origem, que a virada real APOSENTOU
+      // (deleted = 'S') — no mundo de antes da virada ela estava viva; verde até 2026-10-14 (prompt §23.10)
+      // await expect(fiscal.openIssuer({ pool: advPool, keyring: ctx.keyring }, INST, 'SE')).resolves.toBeDefined()
     })
 
     it('assertFrozen ACUSA o ERP emitindo depois da virada: tentativa da origem ausente no fiscal_api; contador do ERP além do da API', async () => {

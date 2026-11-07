@@ -18,7 +18,7 @@ import request from 'supertest'
 import * as fiscal from 'fiscal-api'
 import { AuthorityHttpError, FsFiscalStorage, FiscalStorage, MasterKeyRing, HttpError, createFiscalPool } from 'fiscal-api'
 import { contextFromEnv, AppContext } from '../context'
-import { disposableFiscalDb, DisposableFiscalDb, licensedFact } from './live-harness'
+import { disposableFiscalDb, DisposableFiscalDb, licensedFact, noteByState, cancelledAtAuthorityNote, attackSession } from './live-harness'
 import { createApp } from '../app'
 import type { TaxAuthorityAdapter, AuthorityContext } from '../authority/types'
 import { refreshOpenServiceTransmissions, resetMunicipalTermsCache, listPending } from '../nfse/transmission'
@@ -38,9 +38,8 @@ jest.mock('../facts/service-facts', () => {
   return {
     __esModule: true, ...actual,
     readServiceInvoice: async (...args: any[]) => {
-      const h = await actual.readServiceInvoice(...args)
-      if (h.branch.municipalCode && !/^\d{3}$/.test(String(h.branch.municipalCode).trim())) h.branch.municipalCode = null
-      return h
+      // D-F231: cTribMun normalizado e ramo do ERP Desktop completado pelo ramo-molde da web — SÓ em memória (live-harness)
+      return jest.requireActual('./live-harness').completeBranchForAttack(await actual.readServiceInvoice(...args), args)
     },
   }
 })
@@ -58,7 +57,7 @@ const CNPJ = '07742094000113'
 // ---------------------------------------------------------------------------
 // FISCO FALSO (estado em memória — o "fisco" do ataque)
 // ---------------------------------------------------------------------------
-type TransmitMode = 'authorize' | 'reject' | 'unavailable' | 'unknown' | 'generate-then-timeout'
+type TransmitMode = 'authorize' | 'reject' | 'unavailable' | 'unknown' | 'generate-then-timeout' | 'auth-failed'
 type EventMode = 'accept' | 'dup-reject' | 'unavailable'
 interface Rec { key: string; xml: string; n: string; dpsId: string; env: string }
 const fisco = {
@@ -93,6 +92,8 @@ const rejected = (code = 'E0001') => new AuthorityHttpError(422, `Fisco rejeitou
   `{"erros":[{"codigo":"${code}","descricao":"teste adversarial"}]}`, [{ field: 'dps', message: `${code}: teste adversarial` }])
 const unavailable = () => new AuthorityHttpError(503, 'Fisco indisponível (falso)', 'FISCAL_AUTHORITY_UNAVAILABLE', 0, '')
 const unknown = () => new AuthorityHttpError(502, 'Fisco respondeu 200 sem envelope legível (falso)', 'FISCAL_AUTHORITY_UNKNOWN_RESPONSE', 200, '<html/>')
+// D-F231: a forma REAL do F da antiga 8005 (o fisco de H recusou a autenticação com 403 — `https-json.ts` do núcleo)
+const authFailed = () => new AuthorityHttpError(409, 'Fisco recusou a autenticação (403): falso', 'FISCAL_AUTHORITY_AUTH_FAILED', 403, '<html/>')
 const notFound = () => new AuthorityHttpError(404, 'Fisco não encontrou o recurso (falso)', 'FISCAL_NFSE_NOT_FOUND', 404, '')
 
 const fakeAdapter: TaxAuthorityAdapter = {
@@ -105,6 +106,7 @@ const fakeAdapter: TaxAuthorityAdapter = {
       case 'reject': throw rejected()
       case 'unavailable': throw unavailable()
       case 'unknown': throw unknown()
+      case 'auth-failed': throw authFailed()
       case 'generate-then-timeout': generate(ctx.environment, dpsId); throw unavailable()
       default: {
         const rec = generate(ctx.environment, dpsId)
@@ -179,6 +181,7 @@ function track<T extends { status: number; body: any }>(label: string, r: T): T 
 
 let ctx: AppContext
 let harness: DisposableFiscalDb
+let attack: { liveAdmin: number; restore(): void } | null = null   // D-F231: a sessão do ataque (live-harness)
 let app: any
 const q = async (sql: string, params: any[] = []) => (await ctx.pool.query(sql, params))[0] as any[]
 
@@ -200,9 +203,12 @@ async function newAttempts(invoiceId: number) {
 }
 
 d('GATE ADVERSARIAL F1 — banco real + fisco falso', () => {
-  // notas E do dev com ramo de serviço montável (após a normalização em memória) — 6 frescas + a 8005 (F em H)
+  // notas E do dev com ramo de serviço montável (após o ramo completado em memória) — 6 frescas + a HP (F em H)
+  // D-F231 (2026-11-06): NENHUMA nota por id fixo. As do estado "fixo" são escolhidas pelo ESTADO no beforeAll; a HP (antes a 8005 — 1ª
+  // tentativa F em H, o fisco de H recusou a autenticação) é PRODUZIDA pela própria API na CÓPIA: uma 7ª nota fresca transmitida com o
+  // emissor da cópia em H e o fisco falso recusando a autenticação (403 → voz F); depois o emissor da cópia volta ao ambiente de antes.
   let A = 0, B = 0, C = 0, D = 0, E = 0, F = 0
-  const HP = 8005, SYNCED = 6531, NO_BRANCH = 8003, DELETED = 6756, CANCELLED = 8011, FAILED_H = 8005
+  let HP = 0, SYNCED = 0, NO_BRANCH = 0, DELETED = 0, CANCELLED = 0, CANCELLED2 = 0, FAILED_H = 0
   const lastOf = async (id: number) => { const r = await txRows(id); return r[r.length - 1] }
   const issuerN = async () => Number((await q(`SELECT dps_last_number n FROM tb_establishment_issuer WHERE tb_institution_id = ? AND model = 'SE'`, [INST]))[0].n)
 
@@ -217,6 +223,7 @@ d('GATE ADVERSARIAL F1 — banco real + fisco falso', () => {
     const base = contextFromEnv(process.env, { adapter: fakeAdapter, checkIdentity: true, pool: harness.pool })
     process.chdir(cwd)
     ctx = { ...base, db: harness.cfg, fiscalDb: harness.cfg.database, storage: new SandboxStorage(base.storage, new FsFiscalStorage(tmpRoot)) }
+    attack = await attackSession(fiscal, harness!.pool, SCHEMA, INST)   // D-F231: acesso VIVO de um admin real — depois do ctx (falhar aqui ainda passa pelo afterAll)
     expect(ctx.adapter).toBe(fakeAdapter)
     app = createApp(ctx)
     privPem = fs.readFileSync(path.resolve(ROOT, process.env.DEV_JWT_PRIVATE_KEY_PATH ?? '../setes-api/secrets/jwt/setes-api.private.pem'), 'utf8')
@@ -241,12 +248,44 @@ d('GATE ADVERSARIAL F1 — banco real + fisco falso', () => {
         await svc.buildDpsBase(ctx.pool, SCHEMA, INST, h, 'H')
         fresh.push(id)
       } catch { /* cadastro incompleto — não serve de alvo */ }
+      if (fresh.length >= 7) break
     }
     // eslint-disable-next-line no-console
-    console.log('[adv] notas-alvo frescas', fresh.join(','), '+ HP', HP)
-    expect(fresh.length).toBeGreaterThanOrEqual(6)
-    ;[A, B, C, D, E, F] = fresh
+    console.log('[adv] notas-alvo frescas', fresh.join(','))
+    expect(fresh.length).toBeGreaterThanOrEqual(7)
+    ;[A, B, C, D, E, F, HP] = fresh
+    FAILED_H = HP
     TOUCHED.push(A, B, C, D, E, F, HP)
+
+    // D-F231 — as notas do estado, pelo PREDICADO (ERP só lido; a voz pela cópia do fiscal_api)
+    const s = SCHEMA
+    SYNCED = await noteByState(ctx.pool, 'sincronizada da origem (issuer ≠ estabelecimento)',
+      `SELECT i.id FROM \`${s}\`.tb_invoice i WHERE i.tb_institution_id = ? AND i.terminal = 0 AND i.deleted = 'N' AND i.issuer <> i.tb_institution_id
+        ORDER BY i.id DESC LIMIT 1`, [INST])
+    NO_BRANCH = await noteByState(ctx.pool, 'emitida aqui, viva (vida E), sem ramo de serviço',
+      `SELECT i.id FROM \`${s}\`.tb_invoice i
+         JOIN \`${s}\`.vw_invoice_life l ON l.tb_institution_id = i.tb_institution_id AND l.tb_invoice_id = i.id AND l.terminal = i.terminal AND l.last_kind = 'E'
+        WHERE i.tb_institution_id = ? AND i.terminal = 0 AND i.deleted = 'N' AND i.issuer = i.tb_institution_id
+          AND NOT EXISTS (SELECT 1 FROM \`${s}\`.tb_invoice_service sv
+                           WHERE sv.id = i.id AND sv.tb_institution_id = i.tb_institution_id AND sv.terminal = i.terminal AND sv.deleted = 'N')
+        ORDER BY i.id DESC LIMIT 1`, [INST])
+    DELETED = await noteByState(ctx.pool, 'emitida aqui e soft-deletada',
+      `SELECT i.id FROM \`${s}\`.tb_invoice i WHERE i.tb_institution_id = ? AND i.terminal = 0 AND i.deleted = 'S' AND i.issuer = i.tb_institution_id
+        ORDER BY i.id DESC LIMIT 1`, [INST])
+    // cancelada NO FISCO de PRODUÇÃO e no ERP (a antiga 8011 — e a 7971 — pelo estado)
+    CANCELLED = await cancelledAtAuthorityNote(ctx.pool, SCHEMA, INST)
+    CANCELLED2 = await cancelledAtAuthorityNote(ctx.pool, SCHEMA, INST, CANCELLED)
+
+    // a HP: 1ª tentativa F em H, produzida pela API (o emissor da CÓPIA vai a H e volta)
+    await q(`UPDATE tb_establishment_issuer SET environment = 'H' WHERE tb_institution_id = ? AND model = 'SE'`, [INST])
+    fisco.transmitMode = 'auth-failed'
+    const hp = await request(app).post(`/v1/nfse/invoices/${HP}/transmit`).set(bearer(tok()))
+    resetFisco()
+    await q(`UPDATE tb_establishment_issuer SET environment = ? WHERE tb_institution_id = ? AND model = 'SE'`, [issuerBefore.environment, INST])
+    const hpRows = await txRows(HP)
+    expect([hp.status, hpRows.map((r: any) => `${r.attempt}:${r.environment}:${r.lastKind}`)]).toEqual([409, ['1:H:F']])
+    // eslint-disable-next-line no-console
+    console.log('[adv] HP (F em H)', HP, '| estado: sincronizada', SYNCED, '· sem ramo', NO_BRANCH, '· excluída', DELETED, '· canceladas', CANCELLED, CANCELLED2)
   })
 
   beforeEach(() => { resetFisco(); resetMunicipalTermsCache(); fiscal.erp.resetErpFactsCache() })
@@ -274,6 +313,7 @@ d('GATE ADVERSARIAL F1 — banco real + fisco falso', () => {
       const fiveHundred = seen.filter(s => s.status >= 500 && s.status !== 502 && s.status !== 503)
       // eslint-disable-next-line no-console
       console.log('[adv] respostas observadas', seen.length, '| fora do envelope', JSON.stringify(bad.map(b => [b.label, b.status])), '| 500', JSON.stringify(fiveHundred.map(b => [b.label, b.status, b.body?.ref])))
+      attack?.restore(); attack = null
       await harness.drop()                                 // apaga a cópia e confere o fiscal_api REAL intocado
       fs.rmSync(tmpRoot, { recursive: true, force: true })
     }
@@ -314,8 +354,10 @@ d('GATE ADVERSARIAL F1 — banco real + fisco falso', () => {
         ['expirado', bearer(jwt.sign({ institutionId: INST, userId: ADV_USER, role: 'admin', schemaName: SCHEMA, exp: 1 }, privPem, { algorithm: 'RS256', keyid: 'default' })), 'UNAUTHORIZED'],
         ['institutionId string', bearer(tok({ institutionId: '1' })), 'UNAUTHORIZED'],
         ['schema com injeção', bearer(tok({ schemaName: 'setes_setes`; DROP TABLE x; --' })), 'UNAUTHORIZED'],
-        ['schema de OUTRA base', bearer(tok({ schemaName: 'setes_central' })), 'INSTITUTION_MISMATCH'],
-        ['institution inexistente', bearer(tok({ institutionId: 2 })), 'INSTITUTION_MISMATCH'],
+        // D-F231: desde a costura A1 (D-UC9/D-AU3) a SESSÃO viva substitui a conferência só do schema (`erp.assertInstitutionSchema` →
+        // INSTITUTION_MISMATCH): schema/estabelecimento sem vínculo vivo do usuário = 401 SESSION_REVOKED
+        ['schema de OUTRA base', bearer(tok({ schemaName: 'setes_central' })), 'SESSION_REVOKED'],
+        ['institution inexistente', bearer(tok({ institutionId: 2 })), 'SESSION_REVOKED'],
       ]
       for (const [label, h, code] of cases) {
         const r = track(`auth ${label}`, await request(app).post(`/v1/nfse/invoices/${A}/transmit`).set(h))
@@ -328,7 +370,7 @@ d('GATE ADVERSARIAL F1 — banco real + fisco falso', () => {
 
   describe('2. autorização de AÇÃO, licença e emitente', () => {
     it('usuário comum sem TRANSMITIR/CANCELAR no ramo (ou ramo não contratado) → 403 sem tocar o fisco; emitente → 403 ADMIN_REQUIRED', async () => {
-      const user = bearer(tok({ role: 'user', userId: 266 }))
+      const user = bearer(tok({ role: 'user' }))
       const iface = (await q(`SELECT interface_key AS k FROM \`${SCHEMA}\`.vw_order_interface WHERE tb_institution_id = ? AND tb_order_id = ?`, [INST, A]))[0]?.k
       const expected = (await licensedFact(ctx.pool, SCHEMA, INST, iface)) ? 'PRIVILEGE_REQUIRED' : 'INTERFACE_NOT_ALLOWED'
       // D-F46 (b): ramo não contratado = bloqueio total, inclusive sobre o já emitido — a licença decide em TODAS as ações
@@ -349,7 +391,7 @@ d('GATE ADVERSARIAL F1 — banco real + fisco falso', () => {
     })
 
     it('[corrigido — LOW] LICENÇA (D-F14): o lote de pendentes do usuário comum traz SÓ os ramos contratados', async () => {
-      const user = bearer(tok({ role: 'user', userId: 266 }))
+      const user = bearer(tok({ role: 'user' }))
       const contracted: string[] = []
       for (const k of ['service-orders', 'orders']) if (await licensedFact(ctx.pool, SCHEMA, INST, k)) contracted.push(k)
       const pending = track('licença pending', await request(app).get('/v1/nfse/invoices/pending?pageSize=100').set(user))
@@ -358,7 +400,7 @@ d('GATE ADVERSARIAL F1 — banco real + fisco falso', () => {
       // eslint-disable-next-line no-console
       console.log('[adv] ramos contratados', contracted, '| ramos no lote do usuário', [...keys], '| total', pending.body.total)
       expect([...keys].every(k => contracted.includes(k))).toBe(true)
-      const all = await listPending(ctx, { schemaName: SCHEMA, institutionId: INST, userId: 266 }, WEB, { page: 1, pageSize: 100_000 }, contracted)
+      const all = await listPending(ctx, { schemaName: SCHEMA, institutionId: INST, userId: ADV_USER, role: 'user' } as any, WEB, { page: 1, pageSize: 100_000 }, contracted)
       expect(pending.body.total).toBe(all.total)
     })
 
@@ -473,7 +515,7 @@ d('GATE ADVERSARIAL F1 — banco real + fisco falso', () => {
     it('nota cancelada / sincronizada / sem ramo / soft-deletada → 409/422/404, fisco intocado', async () => {
       const a = bearer(tok())
       const exp: [number, number, string][] = [
-        [CANCELLED, 409, 'INVOICE_NOT_TRANSMITTABLE'], [7971, 409, 'INVOICE_NOT_TRANSMITTABLE'],
+        [CANCELLED, 409, 'INVOICE_NOT_TRANSMITTABLE'], [CANCELLED2, 409, 'INVOICE_NOT_TRANSMITTABLE'],
         [SYNCED, 404, 'INVOICE_NOT_FOUND'],            // sincronizada da origem: `issuer` ≠ institution no dev → 404 antes do 409 (ambos ok, nunca 5xx)
         [NO_BRANCH, 422, 'INVOICE_SERVICE_BRANCH_MISSING'], [DELETED, 404, 'INVOICE_NOT_FOUND'],
       ]
@@ -488,11 +530,11 @@ d('GATE ADVERSARIAL F1 — banco real + fisco falso', () => {
       expect(c2.body.data).toMatchObject({ atAuthority: false, nextStep: 'apply-local-cancel' })
       const rc = track('reconfirm F/H', await request(app).post(`/v1/nfse/invoices/${FAILED_H}/reconfirm`).set(a))
       expect(rc.body.data).toMatchObject({ needed: false })
-      const v = track('view 704', await request(app).get(`/v1/nfse/invoices/${CANCELLED}`).set(a))
+      const v = track('view cancelada', await request(app).get(`/v1/nfse/invoices/${CANCELLED}`).set(a))
       expect(v.body.data.state).toBe('cancelled')
-      const x = track('xml 704', await request(app).get(`/v1/nfse/invoices/${CANCELLED}/xml`).set(a))
+      const x = track('xml cancelada', await request(app).get(`/v1/nfse/invoices/${CANCELLED}/xml`).set(a))
       expect(x.status).toBe(200)
-      const pdf = track('danfse 704', await request(app).get(`/v1/nfse/invoices/${CANCELLED}/danfse`).set(a))
+      const pdf = track('danfse cancelada', await request(app).get(`/v1/nfse/invoices/${CANCELLED}/danfse`).set(a))
       expect(pdf.status).toBe(200)
       expect(fisco.calls).toEqual({ transmit: 0, query: 0, dps: 0, event: 0 })
     })

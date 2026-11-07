@@ -37,7 +37,7 @@ import { spawnSync } from 'child_process'
 import * as fiscal from 'fiscal-api'
 import { AuthorityHttpError, FsFiscalStorage, FiscalStorage, HttpError, createFiscalPool, dbConfigFromEnv, withTransaction, ISSUER_MODELS } from 'fiscal-api'
 import { contextFromEnv, AppContext } from '../context'
-import { disposableFiscalDb, DisposableFiscalDb, FISCAL_COPY_TABLES, licensedFact, spyContractCut } from './live-harness'
+import { disposableFiscalDb, DisposableFiscalDb, FISCAL_COPY_TABLES, licensedFact, spyContractCut, attackSession } from './live-harness'
 import { createApp } from '../app'
 import type { TaxAuthorityAdapter, AuthorityContext } from '../authority/types'
 import { transmitServiceInvoice, refreshOpenServiceTransmissions, resetMunicipalTermsCache } from '../nfse/transmission'
@@ -52,9 +52,8 @@ jest.mock('../facts/service-facts', () => {
   return {
     __esModule: true, ...actual,
     readServiceInvoice: async (...args: any[]) => {
-      const h = await actual.readServiceInvoice(...args)
-      if (h.branch.municipalCode && !/^\d{3}$/.test(String(h.branch.municipalCode).trim())) h.branch.municipalCode = null
-      return h
+      // D-F231: cTribMun normalizado e ramo do ERP Desktop completado pelo ramo-molde da web — SÓ em memória (live-harness)
+      return jest.requireActual('./live-harness').completeBranchForAttack(await actual.readServiceInvoice(...args), args)
     },
   }
 })
@@ -130,6 +129,7 @@ let ctx: AppContext
 let ctxShort: AppContext
 let shortPool: ReturnType<typeof createFiscalPool> | null = null
 let harness: DisposableFiscalDb | null = null
+let attack: { liveAdmin: number; restore(): void } | null = null   // D-F231: a sessão do ataque (live-harness)
 let app: any
 let appNoId: any
 let rootPool: ReturnType<typeof createFiscalPool>
@@ -213,6 +213,8 @@ const certOfCopy = async () => (await q(`SELECT deleted, fingerprint256 AS fp FR
 async function restoreIssuerFromReal(): Promise<void> {
   await w(`DELETE FROM \`${COPY}\`.tb_establishment_issuer WHERE tb_institution_id = ?`, [INST])
   await w(`INSERT INTO \`${COPY}\`.tb_establishment_issuer SELECT * FROM \`${REAL}\`.tb_establishment_issuer WHERE tb_institution_id = ?`, [INST])
+  // D-F231: a origem destas suítes é a RÉPLICA (o real foi VIRADO na janela da F2a, 2026-10-14/15) — a cópia volta réplica
+  await w(`UPDATE \`${COPY}\`.tb_establishment_issuer SET cutover_at = NULL WHERE tb_institution_id = ?`, [INST])
 }
 const restoreCertFromReal = () =>
   w(`REPLACE INTO \`${COPY}\`.tb_establishment_certificate SELECT * FROM \`${REAL}\`.tb_establishment_certificate WHERE tb_institution_id = ?`, [INST])
@@ -267,6 +269,7 @@ d('GATE ADVERSARIAL r11 (o "r8" de 2026-10-10) — delta da sessão 2026-10-10 (
     try { harness = await disposableFiscalDb(ROOT, COPY, { turned: false }) } finally { process.chdir(cwd) }
     const base = contextFromEnv(process.env, { adapter: fakeAdapter, checkIdentity: true, pool: harness.pool })
     ctx = { ...base, db: harness.cfg, fiscalDb: harness.cfg.database, storage: new SandboxStorage(base.storage, new FsFiscalStorage(tmpRoot)) }
+    attack = await attackSession(fiscal, harness!.pool, SCHEMA, INST)   // D-F231: acesso VIVO de um admin real — depois do ctx (falhar aqui ainda passa pelo afterAll)
     expect(ctx.fiscalDb).toBe(COPY)
     expect((await q('SELECT DATABASE() AS db'))[0].db).toBe(COPY)
     shortPool = createFiscalPool(harness.cfg)
@@ -314,6 +317,7 @@ d('GATE ADVERSARIAL r11 (o "r8" de 2026-10-10) — delta da sessão 2026-10-10 (
     let dropErr: unknown = null
     try {
       if (shortPool) { try { await shortPool.end() } catch { /* já encerrado */ } }
+      attack?.restore(); attack = null
       if (harness) { try { await harness.drop() } catch (e) { dropErr = e } }   // apaga a cópia e FALHA se o real/ERP mudou
       if ((await fiscalDbs()).includes(COPY)) await rootPool.query(`DROP DATABASE IF EXISTS \`${COPY}\``)
       dbsAfter = await fiscalDbs()
@@ -698,7 +702,8 @@ d('GATE ADVERSARIAL r11 (o "r8" de 2026-10-10) — delta da sessão 2026-10-10 (
       expect(act.bad.rows).toEqual(['55:virada:N'])                                             // ensaio: desfeito
     })
 
-    it('sem achado: a RE-SINCRONIA (grava na CÓPIA) nesse estado copia a SE do ERP como RÉPLICA e não toca a 55 virada nem o A1', async () => {
+    // D-F232 (Valdo, 2026-11-07): HISTÓRICO — ensaia o ato da virada/re-sincronia da institution 1 no mundo de ANTES da virada (habilitação SE viva no ERP e A1 no cofre em arquivo do setes-api). A virada real de 2026-10-14/15 retirou os dois e a F2a congelou a origem; verde até 2026-10-14 (prompt §22.51 e §23.10).
+    it.skip('sem achado: a RE-SINCRONIA (grava na CÓPIA) nesse estado copia a SE do ERP como RÉPLICA e não toca a 55 virada nem o A1', async () => {
       await putRows(INST, [{ model: '55', turned: true }])
       const c55 = (await q(`SELECT DATE_FORMAT(cutover_at, '%Y-%m-%d %H:%i:%s') AS c, DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s') AS u FROM tb_establishment_issuer WHERE tb_institution_id = ? AND model = '55'`, [INST]))[0]
       const fp = (await certOfCopy())?.fp
@@ -714,7 +719,8 @@ d('GATE ADVERSARIAL r11 (o "r8" de 2026-10-10) — delta da sessão 2026-10-10 (
       expect(await fiscal.anyEmissionStillInErp(ctx.pool, SCHEMA, INST)).toBe(true)             // réplica: o ERP segue emitindo
     })
 
-    it('sem achado (M3 + D-F57): `--cutover` SEM `--vai` é ENSAIO — vira só a SE réplica (a 55 já virada fica), aposenta a SE do ERP e DESFAZ tudo; cópia e ERP idênticos depois', async () => {
+    // D-F232 (Valdo, 2026-11-07): HISTÓRICO — ensaia o ato da virada/re-sincronia da institution 1 no mundo de ANTES da virada (habilitação SE viva no ERP e A1 no cofre em arquivo do setes-api). A virada real de 2026-10-14/15 retirou os dois e a F2a congelou a origem; verde até 2026-10-14 (prompt §22.51 e §23.10).
+    it.skip('sem achado (M3 + D-F57): `--cutover` SEM `--vai` é ENSAIO — vira só a SE réplica (a 55 já virada fica), aposenta a SE do ERP e DESFAZ tudo; cópia e ERP idênticos depois', async () => {
       expect(act.resync?.rows).toEqual(['55:virada:N', 'SE:replica:N'])                         // estado deixado pelo teste anterior
       const safeDefault = SCRIPT_SRC().includes(DRY_LINE)
       const args = ['--cutover', String(INST), '--confirmo-setes-api-parado', ...(safeDefault ? [] : ['--dry-run'])]

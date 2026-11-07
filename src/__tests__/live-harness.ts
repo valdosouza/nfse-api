@@ -59,6 +59,8 @@ export interface DisposableFiscalDb {
   env:      Record<string, string>
   /** D-F53: SÓ para o ENSAIO do ato (`--cutover` sem `--vai`) — credencial do DONO do ERP (o ato escreve no ERP e desfaz). */
   ownerEnv: Record<string, string>
+  /** D-F231: as tabelas-base do `fiscal_api` REAL que o CHECKSUM do `drop()` vigia — TODAS (lidas do information_schema), não uma lista. */
+  watched:  readonly string[]
   drop():   Promise<void>
 }
 
@@ -74,14 +76,31 @@ export async function disposableFiscalDb(root: string, name: string, opts: { tur
       + 'não o dono do ERP — aplique ops/grants.sql (seção 1b) e configure o .env')
   }
   const admin = createFiscalPool({ ...base, user, password })
+  // D-F231 (gate socrático): o `--runInBand` só põe em fila DENTRO de um processo jest — duas sessões (ou dois terminais) rodando suítes ao
+  // vivo ao mesmo tempo apagavam a cópia uma da outra na varredura abaixo. Trava NOMEADA do MariaDB numa conexão PRÓPRIA, presa até o
+  // `drop()` (processo morto = conexão fechada = trava solta). Espera até 15 min pela outra suíte; senão falha alto.
+  const lockConn = await admin.getConnection()
+  const [[got]] = await lockConn.query(`SELECT GET_LOCK('nfse_api_live_harness', 900) AS ok`) as any
+  if (Number(got?.ok) !== 1) {
+    lockConn.release(); await admin.end()
+    throw new Error('Outra suíte ao vivo da nfse-api está rodando (trava nfse_api_live_harness) — rode uma de cada vez')
+  }
+  const unlock = async () => { try { await lockConn.query(`DO RELEASE_LOCK('nfse_api_live_harness')`) } finally { lockConn.release() } }
+  try {
   const erpSchema = process.env.ADV_ERP_SCHEMA ?? 'setes_setes'
   // a tabela da lista cuja migration o REAL ainda não aplicou (antes do deploy) fica fora da cópia e da vigilância — só ela
   const [appliedRows] = await admin.query(`SELECT project, version FROM \`${real}\`._migrations`)
   const applied = new Set((appliedRows as any[]).map(r => `${r.project}/${r.version}`))
   const pendingInReal = new Set(tablesByMigration().filter(t => !applied.has(`${t.project}/${t.version}`)).map(t => t.table))
   const copyTables = FISCAL_COPY_TABLES.filter(t => !pendingInReal.has(t))
+  // D-F231: a vigilância cobre TODA tabela-base do real (lida do information_schema) — a lista fixa deixou de fora as tabelas da família NF-e
+  // (nfe-api/001, 2026-11-04) no mesmo banco; a cópia continua só com as da família NFS-e
+  const [baseRows] = await admin.query(`SELECT table_name AS t FROM information_schema.tables WHERE table_schema = ? AND table_type = 'BASE TABLE' ORDER BY table_name`, [real])
+  const watched = Object.freeze((baseRows as any[]).map(r => String(r.t)))
+  const missing = [...copyTables, '_migrations'].filter(t => !watched.includes(t))
+  if (missing.length) throw new Error(`Vigilância do harness: o ${real} real não tem ${missing.join(', ')}`)
   const realSums = async () => JSON.stringify((await admin.query(
-    `CHECKSUM TABLE ${[...copyTables, '_migrations'].map(t => `\`${real}\`.${t}`).join(', ')}, ${ERP_WATCH.map(t => `\`${erpSchema}\`.${t}`).join(', ')}, ${CENTRAL_WATCH.join(', ')}`))[0])
+    `CHECKSUM TABLE ${[...watched].map(t => `\`${real}\`.\`${t.replace(/`/g, '``')}\``).join(', ')}, ${ERP_WATCH.map(t => `\`${erpSchema}\`.${t}`).join(', ')}, ${CENTRAL_WATCH.join(', ')}`))[0])
   // cópias que sobraram de execução MORTA (nunca a de outra suíte em paralelo — rodar com --runInBand)
   // a varredura casa EXATAMENTE o que o validador aceita (re-prova R4: `fiscal_api_adv4` da r4 escapava)
   const [left] = await admin.query(`SHOW DATABASES LIKE 'fiscal\\_api\\_adv%'`)
@@ -96,11 +115,18 @@ export async function disposableFiscalDb(root: string, name: string, opts: { tur
   await admin.query(`DROP DATABASE IF EXISTS \`${name}\``)
   await runMigrations({ ...base, database: name }, MIGRATION_SETS)        // como o serviço faz no boot (D-F53)
   for (const t of copyTables) await admin.query(`INSERT INTO \`${name}\`.${t} SELECT * FROM \`${real}\`.${t}`)
+  // D-F231: o estado da virada da CÓPIA é o que a suíte PEDE, nunca herdado do real. As suítes nasceram com o real como RÉPLICA (cutover_at
+  // NULL); a JANELA da F2a (2026-10-14/15) virou o real → com `turned: false` a cópia herdava a virada e as suítes da cerca caíam. Agora:
+  // `turned: true` = toda habilitação virada; `turned: false` = toda habilitação RÉPLICA (cutover_at NULL) — o estado de antes da virada.
   if (opts.turned) await admin.query(`UPDATE \`${name}\`.tb_establishment_issuer SET cutover_at = NOW() WHERE cutover_at IS NULL`)
+  else {
+    await admin.query(`UPDATE \`${name}\`.tb_establishment_issuer SET cutover_at = NULL WHERE cutover_at IS NOT NULL`)
+    await trimToOrigin(admin, name, erpSchema)
+  }
   const cfg: FiscalDbConfig = { ...base, database: name }              // D-F53: o ataque com o usuário do SERVIÇO
   const pool = createFiscalPool(cfg)
   return {
-    cfg, pool, user: base.user, password: base.password,
+    cfg, pool, user: base.user, password: base.password, watched,
     env: { FISCAL_DB_NAME: name, DB_USER: base.user, DB_PASSWORD: base.password },
     ownerEnv: { FISCAL_DB_NAME: name, DB_USER: user, DB_PASSWORD: password },
     async drop() {
@@ -110,10 +136,166 @@ export async function disposableFiscalDb(root: string, name: string, opts: { tur
         const after = await realSums()
         if (after !== before) throw new Error(`O ${real} REAL (ou o ERP ${erpSchema}) mudou durante o ataque — conferir (CHECKSUM antes ${before} | depois ${after})`)
       } finally {
-        await admin.end()
+        try { await unlock() } finally { await admin.end() }
       }
     },
   }
+  } catch (err) {                                                      // a criação falhou: solta a trava e o pool do dono
+    try { await unlock() } finally { await admin.end() }
+    throw err
+  }
+}
+
+/**
+ * D-F231 — a CÓPIA no estado de ANTES DA VIRADA tem só o que a ORIGEM (o ERP — as tabelas fiscais próprias do setes-api, congeladas pela
+ * F2a) conhece: tentativa (com voz, valores IBS/CBS e DPS da vida) que a origem NÃO tem foi feita pela nfse-api DEPOIS da virada (ex.: a
+ * NFS-e 707 de 2026-10-15) — na réplica ela seria o "dual-write" que a re-sincronia recusa com razão. Escreve SÓ em [db] (descartável).
+ */
+export async function trimToOrigin(q: { query: (sql: string, p?: any[]) => Promise<any> }, db: string, erpSchema: string): Promise<void> {
+  if (!/^fiscal_api_adv[a-z0-9_]*$/.test(db)) throw new Error(`trimToOrigin só em cópia descartável: ${db}`)
+  if (!/^setes_[a-z0-9_]+$/.test(erpSchema)) throw new Error(`schema inválido: ${erpSchema}`)
+  const notInOrigin = (a: string) => `NOT EXISTS (SELECT 1 FROM \`${erpSchema}\`.tb_invoice_service_transmission src
+    WHERE src.tb_institution_id = ${a}.tb_institution_id AND src.tb_invoice_id = ${a}.tb_invoice_id AND src.terminal = ${a}.terminal AND src.attempt = ${a}.attempt)`
+  for (const t of ['tb_invoice_service_transmission_event', 'tb_invoice_service_transmission_ibscbs', 'tb_invoice_service_transmission']) {
+    await q.query(`DELETE x FROM \`${db}\`.${t} x WHERE ${notInOrigin('x')}`)
+  }
+  await q.query(`DELETE d FROM \`${db}\`.tb_invoice_service_dps d WHERE NOT EXISTS (SELECT 1 FROM \`${db}\`.tb_invoice_service_transmission t
+    WHERE t.tb_institution_id = d.tb_institution_id AND t.tb_invoice_id = d.tb_invoice_id AND t.terminal = d.terminal AND t.life_event = d.life_event)`)
+  // gate adversarial (LOW): o contador da habilitação SE volta ao da origem — o nDPS cunhado depois da virada (a 707) não fica "queimado"
+  await q.query(`UPDATE \`${db}\`.tb_establishment_issuer f JOIN \`${erpSchema}\`.tb_establishment_issuer src
+                    ON src.tb_institution_id = f.tb_institution_id AND src.model = f.model
+                   SET f.dps_last_number = src.dps_last_number WHERE f.model = 'SE'`)
+}
+
+/**
+ * D-F231 (2026-11-06) — RAMO COMPLETADO EM MEMÓRIA para o ataque. Os ataques ao vivo exercitam a MÁQUINA DA VOZ (reserva, tentativa, voz,
+ * travas, cancelamento) e precisam de notas E da web cujo ramo monte o DPS. Até 2026-10-10 elas existiam (as notas da trilha faturadas
+ * pela web); a janela da F2a cancelou essas notas (D-F207) e as notas E que SOBRARAM no dev vieram do ERP Desktop pelo sincronizador — o
+ * ramo de serviço delas não tem os fatos do ISS (sem cTribNac, sem cidade de incidência, base 0) → `buildDpsBase` recusa TODAS com 422
+ * (`SERVICE_RULE_NATIONAL_CODE_REQUIRED`) e as 8 suítes caíam no `beforeAll` ("notas-alvo frescas" vazio). Conhecimento negativo: escolher
+ * nota por id FIXO ou contar com "notas frescas" do faturamento da web deixa a suíte refém do dado do dev.
+ *
+ * Regra (o mesmo princípio da normalização do cTribMun, que já vivia aqui): o ramo lido de VERDADE do ERP é COMPLETADO só EM MEMÓRIA,
+ * nunca no banco:
+ *  - cTribMun fora da forma (3 dígitos) → ausente (anterior à D-N26b);
+ *  - ramo SEM cTribNac (o do ERP Desktop) → os fatos do ISS vêm do RAMO-MOLDE: o ramo mais recente que a WEB congelou para o mesmo
+ *    estabelecimento (com cTribNac e cidade; vivo ou não — é o FATO de como o faturamento congela), mantendo o VALOR da própria nota
+ *    (base = valor, ISS pela alíquota do molde). Sem molde nenhum o harness FALHA ALTO (não inventa número).
+ * Ramo que já monta (faturado pela web) passa intacto. Locks, views, repositório e banco fiscal (cópia) continuam REAIS.
+ */
+const branchTemplates = new Map<string, Promise<BranchTemplate>>()
+interface BranchTemplate {
+  serviceListId: string | null; nationalCode: string; municipalCode: string | null; cityId: number
+  aliqIss: number; issWithheld: 'S' | 'N'; liability: '1' | '2' | '3' | '4'
+}
+async function branchTemplate(q: { query: (sql: string, p?: any[]) => Promise<any> }, schemaName: string, institutionId: number): Promise<BranchTemplate> {
+  if (!/^setes_[a-z0-9_]+$/.test(schemaName)) throw new Error(`schema inválido: ${schemaName}`)
+  const [rows] = await q.query(
+    `SELECT sv.tb_service_list_id AS serviceListId, sv.national_code AS nationalCode, sv.municipal_code AS municipalCode,
+            sv.tb_city_id AS cityId, sv.aliq_iss AS aliqIss, sv.iss_withheld AS issWithheld, sv.liability
+       FROM \`${schemaName}\`.tb_invoice_service sv
+      WHERE sv.tb_institution_id = ? AND sv.national_code IS NOT NULL AND sv.tb_city_id IS NOT NULL
+      ORDER BY sv.updated_at DESC, sv.id DESC LIMIT 1`, [institutionId])
+  const r = (rows as any[])[0]
+  if (!r) {
+    throw new Error(`D-F231: nenhum ramo de serviço faturado pela WEB (com cTribNac e cidade) em ${schemaName}/${institutionId} — `
+      + 'sem ramo-molde o harness não completa o ramo das notas do ERP Desktop; fature UMA nota de serviço pela web no dev')
+  }
+  return {
+    serviceListId: r.serviceListId ?? null, nationalCode: String(r.nationalCode),
+    municipalCode: /^\d{3}$/.test(String(r.municipalCode ?? '').trim()) ? String(r.municipalCode).trim() : null,
+    cityId: Number(r.cityId), aliqIss: Number(r.aliqIss ?? 0), issWithheld: r.issWithheld === 'S' ? 'S' : 'N',
+    liability: (['1', '2', '3', '4'].includes(String(r.liability)) ? String(r.liability) : '1') as BranchTemplate['liability'],
+  }
+}
+
+/** O mock de `readServiceInvoice` das suítes ao vivo chama isto com o cabeçalho LIDO do ERP (args = os mesmos da leitura real). */
+export async function completeBranchForAttack(header: any, args: any[]): Promise<any> {
+  const b = header.branch
+  if (b.municipalCode && !/^\d{3}$/.test(String(b.municipalCode).trim())) b.municipalCode = null
+  if (!b.nationalCode) {
+    const [q, schemaName, ref] = args
+    const key = `${schemaName}/${ref.institutionId}`
+    // gate adversarial (LOW): a leitura que FALHA não fica no cache (um erro passageiro não envenena as notas seguintes do arquivo)
+    if (!branchTemplates.has(key)) {
+      branchTemplates.set(key, branchTemplate(q, schemaName, ref.institutionId).catch(err => { branchTemplates.delete(key); throw err }))
+    }
+    const t = await branchTemplates.get(key)!
+    const value = Number(b.totalValue ?? 0)
+    Object.assign(b, {
+      serviceListId: t.serviceListId, nationalCode: t.nationalCode, municipalCode: t.municipalCode, cityId: t.cityId,
+      aliqIss: t.aliqIss, issWithheld: t.issWithheld, liability: t.liability,
+      baseIss: value, issValue: Math.round(value * t.aliqIss) / 100,
+    })
+  }
+  return header
+}
+
+/** Nota-alvo pelo ESTADO (D-F231): ids que a suíte usa como "fixos" passam a ser escolhidos por um predicado — nunca por número. */
+export async function noteByState(q: { query: (sql: string, p?: any[]) => Promise<any> }, label: string, sql: string, params: any[]): Promise<number> {
+  const [rows] = await q.query(sql, params)
+  const id = Number((rows as any[])[0]?.id ?? 0)
+  if (!id) throw new Error(`D-F231: o dev não tem nota no estado "${label}" — a suíte ao vivo precisa dela (ver o predicado em ${label})`)
+  return id
+}
+
+/**
+ * D-F231: nota CANCELADA no fisco de PRODUÇÃO e no ERP — viva no ERP (`deleted = 'N'`, emitida aqui, com ramo), vida local C e, na cópia do
+ * `fiscal_api` ([q] = o pool da cópia), a tentativa de P com a chave e a voz C (a antiga 8011 era a da NFS-e 704). O XML dela está no arquivo
+ * fiscal real (o storage do ataque só o LÊ). [except] = nota que não serve (para pegar uma 2ª).
+ */
+export function cancelledAtAuthorityNote(q: { query: (sql: string, p?: any[]) => Promise<any> }, schemaName: string, institutionId: number, except = 0): Promise<number> {
+  if (!/^setes_[a-z0-9_]+$/.test(schemaName)) throw new Error(`schema inválido: ${schemaName}`)
+  const s = schemaName
+  return noteByState(q, 'cancelada no fisco de P e no ERP', `SELECT i.id FROM \`${s}\`.tb_invoice i
+       JOIN \`${s}\`.vw_invoice_life l ON l.tb_institution_id = i.tb_institution_id AND l.tb_invoice_id = i.id AND l.terminal = i.terminal AND l.last_kind = 'C'
+       JOIN \`${s}\`.tb_invoice_service sv ON sv.id = i.id AND sv.tb_institution_id = i.tb_institution_id AND sv.terminal = i.terminal AND sv.deleted = 'N'
+       JOIN vw_invoice_service_transmission t ON t.tb_institution_id = i.tb_institution_id AND t.tb_invoice_id = i.id AND t.terminal = i.terminal
+                                             AND t.environment = 'P' AND t.access_key IS NOT NULL AND t.last_kind = 'C'
+      WHERE i.tb_institution_id = ? AND i.terminal = 0 AND i.deleted = 'N' AND i.issuer = i.tb_institution_id AND i.id <> ?
+      ORDER BY i.id DESC LIMIT 1`, [institutionId, except])
+}
+
+/** D-F231: os usuários do ATAQUE são marcadores sintéticos (990001…990999 — marcam as linhas que o ataque grava na cópia). */
+export const isAttackUser = (userId: unknown): boolean => Number.isInteger(userId) && (userId as number) >= 990000 && (userId as number) <= 990999
+
+/**
+ * D-F231 — SESSÃO DO ATAQUE pela costura A1. Desde a costura (D-AU3/D-AU6, 2026-11-01) a nfse-api lê a SESSÃO VIVA a cada requisição
+ * (`access.liveIdentity` → `setes_central.vw_user_link`) e o veredito pelas views do produto; os usuários sintéticos do ataque não existem
+ * no ERP → toda rota respondia 401 `SESSION_REVOKED` (a outra metade das 149 falhas — as suítes nasceram antes da costura e não rodaram ao
+ * vivo depois dela). O ERP não é escrito; o dev não tem usuário comum na Setes. Então o usuário do ataque EMPRESTA o acesso VIVO de um
+ * ADMIN REAL do mesmo estabelecimento, escolhido pelo ESTADO (perfil `admin` em `vw_user_link` — nunca o super, que escapa da licença):
+ *  - perfil = o `role` que o token do ataque declara (como antes da costura): `user` = comum SEM concessão nenhuma (veredito
+ *    'no-privilege' onde o admin alcança a interface, 'not-contracted' onde não alcança; nada concedido); senão o perfil VIVO do admin;
+ *  - sessão, alcance e veredito do admin = as views REAIS (o token de outro estabelecimento/schema continua sem sessão → 401);
+ *  - usuário que NÃO é do ataque passa direto pela biblioteca real.
+ * Troca por ATRIBUIÇÃO (não `jest.spyOn`): o `spyContractCut` espia por cima e, no `mockRestore`, devolve ESTE invólucro.
+ */
+export async function attackSession(fiscalApi: any, q: { query: (sql: string, p?: any[]) => Promise<any> }, schemaName: string, institutionId: number): Promise<{ liveAdmin: number; restore(): void }> {
+  const liveAdmin = await noteByState(q, 'admin vivo do estabelecimento (vw_user_link)',
+    `SELECT tb_user_id AS id FROM setes_central.vw_user_link WHERE tb_institution_id = ? AND schema_name = ? AND profile = 'admin'
+      ORDER BY tb_user_id LIMIT 1`, [institutionId, schemaName])
+  const a = fiscalApi.access
+  const orig = { liveIdentity: a.liveIdentity, reachableKeys: a.reachableKeys, accessVerdict: a.accessVerdict, grantedKeys: a.grantedKeys }
+  // ataque que se declarou `user`: o perfil viaja no PRÓPRIO `who` (o middleware põe o perfil da sessão no payload que as guardas repassam)
+  const isRegular = (who: any) => who?.role === 'user'
+  const asAdmin = (who: any) => ({ ...who, userId: liveAdmin })
+  a.liveIdentity = async (qq: any, p: any, iat: number) => {
+    if (!isAttackUser(p?.userId)) return orig.liveIdentity(qq, p, iat)
+    const live = await orig.liveIdentity(qq, asAdmin(p), iat)         // a sessão REAL do admin (outro estabelecimento/schema → 401)
+    return { ...p, role: p.role === 'user' ? 'user' : live.role }
+  }
+  a.reachableKeys = (qq: any, who: any, keys: any) => orig.reachableKeys(qq, isAttackUser(who?.userId) ? asAdmin(who) : who, keys)
+  a.accessVerdict = async (qq: any, who: any, keys: any, priv: any) => {
+    if (!isAttackUser(who?.userId)) return orig.accessVerdict(qq, who, keys, priv)
+    if (!isRegular(who)) return orig.accessVerdict(qq, asAdmin(who), keys, priv)
+    return (await orig.reachableKeys(qq, asAdmin(who), keys)).length > 0 ? 'no-privilege' : 'not-contracted'
+  }
+  a.grantedKeys = async (qq: any, who: any, keys: any, priv: any) => {
+    if (!isAttackUser(who?.userId)) return orig.grantedKeys(qq, who, keys, priv)
+    return isRegular(who) ? [] : orig.grantedKeys(qq, asAdmin(who), keys, priv)
+  }
+  return { liveAdmin, restore: () => Object.assign(a, orig) }
 }
 
 /**

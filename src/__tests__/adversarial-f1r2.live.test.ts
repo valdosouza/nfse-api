@@ -18,7 +18,7 @@ import request from 'supertest'
 import * as fiscal from 'fiscal-api'
 import { AuthorityHttpError, FsFiscalStorage, FiscalStorage, HttpError } from 'fiscal-api'
 import { contextFromEnv, AppContext } from '../context'
-import { disposableFiscalDb, DisposableFiscalDb } from './live-harness'
+import { disposableFiscalDb, DisposableFiscalDb, cancelledAtAuthorityNote, attackSession, trimToOrigin } from './live-harness'
 import { createApp } from '../app'
 import type { TaxAuthorityAdapter, AuthorityContext } from '../authority/types'
 import { refreshOpenServiceTransmissions, resetMunicipalTermsCache, IN_FLIGHT_MINUTES, REFRESH_MIN_MINUTES } from '../nfse/transmission'
@@ -34,9 +34,8 @@ jest.mock('../facts/service-facts', () => {
   return {
     __esModule: true, ...actual,
     readServiceInvoice: async (...args: any[]) => {
-      const h = await actual.readServiceInvoice(...args)
-      if (h.branch.municipalCode && !/^\d{3}$/.test(String(h.branch.municipalCode).trim())) h.branch.municipalCode = null
-      return h
+      // D-F231: cTribMun normalizado e ramo do ERP Desktop completado pelo ramo-molde da web — SÓ em memória (live-harness)
+      return jest.requireActual('./live-harness').completeBranchForAttack(await actual.readServiceInvoice(...args), args)
     },
   }
 })
@@ -145,6 +144,7 @@ const bearer = (t: string) => ({ Authorization: `Bearer ${t}` })
 
 let ctx: AppContext
 let harness: DisposableFiscalDb
+let attack: { liveAdmin: number; restore(): void } | null = null   // D-F231: a sessão do ataque (live-harness)
 let app: any            // cerca DESLIGADA (o ataque exercita a máquina da voz — fisco falso)
 let appFenced: any      // a MESMA app — a cerca é o FATO da habilitação (D-F39); `asReplica()` liga-a NA CÓPIA no trecho que a testa
 let appNoIdentity: any  // institutions fictícias (sem conferência de identidade no ERP)
@@ -173,6 +173,7 @@ async function restoreCertificate(): Promise<void> {
 
 d('GATE ADVERSARIAL F1 — 2ª rodada — banco real + fisco falso', () => {
   let X = 0, W = 0, V = 0, Z = 0
+  let CANCELLED = 0                         // D-F231: a antiga 8011 (e a 8005 da cerca) — escolhida pelo ESTADO
 
   beforeAll(async () => {
     require('dotenv').config({ path: path.join(ROOT, '.env') })
@@ -183,12 +184,15 @@ d('GATE ADVERSARIAL F1 — 2ª rodada — banco real + fisco falso', () => {
     const base = contextFromEnv(process.env, { adapter: fakeAdapter, checkIdentity: true, pool: harness.pool })
     process.chdir(cwd)
     ctx = { ...base, db: harness.cfg, fiscalDb: harness.cfg.database, storage: new SandboxStorage(base.storage, new FsFiscalStorage(tmpRoot)) }
+    attack = await attackSession(fiscal, harness!.pool, SCHEMA, INST)   // D-F231: acesso VIVO de um admin real — depois do ctx (falhar aqui ainda passa pelo afterAll)
     expect(ctx.adapter).toBe(fakeAdapter)
     app = createApp(ctx)
     appFenced = app
     appNoIdentity = createApp({ ...ctx, checkIdentity: false })
     privPem = fs.readFileSync(path.resolve(ROOT, process.env.DEV_JWT_PRIVATE_KEY_PATH ?? '../setes-api/secrets/jwt/setes-api.private.pem'), 'utf8')
 
+    // D-F231 (gate socrático, ponto 1): a poda vem ANTES de todo retrato (CHECKSUM, máximos) — senão o afterAll acusaria "RESÍDUO"
+    await trimToOrigin(ctx.pool, harness.cfg.database, SCHEMA)
     sumsBefore = await checksums()
     issuerBefore = (await q(`SELECT environment, serie, dps_last_number, tb_user_id, DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s') AS updated_at,
                                     DATE_FORMAT(refresh_lease_until, '%Y-%m-%d %H:%i:%s') AS refresh_lease_until, DATE_FORMAT(cutover_at, '%Y-%m-%d %H:%i:%s') AS cutover_at
@@ -222,6 +226,7 @@ d('GATE ADVERSARIAL F1 — 2ª rodada — banco real + fisco falso', () => {
     expect(fresh.length).toBe(4)
     ;[X, W, V, Z] = fresh
     TOUCHED.push(X, W, V, Z)
+    CANCELLED = await cancelledAtAuthorityNote(ctx.pool, SCHEMA, INST)
   })
 
   beforeEach(() => { resetFisco(); resetMunicipalTermsCache(); fiscal.erp.resetErpFactsCache() })
@@ -246,6 +251,7 @@ d('GATE ADVERSARIAL F1 — 2ª rodada — banco real + fisco falso', () => {
     } finally {
       // eslint-disable-next-line no-console
       console.log('[adv-r2] CHECKSUM antes', JSON.stringify(sumsBefore), '| depois', JSON.stringify(after))
+      attack?.restore(); attack = null
       await harness.drop()                                 // apaga a cópia e confere o fiscal_api REAL intocado
       fs.rmSync(tmpRoot, { recursive: true, force: true })
     }
@@ -264,8 +270,8 @@ d('GATE ADVERSARIAL F1 — 2ª rodada — banco real + fisco falso', () => {
       const a = bearer(tok())
       const s0 = await checksums()
       for (const [m, p, body] of [
-        ['post', `/v1/nfse/invoices/${X}/transmit`, undefined], ['post', `/v1/nfse/invoices/8011/refresh`, undefined],
-        ['post', `/v1/nfse/invoices/8005/reconfirm`, undefined], ['post', `/v1/nfse/invoices/8011/cancel`, { reason: 'cerca da virada adversarial' }],
+        ['post', `/v1/nfse/invoices/${X}/transmit`, undefined], ['post', `/v1/nfse/invoices/${CANCELLED}/refresh`, undefined],
+        ['post', `/v1/nfse/invoices/${CANCELLED}/reconfirm`, undefined], ['post', `/v1/nfse/invoices/${CANCELLED}/cancel`, { reason: 'cerca da virada adversarial' }],
         ['post', '/v1/nfse/refresh', {}], ['put', '/v1/emitter/certificate', { pfxBase64: 'QUJD', password: '' }],
         ['delete', '/v1/emitter/certificate', undefined], ['put', '/v1/emitter/issuers/SE', { environment: 'H', serie: '1' }],
         ['delete', '/v1/emitter/issuers/SE', undefined],
@@ -274,7 +280,7 @@ d('GATE ADVERSARIAL F1 — 2ª rodada — banco real + fisco falso', () => {
         expect([m, p, r.status, r.body.code]).toEqual([m, p, 409, 'FISCAL_CUTOVER_PENDING'])
       }
       const reads: [string, number][] = []
-      for (const p of ['/v1/nfse/invoices/8011', '/v1/nfse/invoices/8011/xml', '/v1/nfse/invoices/8011/danfse', `/v1/nfse/invoices/${X}`,
+      for (const p of [`/v1/nfse/invoices/${CANCELLED}`, `/v1/nfse/invoices/${CANCELLED}/xml`, `/v1/nfse/invoices/${CANCELLED}/danfse`, `/v1/nfse/invoices/${X}`,
         '/v1/nfse/invoices/pending?pageSize=5', '/v1/emitter', '/v1/nfse/invoices/2147483647']) {
         const r = await request(appFenced).get(p).set(a)
         reads.push([p, r.status])
@@ -289,7 +295,8 @@ d('GATE ADVERSARIAL F1 — 2ª rodada — banco real + fisco falso', () => {
 
   // =========================================================================
   describe('A2. migrate:setes (D-F18) — re-sincronia FALHA ALTO em dual-write (antes de qualquer tentativa do ataque)', () => {
-    beforeAll(async () => { if (ctx) await asReplica() })          // a re-sincronia só COPIA réplica (virada = congelada)
+    // a re-sincronia só COPIA réplica (virada = congelada); D-F231: a cópia já foi podada à origem no beforeAll principal
+    beforeAll(async () => { if (ctx) await asReplica() })
     afterAll(async () => { if (ctx) await asTurned() })
     const runDry = () => spawnSync('npm', ['run', 'migrate:setes', '--', '--dry-run'], { cwd: ROOT, shell: true, encoding: 'utf8', timeout: 150_000, env: { ...process.env, ...harness.env } })
 

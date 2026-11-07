@@ -35,7 +35,7 @@ import forge from 'node-forge'
 import * as fiscal from 'fiscal-api'
 import { AuthorityHttpError, FsFiscalStorage, FiscalStorage, HttpError, createFiscalPool, dbConfigFromEnv, runMigrations } from 'fiscal-api'
 import { contextFromEnv, AppContext } from '../context'
-import { disposableFiscalDb, DisposableFiscalDb, FISCAL_COPY_TABLES } from './live-harness'
+import { disposableFiscalDb, DisposableFiscalDb, FISCAL_COPY_TABLES, attackSession } from './live-harness'
 import { createApp } from '../app'
 import { MIGRATION_SETS } from '../migrations'
 import type { TaxAuthorityAdapter, AuthorityContext } from '../authority/types'
@@ -54,9 +54,8 @@ jest.mock('../facts/service-facts', () => {
   return {
     __esModule: true, ...actual,
     readServiceInvoice: async (...args: any[]) => {
-      const h = await actual.readServiceInvoice(...args)
-      if (h.branch.municipalCode && !/^\d{3}$/.test(String(h.branch.municipalCode).trim())) h.branch.municipalCode = null
-      return h
+      // D-F231: cTribMun normalizado e ramo do ERP Desktop completado pelo ramo-molde da web — SÓ em memória (live-harness)
+      return jest.requireActual('./live-harness').completeBranchForAttack(await actual.readServiceInvoice(...args), args)
     },
   }
 })
@@ -123,6 +122,7 @@ const INST_PAYLOAD = { institutionId: INST, userId: ADV_USER, role: 'admin', sch
 
 let ctx: AppContext
 let harness: DisposableFiscalDb | null = null
+let attack: { liveAdmin: number; restore(): void } | null = null   // D-F231: a sessão do ataque (live-harness)
 let app: any
 let rootPool: ReturnType<typeof createFiscalPool>
 let setesUser = '', setesPass = ''
@@ -197,6 +197,8 @@ const realCertFp = async () => (await rq(`SELECT fingerprint256 AS fp FROM \`${R
 async function restoreIssuerFromReal(): Promise<void> {
   await w(`DELETE FROM \`${COPY}\`.tb_establishment_issuer WHERE tb_institution_id = ?`, [INST])
   await w(`INSERT INTO \`${COPY}\`.tb_establishment_issuer SELECT * FROM \`${REAL}\`.tb_establishment_issuer WHERE tb_institution_id = ?`, [INST])
+  // D-F231: a origem destas suítes é a RÉPLICA (o real foi VIRADO na janela da F2a, 2026-10-14/15) — a cópia volta réplica
+  await w(`UPDATE \`${COPY}\`.tb_establishment_issuer SET cutover_at = NULL WHERE tb_institution_id = ?`, [INST])
 }
 const restoreCertFromReal = () =>
   w(`REPLACE INTO \`${COPY}\`.tb_establishment_certificate SELECT * FROM \`${REAL}\`.tb_establishment_certificate WHERE tb_institution_id = ?`, [INST])
@@ -267,6 +269,7 @@ d('GATE ADVERSARIAL r6 — re-prova final do delta do retrabalho 2 (cópia desca
     sweep.after = await fiscalDbs()
     const base = contextFromEnv(process.env, { adapter: fakeAdapter, checkIdentity: true, pool: harness.pool })
     ctx = { ...base, db: harness.cfg, fiscalDb: harness.cfg.database, storage: new SandboxStorage(base.storage, new FsFiscalStorage(tmpRoot)) }
+    attack = await attackSession(fiscal, harness!.pool, SCHEMA, INST)   // D-F231: acesso VIVO de um admin real — depois do ctx (falhar aqui ainda passa pelo afterAll)
     expect(ctx.fiscalDb).toBe(COPY)
     expect((await q('SELECT DATABASE() AS db'))[0].db).toBe(COPY)
     expect((await issuerOfCopy())?.c).toBeNull()
@@ -305,6 +308,7 @@ d('GATE ADVERSARIAL r6 — re-prova final do delta do retrabalho 2 (cópia desca
     let dbsAfter: string[] = [], realAfter = { sums: {} as Record<string, string>, objects: '' }, erpAfter: Record<string, string> = {}
     let dropErr: unknown = null
     try {
+      attack?.restore(); attack = null
       if (harness) { try { await harness.drop() } catch (e) { dropErr = e } }   // apaga a cópia e FALHA se o real/ERP mudou
       for (const db of [COPY, SOBRA, SMOKE]) if ((await fiscalDbs()).includes(db)) await rootPool.query(`DROP DATABASE IF EXISTS \`${db}\``)
       dbsAfter = await fiscalDbs()
@@ -653,7 +657,8 @@ d('GATE ADVERSARIAL r6 — re-prova final do delta do retrabalho 2 (cópia desca
       expect(ok.status).toBe(0)
     })
 
-    it('D-F44 — o ATO aposenta a habilitação SE do ERP na MESMA transação (ensaio: `--cutover --dry-run` executa a escrita e a DESFAZ); o ERP real fica intacto', async () => {
+    // D-F232 (Valdo, 2026-11-07): HISTÓRICO — ensaia o ato da virada/re-sincronia da institution 1 no mundo de ANTES da virada (habilitação SE viva no ERP e A1 no cofre em arquivo do setes-api). A virada real de 2026-10-14/15 retirou os dois e a F2a congelou a origem; verde até 2026-10-14 (prompt §22.51 e §23.10).
+    it.skip('D-F44 — o ATO aposenta a habilitação SE do ERP na MESMA transação (ensaio: `--cutover --dry-run` executa a escrita e a DESFAZ); o ERP real fica intacto', async () => {
       await restoreIssuerFromReal()
       const erpBefore = (await q(`SELECT deleted, serie, dps_last_number AS n FROM \`${SCHEMA}\`.tb_establishment_issuer WHERE tb_institution_id = ? AND model = 'SE'`, [INST]))[0]
       const ct = runScript('migrate:setes', ['--cutover', String(INST), '--confirmo-setes-api-parado', '--dry-run'], ownerEnv())

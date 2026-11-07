@@ -32,7 +32,7 @@ import forge from 'node-forge'
 import * as fiscal from 'fiscal-api'
 import { AuthorityHttpError, FsFiscalStorage, FiscalStorage, HttpError, createFiscalPool, dbConfigFromEnv } from 'fiscal-api'
 import { contextFromEnv, AppContext } from '../context'
-import { disposableFiscalDb, DisposableFiscalDb, FISCAL_COPY_TABLES } from './live-harness'
+import { disposableFiscalDb, DisposableFiscalDb, FISCAL_COPY_TABLES, attackSession } from './live-harness'
 import { createApp } from '../app'
 import type { TaxAuthorityAdapter, AuthorityContext } from '../authority/types'
 import {
@@ -49,9 +49,8 @@ jest.mock('../facts/service-facts', () => {
   return {
     __esModule: true, ...actual,
     readServiceInvoice: async (...args: any[]) => {
-      const h = await actual.readServiceInvoice(...args)
-      if (h.branch.municipalCode && !/^\d{3}$/.test(String(h.branch.municipalCode).trim())) h.branch.municipalCode = null
-      return h
+      // D-F231: cTribMun normalizado e ramo do ERP Desktop completado pelo ramo-molde da web — SÓ em memória (live-harness)
+      return jest.requireActual('./live-harness').completeBranchForAttack(await actual.readServiceInvoice(...args), args)
     },
   }
 })
@@ -138,6 +137,7 @@ const ACTOR = { schemaName: SCHEMA, institutionId: INST, userId: ADV_USER }
 
 let ctx: AppContext
 let harness: DisposableFiscalDb | null = null
+let attack: { liveAdmin: number; restore(): void } | null = null   // D-F231: a sessão do ataque (live-harness)
 let app: any
 let rootPool: ReturnType<typeof createFiscalPool>
 let setesUser = '', setesPass = ''
@@ -225,6 +225,8 @@ const certOfCopy = async () => (await q(`SELECT deleted, certificate_pem IS NULL
 async function restoreIssuerFromReal(): Promise<void> {
   await w(`DELETE FROM \`${COPY}\`.tb_establishment_issuer WHERE tb_institution_id = ?`, [INST])
   await w(`INSERT INTO \`${COPY}\`.tb_establishment_issuer SELECT * FROM \`${REAL}\`.tb_establishment_issuer WHERE tb_institution_id = ?`, [INST])
+  // D-F231: a origem destas suítes é a RÉPLICA (o real foi VIRADO na janela da F2a, 2026-10-14/15) — a cópia volta réplica
+  await w(`UPDATE \`${COPY}\`.tb_establishment_issuer SET cutover_at = NULL WHERE tb_institution_id = ?`, [INST])
 }
 const restoreCertFromReal = () =>
   w(`REPLACE INTO \`${COPY}\`.tb_establishment_certificate SELECT * FROM \`${REAL}\`.tb_establishment_certificate WHERE tb_institution_id = ?`, [INST])
@@ -336,6 +338,7 @@ d('GATE ADVERSARIAL r5 — re-prova do delta da Rodada 4 (cópia descartável fi
       const base = contextFromEnv(process.env, { adapter: fakeAdapter, checkIdentity: true, pool: harness.pool })
       process.chdir(cwd)
       ctx = { ...base, db: harness.cfg, fiscalDb: harness.cfg.database, storage: new SandboxStorage(base.storage, new FsFiscalStorage(tmpRoot)) }
+      attack = await attackSession(fiscal, harness!.pool, SCHEMA, INST)   // D-F231: acesso VIVO de um admin real — depois do ctx (falhar aqui ainda passa pelo afterAll)
       expect(ctx.adapter).toBe(fakeAdapter)
       expect(ctx.fiscalDb).toBe(COPY)
       expect((await q('SELECT DATABASE() AS db'))[0].db).toBe(COPY)
@@ -375,6 +378,7 @@ d('GATE ADVERSARIAL r5 — re-prova do delta da Rodada 4 (cópia descartável fi
     })
     beforeEach(() => { resetFisco(); resetMunicipalTermsCache(); fiscal.erp.resetErpFactsCache() })
     afterAll(async () => {
+      attack?.restore(); attack = null
       if (harness) await harness.drop()                            // apaga a cópia e FALHA se o CHECKSUM do real mudou
     })
 
@@ -435,7 +439,8 @@ d('GATE ADVERSARIAL r5 — re-prova do delta da Rodada 4 (cópia descartável fi
         expect(a1.fpAfter).toBe(a1.fpBefore)
       })
 
-      it('sem achado: a migração AINDA renova o A1 da réplica (escreve por SQL, não pela peça) — e a peça recusa a réplica', async () => {
+      // D-F232 (Valdo, 2026-11-07): HISTÓRICO — ensaia o ato da virada/re-sincronia da institution 1 no mundo de ANTES da virada (habilitação SE viva no ERP e A1 no cofre em arquivo do setes-api). A virada real de 2026-10-14/15 retirou os dois e a F2a congelou a origem; verde até 2026-10-14 (prompt §22.51 e §23.10).
+      it.skip('sem achado: a migração AINDA renova o A1 da réplica (escreve por SQL, não pela peça) — e a peça recusa a réplica', async () => {
         await purge([Z])                                              // a re-sincronia acusaria a tentativa sintética como dual-write
         await restoreIssuerFromReal()
         await restoreCertFromReal()
@@ -750,7 +755,9 @@ d('GATE ADVERSARIAL r5 — re-prova do delta da Rodada 4 (cópia descartável fi
         h.user = (await q('SELECT CURRENT_USER() AS u'))[0].u
         h.grants = (await q('SHOW GRANTS FOR CURRENT_USER()')).map((r: any) => String(Object.values(r)[0]).replace(/PASSWORD '[^']*'/, "PASSWORD '***'"))
         h.realBaseTables = (await rq(`SELECT table_name AS t FROM information_schema.tables WHERE table_schema = ? AND table_type = 'BASE TABLE' ORDER BY table_name`, [REAL])).map((r: any) => String(r.t))
-        h.checked = [...FISCAL_COPY_TABLES, '_migrations']                         // o drop() confere também a _migrations (re-prova R4)
+        // o drop() confere também a _migrations (re-prova R4); D-F231: e TODA tabela-base do real — inclusive as da família NF-e (nfe-api/001)
+        h.checked = [...harness!.watched]
+        expect(h.checked).toEqual(expect.arrayContaining([...FISCAL_COPY_TABLES, '_migrations']))
         // eslint-disable-next-line no-console
         console.log('[adv-r5] harness', JSON.stringify(h))
         expect(h.user).toMatch(new RegExp(`^${process.env.DB_USER}@`))
@@ -773,7 +780,7 @@ d('GATE ADVERSARIAL r5 — re-prova do delta da Rodada 4 (cópia descartável fi
         expect(h.grants.some((g: string) => /ON `?fiscal_api`?\.\*/.test(g))).toBe(false)
       })
       it('[corrigido] …e a verificação do drop() cobre TODAS as tabelas-base do fiscal_api real (inclusive `_migrations`)', () => {
-        expect(h.checked).toEqual(expect.arrayContaining(h.realBaseTables))
+        expect([...h.checked].sort()).toEqual([...h.realBaseTables].sort())     // D-F231 (gate adversarial): IGUALDADE — todo o real vigiado
       })
     })
   })

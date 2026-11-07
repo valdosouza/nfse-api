@@ -55,7 +55,7 @@ import forge from 'node-forge'
 import * as fiscal from 'fiscal-api'
 import { AuthorityHttpError, FsFiscalStorage, FiscalStorage, HttpError, createFiscalPool, dbConfigFromEnv, withTransaction } from 'fiscal-api'
 import { contextFromEnv, AppContext } from '../context'
-import { disposableFiscalDb, DisposableFiscalDb, FISCAL_COPY_TABLES, licensedFact } from './live-harness'
+import { disposableFiscalDb, DisposableFiscalDb, FISCAL_COPY_TABLES, licensedFact, attackSession } from './live-harness'
 import { createApp } from '../app'
 import type { TaxAuthorityAdapter, AuthorityContext } from '../authority/types'
 import {
@@ -73,9 +73,8 @@ jest.mock('../facts/service-facts', () => {
   return {
     __esModule: true, ...actual,
     readServiceInvoice: async (...args: any[]) => {
-      const h = await actual.readServiceInvoice(...args)
-      if (h.branch.municipalCode && !/^\d{3}$/.test(String(h.branch.municipalCode).trim())) h.branch.municipalCode = null
-      return h
+      // D-F231: cTribMun normalizado e ramo do ERP Desktop completado pelo ramo-molde da web — SÓ em memória (live-harness)
+      return jest.requireActual('./live-harness').completeBranchForAttack(await actual.readServiceInvoice(...args), args)
     },
   }
 })
@@ -145,6 +144,7 @@ let ctx: AppContext
 let ctxShort: AppContext
 let shortPool: ReturnType<typeof createFiscalPool> | null = null
 let harness: DisposableFiscalDb | null = null
+let attack: { liveAdmin: number; restore(): void } | null = null   // D-F231: a sessão do ataque (live-harness)
 let app: any
 let appNoId: any                       // institutions SINTÉTICAS (só na cópia) — sem a conferência de identidade no setes_central
 let appShort: any
@@ -235,6 +235,8 @@ const certOfCopy = async () => (await q(`SELECT deleted, certificate_pem IS NULL
 async function restoreIssuerFromReal(): Promise<void> {
   await w(`DELETE FROM \`${COPY}\`.tb_establishment_issuer WHERE tb_institution_id = ?`, [INST])
   await w(`INSERT INTO \`${COPY}\`.tb_establishment_issuer SELECT * FROM \`${REAL}\`.tb_establishment_issuer WHERE tb_institution_id = ?`, [INST])
+  // D-F231: a origem destas suítes é a RÉPLICA (o real foi VIRADO na janela da F2a, 2026-10-14/15) — a cópia volta réplica
+  await w(`UPDATE \`${COPY}\`.tb_establishment_issuer SET cutover_at = NULL WHERE tb_institution_id = ?`, [INST])
 }
 const restoreCertFromReal = () =>
   w(`REPLACE INTO \`${COPY}\`.tb_establishment_certificate SELECT * FROM \`${REAL}\`.tb_establishment_certificate WHERE tb_institution_id = ?`, [INST])
@@ -282,6 +284,7 @@ d('GATE ADVERSARIAL r7 — delta da sessão 2026-10-04 (cópia descartável fisc
     try { harness = await disposableFiscalDb(ROOT, COPY, { turned: false }) } finally { process.chdir(cwd) }
     const base = contextFromEnv(process.env, { adapter: fakeAdapter, checkIdentity: true, pool: harness.pool })
     ctx = { ...base, db: harness.cfg, fiscalDb: harness.cfg.database, storage: new SandboxStorage(base.storage, new FsFiscalStorage(tmpRoot)) }
+    attack = await attackSession(fiscal, harness!.pool, SCHEMA, INST)   // D-F231: acesso VIVO de um admin real — depois do ctx (falhar aqui ainda passa pelo afterAll)
     expect(ctx.fiscalDb).toBe(COPY)
     expect((await q('SELECT DATABASE() AS db'))[0].db).toBe(COPY)
     // pool PRÓPRIO para os cenários de contenção: espera de trava CURTA na SESSÃO (o servidor não muda)
@@ -332,6 +335,7 @@ d('GATE ADVERSARIAL r7 — delta da sessão 2026-10-04 (cópia descartável fisc
     let dropErr: unknown = null
     try {
       if (shortPool) { try { await shortPool.end() } catch { /* já encerrado */ } }
+      attack?.restore(); attack = null
       if (harness) { try { await harness.drop() } catch (e) { dropErr = e } }   // apaga a cópia e FALHA se o real/ERP mudou
       if ((await fiscalDbs()).includes(COPY)) await rootPool.query(`DROP DATABASE IF EXISTS \`${COPY}\``)
       dbsAfter = await fiscalDbs()
