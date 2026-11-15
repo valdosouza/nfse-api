@@ -211,8 +211,9 @@ describe('[LOW] rodízio: CONTENÇÃO numa nota vira "Erro interno (ref X)" + lo
     expect(fiscal.contentionToHttpError(lockWait())?.code).toBe('RESOURCE_BUSY')   // a regra da casa para o MESMO erro
   })
 
-  it('[corrigido — LOW] contenção no relatório da passada sai como RESOURCE_BUSY (como na borda), sem logger.error de crash', () => {
-    expect(report.errors[0].code).toBe('RESOURCE_BUSY')
+  // D-F238 (2026-11-15): a trava estourou DEPOIS de o fisco responder — o código é o da resposta não gravada, nunca INTERNAL
+  it('[corrigido — LOW] contenção no relatório da passada sai como código de contenção (FISCAL_OUTCOME_NOT_RECORDED depois do fisco — D-F238), sem logger.error de crash', () => {
+    expect(report.errors[0].code).toBe('FISCAL_OUTCOME_NOT_RECORDED')
     expect(errorLogs).toBe(0)
   })
 })

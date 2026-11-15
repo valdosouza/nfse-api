@@ -1,3 +1,4 @@
+import { NfseErrorCodes } from './error-codes'
 import {
   Pool, PoolConnection, HttpError, ErrorCodes, logger, withTransaction, isDeadlock, isLockWaitTimeout,
   MasterKeyRing, FiscalStorage, OpenedIssuer, openIssuer, nextDpsNumber, erp, AuthorityHttpError,
@@ -118,6 +119,25 @@ function withInvoiceTx<T>(
   opts: { requireAlive?: boolean } = {},
 ): Promise<T> {
   return withLockedInvoice(deps.pool, actor, refOf(actor, ref), { label, requireAlive: opts.requireAlive, lock: erp.lockInvoice }, fn)
+}
+
+/**
+ * D-F238 (reserva da D-F166): a contenção na gravação DEPOIS do fisco (409 `RESOURCE_BUSY` da peça do núcleo, ou lock wait/deadlock cru)
+ * vira `FISCAL_OUTCOME_NOT_RECORDED` — o fisco respondeu e a voz não foi gravada: resultado INCERTO, nunca "tente de novo". Qualquer outro
+ * erro passa como veio (o ambíguo marcado, a recusa, o técnico).
+ */
+export function outcomeNotRecorded(err: unknown, label: string): unknown {
+  const busy = err instanceof HttpError ? (err.code === ErrorCodes.RESOURCE_BUSY ? err : null) : contentionToHttpError(err)
+  if (!busy) return err
+  logger.warn('Resposta do fisco não gravada: nota ocupada por outra operação (D-F238)', { step: label })
+  return new HttpError(409,
+    'O fisco respondeu, mas a resposta não foi gravada porque a nota estava ocupada por outra operação — resultado incerto: consulte a nota antes de repetir',
+    [{ field: 'fiscal', message: 'Resposta do fisco não gravada' }], NfseErrorCodes.FISCAL_OUTCOME_NOT_RECORDED)
+}
+
+/** A transação sob a trava da nota que grava a resposta do fisco (DEPOIS da chamada): contenção = `FISCAL_OUTCOME_NOT_RECORDED`. */
+function withVoiceAfterAuthority<T>(deps: NfseDeps, label: string, actor: Actor, ref: InvoiceRef, fn: (itx: InvoiceTx) => Promise<T>): Promise<T> {
+  return withInvoiceTx(deps, label, actor, ref, fn).catch(err => { throw outcomeNotRecorded(err, label) })
 }
 
 function assertTransmittable(header: ServiceInvoiceHeader): void {
@@ -401,7 +421,7 @@ export async function transmitServiceInvoice(deps: NfseDeps, actor: Actor, ref: 
     if (isLayoutRejectedInProduction(environment, aerr)) {
       logger.error(LAYOUT_REJECTED_ALARM, { institutionId, invoiceId, attempt: reserved.attempt, environment })
     }
-    await withInvoiceTx(deps, 'voz do fisco (recusa)', actor, ref, async itx => {
+    await withVoiceAfterAuthority(deps, 'voz do fisco (recusa)', actor, ref, async itx => {
       await insertTransmissionEvent(itx, reserved.attempt, userId, {
         kind: OUTCOME_KIND[cls], source: 'P', authorityCode: firstAuthorityCode(aerr), message: authorityMessage(aerr),
       })
@@ -414,7 +434,7 @@ export async function transmitServiceInvoice(deps: NfseDeps, actor: Actor, ref: 
   const dh = toDbDateTime(outcome.dhProc)
   // IB-3 (D-IB80): os valores IBS/CBS do fisco lidos FORA da transação (pura); a voz A nunca espera por eles
   const fiscalIbscbs = readFiscalIbscbs(outcome.nfseXml, outcome.accessKey)
-  const holderAttempt = await withInvoiceTx(deps, 'voz do fisco (autorizada)', actor, ref, async itx => {
+  const holderAttempt = await withVoiceAfterAuthority(deps, 'voz do fisco (autorizada)', actor, ref, async itx => {
     const { conn } = itx
     // gate socrático M-5: a consulta (rodízio/outra tela) pode ter pousado ESTA chave numa irmã durante o
     // POST — a chave é UMA (UNIQUE); a reservada fecha como envio reconciliado, nunca 500
@@ -462,7 +482,7 @@ async function reconcileInterrupted(deps: NfseDeps, actor: Actor, ref: InvoiceRe
  * Devolve true se gravou.
  */
 async function recordInterruptedFailure(deps: NfseDeps, actor: Actor, ref: InvoiceRef, tx: TransmissionRow): Promise<{ recorded: boolean; current: TransmissionRow | null }> {
-  return withInvoiceTx(deps, 'reconciliação do envio interrompido', actor, ref, async itx => {
+  return withVoiceAfterAuthority(deps, 'reconciliação do envio interrompido', actor, ref, async itx => {
     const { conn } = itx
     // sob a trava da nota a leitura é não travante (o snapshot nasce DEPOIS da trava — PADROES §9 regra 2)
     const cur = await getTransmission(conn, ref, tx.attempt)
@@ -615,7 +635,7 @@ async function refreshServiceTransmissionInner(
   // IB-3 (D-IB80): os valores IBS/CBS do fisco lidos FORA da transação (pura); a consulta seguinte preenche o que faltar
   const fiscalIbscbs = readFiscalIbscbs(nfse.nfseXml, nfse.accessKey)
 
-  const result = await withInvoiceTx(deps, 'voz do fisco (consulta)', actor, ref, async (itx): Promise<RefreshResult> => {
+  const result = await withVoiceAfterAuthority(deps, 'voz do fisco (consulta)', actor, ref, async (itx): Promise<RefreshResult> => {
     const { conn, locked } = itx
     const pendingNow = (kind: TransmissionEventKind | null, code: string | null = null) => localCancelPending({ lastKind: kind, lastCode: code }, locked.lastKind)
     const tx = await getTransmission(conn, ref, target.attempt)      // sob a trava da nota
@@ -875,7 +895,9 @@ export async function cancelServiceInvoiceAtAuthority(deps: NfseDeps, actor: Act
   const dhEvento = decision.dhEvento
 
   /** O pedido NÃO vigora (recusado pelo fisco ou nem enviado): N devolve a NFS-e a autorizada (D-N17). */
-  const release = (message: string) => withInvoiceTx(deps, 'pedido de cancelamento não vigora', actor, ref, async itx => {
+  // D-F238: [afterAuthority] = o fisco respondeu ao pedido (recusa, credencial) — a contenção vira FISCAL_OUTCOME_NOT_RECORDED; no preparo
+  // (fisco não chamado) e na cadeia TLS recusada por NÓS segue RESOURCE_BUSY
+  const release = (message: string, afterAuthority = false) => (afterAuthority ? withVoiceAfterAuthority : withInvoiceTx)(deps, 'pedido de cancelamento não vigora', actor, ref, async itx => {
     const cur = await getTransmission(itx.conn, ref, tx.attempt)                         // sob a MESMA trava
     await releaseCancelRequest(insertTransmissionEvent, itx, tx.attempt, userId, message, cur)   // N só depois do K (peça do núcleo)
   })
@@ -915,12 +937,12 @@ export async function cancelServiceInvoiceAtAuthority(deps: NfseDeps, actor: Act
         if (isLayoutRejectedInProduction(tx.environment, aerr)) {
           logger.error(EVENT_LAYOUT_REJECTED_ALARM, { institutionId, invoiceId, attempt: tx.attempt, environment: tx.environment })
         }
-        await release(`Fisco recusou o cancelamento: ${authorityMessage(aerr)}`)
+        await release(`Fisco recusou o cancelamento: ${authorityMessage(aerr)}`, true)
         throw new HttpError(409, `Fisco recusou o cancelamento: ${authorityMessage(aerr)}`, aerr.fields, ErrorCodes.FISCAL_CANCEL_REFUSED)
       }
       case 'auth_failed':
       case 'local':                                                     // R3-2: o fisco NÃO processou o pedido
-        await release(`Pedido de cancelamento não aceito (credencial): ${err instanceof HttpError ? errMsg(err) : 'falha de credencial'}`)
+        await release(`Pedido de cancelamento não aceito (credencial): ${err instanceof HttpError ? errMsg(err) : 'falha de credencial'}`, cls === 'auth_failed')
         throw err
       case 'chain_untrusted':                                           // D-NE57: NÓS recusamos o servidor antes do aperto de mão — nada enviado
         await release(`Pedido de cancelamento não enviado (certificado do servidor do fisco não confiável): ${err instanceof HttpError ? errMsg(err) : 'cadeia TLS'}`)
@@ -941,7 +963,7 @@ export async function cancelServiceInvoiceAtAuthority(deps: NfseDeps, actor: Act
 
   // (5) o fisco cancelou (irreversível): a VOZ C. O C local é do setes-api, que o app chama em seguida.
   const dhC = toDbDateTime(registered.dhEvento ?? dhEvento)
-  const out = await withInvoiceTx(deps, 'voz C do fisco', actor, ref, itx =>
+  const out = await withVoiceAfterAuthority(deps, 'voz C do fisco', actor, ref, itx =>
     recordCancelVoice(itx, userId, tx.attempt, 'P', dhC, signed.xMotivo, '101101'))   // D-F68: o pedido é NOSSO (e101101)
   logger.info('NFS-e cancelada no fisco', { institutionId, invoiceId, attempt: tx.attempt, accessKey: tx.accessKey })
   return { invoiceId, attempt: tx.attempt, atAuthority: true, transmissionEvent: out.event, warnings, nextStep: 'apply-local-cancel' }
@@ -1009,8 +1031,10 @@ async function cancelDaysOf(deps: NfseDeps, actor: Actor): Promise<Ceiling> {
 
 const stopsTheRun = (err: unknown): boolean => err instanceof HttpError && !!err.code && EMITTER_FAILURE_CODES.has(err.code)
 
+// D-F238: a resposta não gravada por contenção é como o RESOURCE_BUSY para a passada — a próxima consulta reconcilia (não carimba)
 const isPersistentRefreshFailure = (err: unknown): boolean =>
   err instanceof HttpError && !stopsTheRun(err) && err.code !== ErrorCodes.RESOURCE_BUSY
+  && err.code !== NfseErrorCodes.FISCAL_OUTCOME_NOT_RECORDED
   && !isLockWaitTimeout(err) && !isDeadlock(err) && err.statusCode !== 503
 
 /**

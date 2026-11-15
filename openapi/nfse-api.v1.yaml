@@ -245,7 +245,8 @@ paths:
             FISCAL_ISSUER_MISSING · FISCAL_CERT_MISSING/EXPIRED/INVALID · FISCAL_TRANSMISSION_IN_PROGRESS ·
             FISCAL_ALREADY_AUTHORIZED · FISCAL_CANCEL_IN_FLIGHT · FISCAL_EFFECT_PENDING · INVOICE_NOT_TRANSMITTABLE ·
             FISCAL_DPS_ID_CHANGED · FISCAL_AUTHORITY_AUTH_FAILED (F gravado) · RESOURCE_BUSY (nota travada por outra
-            operação) · FISCAL_CUTOVER_PENDING (cerca da virada)
+            operação ANTES do fisco — tente de novo) · FISCAL_OUTCOME_NOT_RECORDED (D-F238: o fisco respondeu e a voz
+            não foi gravada por trava — resultado INCERTO, consulte a nota antes de repetir) · FISCAL_CUTOVER_PENDING (cerca da virada)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -364,7 +365,9 @@ paths:
         '409':
           description: >-
             FISCAL_NOT_AUTHORIZED · FISCAL_TRANSMISSION_IN_PROGRESS · FISCAL_CANCEL_IN_FLIGHT · FISCAL_CANCEL_REFUSED
-            (N gravado) · FISCAL_CERT_* / FISCAL_ISSUER_MISSING (N gravado) · FISCAL_CUTOVER_PENDING
+            (N gravado) · FISCAL_CERT_* / FISCAL_ISSUER_MISSING (N gravado) · FISCAL_CUTOVER_PENDING · RESOURCE_BUSY (antes do
+            fisco — tente de novo) · FISCAL_OUTCOME_NOT_RECORDED (D-F238: o fisco respondeu e a voz não foi gravada — resultado
+            INCERTO, consulte a nota antes de repetir)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -490,7 +493,9 @@ components:
       description: payload inválido
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
     Conflict:
-      description: estado não permite a ação (código em `code`; FISCAL_CUTOVER_PENDING = institution ainda emitida pelo setes-api)
+      description: >-
+        estado não permite a ação (código em `code`; FISCAL_CUTOVER_PENDING = institution ainda emitida pelo setes-api;
+        FISCAL_OUTCOME_NOT_RECORDED = o fisco respondeu e a voz não foi gravada por trava — D-F238, resultado incerto)
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
     Unprocessable:
       description: dado de cadastro/documento inválido (campo em fields[])
