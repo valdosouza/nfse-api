@@ -1,0 +1,12 @@
+# DEPLOY.E1.P1.T2: nada de segredo nem de estado local no contexto da imagem
+.env
+.env.*
+!.env.example
+secrets/
+storage/
+storage-smoke/
+node_modules/
+dist/
+coverage/
+.git/
+*.log

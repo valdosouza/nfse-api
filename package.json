@@ -2,11 +2,15 @@
   "name": "nfse-api",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=20"
+  },
   "description": "Serviço da NFS-e (ADN / Sefin Nacional) do Gestão 2027 — porta 3002, /v1 (D-F8/D-F12/D-F17)",
   "scripts": {
     "dev": "tsx watch --require tsconfig-paths/register src/server.ts",
     "build": "tsc -p tsconfig.build.json && node scripts/write-build-info.mjs",
     "start": "node dist/server.js",
+    "predeploy:check": "node dist/pre-deploy-cli.js",
     "typecheck": "tsc --noEmit",
     "test": "jest --runInBand --forceExit",
     "db:migrate": "tsx --require tsconfig-paths/register scripts/migrate.ts",

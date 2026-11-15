@@ -1,0 +1,24 @@
+// DEPLOY.E1.P1.T4: `npm run predeploy:check` (= `node dist/pre-deploy-cli.js`, depois do `npm run build`) — roda na máquina/imagem de
+// produção sem tsx. SOMENTE LEITURA. Sai com 1 se algum item bloqueia (só em NODE_ENV=production; fora dela, avisa).
+import 'dotenv/config'
+import { createFiscalPool, dbConfigFromEnv } from 'fiscal-api'
+import { preDeployConfigItems, preDeployDbItem, preDeployReport } from './pre-deploy'
+
+async function main(): Promise<number> {
+  const items = preDeployConfigItems(process.env)
+  const pool = createFiscalPool(dbConfigFromEnv(process.env))
+  try {
+    items.push(await preDeployDbItem(process.env, async sql => (await pool.query(sql))[0] as Array<Record<string, unknown>>))
+  } finally {
+    await pool.end()
+  }
+  const { lines, exitCode } = preDeployReport(items)
+  console.log(`— pre-deploy da nfse-api (NODE_ENV=${process.env.NODE_ENV ?? '(vazio)'})`)
+  for (const line of lines) console.log(`  ${line}`)
+  return exitCode
+}
+
+main().then(code => process.exit(code), err => {
+  console.error('pre-deploy falhou:', err instanceof Error ? err.message : String(err))
+  process.exit(1)
+})
