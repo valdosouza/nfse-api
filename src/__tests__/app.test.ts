@@ -13,6 +13,8 @@ import { wireAccess } from './access-stub'
 import { MasterKeyRing, ProductTokenVerifier, FsFiscalStorage } from 'fiscal-api'
 import * as tx from '../nfse/transmission'
 import { createApp, loadOpenApi } from '../app'
+import { KeyProof } from '../key-proof'
+import type { StoredKeyCheck } from 'fiscal-api'
 import type { AppContext } from '../context'
 import { emitterRoutes } from '../modules/emitter/emitter.routes'
 import { nfseRoutes } from '../modules/nfse/nfse.routes'
@@ -284,18 +286,38 @@ describe('CORS por lista (D-F9) e health (§12.8-1)', () => {
     expect(evil.headers['access-control-allow-origin']).toBeUndefined()
   })
 
-  it('health: banco + chave-mestra + storage → 200; sem chave-mestra → 503 dizendo qual', async () => {
-    expect((await request(createApp(ctx())).get('/v1/health')).body).toEqual({ status: 'ok', db: true, masterKey: true, storage: true })
-    const r = await request(createApp(ctx({ keyring: MasterKeyRing.of({}) }))).get('/v1/health')
-    expect(r.status).toBe(503)
-    expect(r.body).toMatchObject({ masterKey: false })
+  // DEPLOY.E2.P3 (D-F243/D-F244/D-F245): o sinal `masterKey` é o último resultado da prova (abre A1 guardado); o health só LÊ
+  const proof = (check: StoredKeyCheck | Error) => {
+    const verify = jest.fn(async () => { if (check instanceof Error) throw check; return check })
+    return { verify, keyProof: new KeyProof({ pool, keyring: MasterKeyRing.of({ 1: randomBytes(32) }) }, { verify, log: { info() {}, warn() {}, error() {} } }) }
+  }
+  const okCheck: StoredKeyCheck = { ok: true, degraded: false, versions: [{ version: 1, ok: true, unreadable: 0 }] }
+
+  it('health: banco + chave-mestra provada + storage → 200 só com os 4 campos; a chamada ao health NÃO roda a prova', async () => {
+    const { verify, keyProof } = proof(okCheck)
+    await keyProof.run()
+    const before = verify.mock.calls.length
+    const app = createApp(ctx(), keyProof)
+    for (let i = 0; i < 3; i++) {
+      const r = await request(app).get('/v1/health')
+      expect([r.status, r.body]).toEqual([200, { status: 'ok', db: true, masterKey: true, storage: true }])
+    }
+    expect(verify.mock.calls.length).toBe(before)
   })
 
-  it('health: A1 cifrado com versão de chave-mestra que NÃO está no anel (rotação mal feita) → 503 masterKey false', async () => {
-    const versions = (v: number[]) => ({ query: jest.fn(async (sql: string) => (/cipher_key_version/.test(sql) ? [v.map(x => ({ v: x }))] : [[{ x: 1 }]])), getConnection: jest.fn() } as any)
-    expect((await request(createApp(ctx({ pool: versions([1]) }))).get('/v1/health')).status).toBe(200)
-    const r = await request(createApp(ctx({ pool: versions([1, 2]) }))).get('/v1/health')
-    expect([r.status, r.body.masterKey]).toEqual([503, false])
+  it('health: chave que não abre os A1, prova que não rodou ou degraded → só o sinal (nada de versão/código)', async () => {
+    const bad = proof({ ok: false, degraded: false, versions: [{ version: 1, ok: false, code: 'FISCAL_CERT_INVALID', unreadable: 3 }] })
+    await bad.keyProof.run()
+    const r = await request(createApp(ctx(), bad.keyProof)).get('/v1/health')
+    expect([r.status, r.body]).toEqual([503, { status: 'degraded', db: true, masterKey: false, storage: true }])
+    // sem prova passada (nunca rodou) → masterKey false
+    const never = await request(createApp(ctx())).get('/v1/health')
+    expect([never.status, never.body.masterKey]).toEqual([503, false])
+    // degraded com a chave certa → 200 e o corpo NÃO diz (D-F244: vai para o log e o alarme)
+    const deg = proof({ ok: true, degraded: true, versions: [{ version: 1, ok: true, unreadable: 2 }] })
+    await deg.keyProof.run()
+    const d = await request(createApp(ctx(), deg.keyProof)).get('/v1/health')
+    expect([d.status, d.body]).toEqual([200, { status: 'ok', db: true, masterKey: true, storage: true }])
   })
 })
 

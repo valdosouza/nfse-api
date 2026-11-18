@@ -45,13 +45,18 @@ paths:
       responses:
         '200':
           description: >-
-            banco, chave-mestra (decifra um vetor de teste E toda versão que cifra A1 vivo está no anel — rotação
-            mal feita aparece aqui, não na 1ª emissão) e storage respondem
+            banco, chave-mestra e storage respondem. A chave-mestra é provada abrindo UM A1 guardado por versão em uso
+            (D-F243) — chave errada ou rotação mal feita aparece aqui, não na 1ª emissão; a prova roda na partida, antes de
+            ouvir a porta, e a cada 5 minutos, e o health só lê o último resultado (D-F245/D-F250). Um sinal só,
+            `masterKey` sim ou não (D-F244): nada de versão, código ou quantidade
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Health' }
         '503':
-          description: alguma dependência falhou (o corpo diz qual)
+          description: >-
+            alguma dependência falhou (o corpo diz qual). `masterKey=false` = a chave do servidor não abre os A1 de
+            alguma versão em uso, ou não há prova recente (nunca rodou, mais de 10 minutos, ou a prova não rodou —
+            banco fora); a causa vai para o log, nunca para esta resposta
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Health' }

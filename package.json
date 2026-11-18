@@ -11,6 +11,7 @@
     "build": "tsc -p tsconfig.build.json && node scripts/write-build-info.mjs",
     "start": "node dist/server.js",
     "predeploy:check": "node dist/pre-deploy-cli.js",
+    "keys:rotate": "node dist/rotate-keys-cli.js",
     "typecheck": "tsc --noEmit",
     "test": "jest --runInBand --forceExit",
     "db:migrate": "tsx --require tsconfig-paths/register scripts/migrate.ts",

@@ -5,7 +5,8 @@
 // O CORS usa a regra do NÚCLEO (`assertCorsOrigins` com o ambiente — D-F236: em produção só `https://` e nada de localhost); regra única.
 import fs from 'fs'
 import path from 'path'
-import { MasterKeyRing, ProductTokenVerifier, fiscalStorageRootFromEnv } from 'fiscal-api'
+import { MasterKeyRing, ProductTokenVerifier, fiscalStorageRootFromEnv, verifyStoredKeys } from 'fiscal-api'
+import type { Pool, StoredKeyCheck } from 'fiscal-api'
 import { assertCorsOrigins } from './cors-origins'
 import { assertRetiredEnv } from './context'
 import { readBuildCheck, assertBuildCurrent } from './build-info'
@@ -51,7 +52,7 @@ export function preDeployConfigItems(env: NodeJS.ProcessEnv, opts: PreDeployOpti
     check('FISCAL_MASTER_KEYS', production, () => {
       const ring = MasterKeyRing.fromEnv(env)
       if (ring.currentVersion === null) throw new Error('ausente — o A1 não abre e as operações fiscais respondem 503 (D-F16)')
-      if (!ring.selfTest()) throw new Error('a chave atual não cifra e decifra o vetor de teste')
+      // D-F243: a prova de que a chave é a CERTA (abre os A1 guardados) é o item `chave-mestra × A1 guardados`, com o banco
       return `versão atual ${ring.currentVersion}`
     }),
     check('chave pública do JWT', production, () => { ProductTokenVerifier.fromEnv(env); return 'carregada (D-F13)' }),
@@ -99,6 +100,32 @@ export async function preDeployDbItem(
     return { item: 'banco', ok: true, blocking: false, detail: `${rows[0]?.version} · ${rows[0]?.db}` }
   } catch (err) {
     return { item: 'banco', ok: false, blocking: production, detail: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/**
+ * DEPLOY.E2.P3.T2 (D-F243/D-F245): a chave do SERVIDOR abre UM A1 guardado por versão em uso — na hora, uma vez. Chave errada de 32
+ * bytes (que o `selfTest` deixava passar) BLOQUEIA em produção. A1 ilegível com a chave certa (`degraded`) é aviso, por analogia à
+ * D-F243 (não derruba o health). O console do operador vê versão, código e contagem — nada do segredo (D-F243).
+ */
+export async function preDeployKeyItem(
+  env: NodeJS.ProcessEnv,
+  deps: { pool: Pool; keyring: MasterKeyRing },
+  verify: (d: { pool: Pool; keyring: MasterKeyRing }) => Promise<StoredKeyCheck> = d => verifyStoredKeys(d),
+): Promise<PreDeployItem> {
+  const production = isProductionEnv(env.NODE_ENV)
+  const item = 'chave-mestra × A1 guardados'
+  if (deps.keyring.currentVersion === null) return { item, ok: false, blocking: production, detail: 'sem chave-mestra — nada a provar (ver FISCAL_MASTER_KEYS)' }
+  try {
+    const check = await verify(deps)
+    const describe = (v: StoredKeyCheck['versions'][number]) =>
+      `v${v.version} ${v.ok ? 'abre' : `NÃO abre (${v.code ?? '?'})`}${v.unreadable ? `, ${v.unreadable} amostra(s) ilegível(is)` : ''}`
+    const detail = check.versions.length ? check.versions.map(describe).join('; ') : 'nenhum A1 guardado — nada a provar'
+    if (!check.ok) return { item, ok: false, blocking: production, detail: `a chave do servidor não abre os A1: ${detail}` }
+    if (check.degraded) return { item, ok: false, blocking: false, detail: `chave certa, mas há A1 ilegível (alarme, não bloqueia): ${detail}` }
+    return { item, ok: true, blocking: false, detail }
+  } catch (err) {
+    return { item, ok: false, blocking: production, detail: `a prova não rodou: ${err instanceof Error ? err.message : String(err)}` }
   }
 }
 

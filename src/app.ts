@@ -6,6 +6,7 @@ import YAML from 'yaml'
 import { corsFor, productAuth, errorMiddleware, access } from 'fiscal-api'
 import type { AppContext } from './context'
 import { healthHandler } from './health'
+import { KeyProof } from './key-proof'
 import { emitterRoutes } from './modules/emitter/emitter.routes'
 import { nfseRoutes } from './modules/nfse/nfse.routes'
 
@@ -16,13 +17,17 @@ export function loadOpenApi(): any {
   return YAML.parse(fs.readFileSync(OPENAPI_PATH, 'utf8'))
 }
 
-export function createApp(ctx: AppContext): Express {
+/**
+ * [keyProof]: a prova da chave do servidor (D-F243/D-F245) que o boot roda e agenda (`server.ts`). Sem ela (testes), uma prova que
+ * nunca rodou — o health diz `masterKey=false` (fecha em falso).
+ */
+export function createApp(ctx: AppContext, keyProof: KeyProof = new KeyProof(ctx)): Express {
   const app = express()
   app.disable('x-powered-by')
   app.use(corsFor(ctx.corsOrigins))
   app.use(express.json({ limit: '128kb' }))          // o maior corpo é o .pfx em base64 (≤ 64 k)
 
-  app.get('/v1/health', healthHandler(ctx))
+  app.get('/v1/health', healthHandler(ctx, keyProof))
   const doc = loadOpenApi()
   app.get('/v1/openapi.yaml', (_req, res) => { res.type('text/yaml').send(fs.readFileSync(OPENAPI_PATH, 'utf8')) })
   app.use('/docs', swaggerUi.serve, swaggerUi.setup(doc))

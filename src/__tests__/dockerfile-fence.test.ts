@@ -50,6 +50,7 @@ describe('imagem de produção da nfse-api (DEPLOY.E1.P1.T2)', () => {
 
   it('o pre-deploy check roda na imagem sem tsx (dist) e o Node exigido é o 20', () => {
     expect(pkg.scripts['predeploy:check']).toBe('node dist/pre-deploy-cli.js')
+    expect(pkg.scripts['keys:rotate']).toBe('node dist/rotate-keys-cli.js')   // DEPLOY.E2.P3.T3: a rotação também roda sem tsx
     expect(pkg.engines?.node).toBe('>=20')
   })
 })

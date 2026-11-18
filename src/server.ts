@@ -5,6 +5,7 @@ import {
 } from 'fiscal-api'
 import { contextFromEnv } from './context'
 import { createApp } from './app'
+import { KeyProof } from './key-proof'
 import { MIGRATION_SETS } from './migrations'
 import { assertServiceVoiceDomainsEnforced, assertServiceStrictSession } from './nfse/voice-family'
 import { assertCorsOrigins } from './cors-origins'
@@ -28,8 +29,13 @@ async function main(): Promise<void> {
   // costura A1 (D-AU3/D-AU12): a sessão viva lida em TODA rota — sem a vw_user_link (script sql/70) ou sem o GRANT nela, o serviço NÃO sobe
   logger.info(`Sessão viva (setes_central.vw_user_link): ${await access.assertSessionViewReadable(ctx.pool)}`)
   if (ctx.keyring.currentVersion === null) logger.warn('FISCAL_MASTER_KEYS ausente — o A1 não abre (operações fiscais respondem 503) até configurar')
+  // D-F250: a 1ª prova da chave (abre UM A1 guardado por versão — D-F243) roda ANTES de ouvir a porta: não há health "sem prova".
+  // Falhou = sobe assim mesmo com masterKey=false e o motivo no log. Depois, a cada 5 minutos (D-F245/D-F251).
+  const keyProof = new KeyProof(ctx)
+  logger.info(`Prova da chave-mestra na partida (D-F243): ${await keyProof.run() ? 'ok' : 'FALHOU — /v1/health com masterKey=false (ver o log)'}`)
+  keyProof.start()
   const port = Number(process.env.PORT ?? 3002)
-  createApp(ctx).listen(port, () => logger.info(`nfse-api ouvindo na porta ${port}`, { fiscalDb: ctx.fiscalDb }))
+  createApp(ctx, keyProof).listen(port, () => logger.info(`nfse-api ouvindo na porta ${port}`, { fiscalDb: ctx.fiscalDb }))
 }
 
 main().catch(err => {
