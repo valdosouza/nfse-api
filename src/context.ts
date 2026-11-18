@@ -1,6 +1,5 @@
-import path from 'path'
 import {
-  Pool, createFiscalPool, dbConfigFromEnv, FiscalDbConfig, MasterKeyRing, ProductTokenVerifier, FsFiscalStorage,
+  Pool, createFiscalPool, dbConfigFromEnv, FiscalDbConfig, MasterKeyRing, ProductTokenVerifier, FsFiscalStorage, fiscalStorageRootFromEnv,
 } from 'fiscal-api'
 import type { NfseDeps } from './nfse/transmission'
 import type { TaxAuthorityAdapter } from './authority/types'
@@ -37,7 +36,7 @@ export function contextFromEnv(env: NodeJS.ProcessEnv = process.env, overrides: 
     db,
     pool,
     keyring:  overrides.keyring ?? MasterKeyRing.fromEnv(env),
-    storage:  overrides.storage ?? new FsFiscalStorage(path.resolve(env.STORAGE_PATH ?? path.join(process.cwd(), 'storage'))),
+    storage:  overrides.storage ?? new FsFiscalStorage(fiscalStorageRootFromEnv(env)),   // D-F241: produção exige STORAGE_PATH absoluto
     adapter,
     fiscalDb: db.database,
     verifier: overrides.verifier ?? ProductTokenVerifier.fromEnv(env),

@@ -44,7 +44,7 @@ cancelamento no fisco (D-F10).
    1ª coisa da transação (D-F27; a trava nomeada do §12.4 foi aposentada). Ordem: nota → emissor → DPS → tentativa.
 4. Herdadas da Onda 3 (D-N1…D-N38, `prompt_onda3_nfse_adn.md`): ambíguo nunca fecha, F só conclusivo,
    reconciliação por `dps_id`, vigente = quem detém a chave (D-N26), vida da nota (D-N27), XML de H em
-   `<cnpj>/H/…` (Q-N38a), pasta pelo mês da zona (Q-TZ7), dhEmi na zona do estabelecimento (Q-TZ2).
+   `<cnpj>/H/…` (Q-N38a), pasta pelo dia da zona em `<cnpj>/[H/]nfse/<série da DPS>/<ano>/<mês>/<dia>/` (Q-TZ7 + D-F241, pacote 2.0.0), dhEmi na zona do estabelecimento (Q-TZ2).
 5. Swagger/OpenAPI em todo endpoint; gates socrático ≥ 0,70 + adversarial sem HIGH antes de "pronto".
 
 ## Estado (2026-10-10 — reconciliação da sessão 2026-10-10 com a 3ª sessão de 2026-10-04, §20 do prompt)

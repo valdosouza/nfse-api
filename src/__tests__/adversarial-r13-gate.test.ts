@@ -388,7 +388,7 @@ describe('ACHADO R13-04 (LOW) — D-F76 na nfse-api: `chSubstituta` igual à PR�
     const current = tx({ attempt: 1, lastKind: 'C', lastCode: '105102' })
     ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [current], events: [] })
     fs.rmSync(path.join(storageRoot, CNPJ), { recursive: true, force: true })
-    deps.storage.save(CNPJ, `${KEY}-evt101101.xml`, substEventXml(KEY), new Date('2026-10-10T21:43:04Z'), 'H', 'America/Sao_Paulo')
+    deps.storage.save({ cnpj: CNPJ, kind: 'nfse', serie: '1', environment: 'H', zone: 'America/Sao_Paulo' }, `${KEY}-evt101101.xml`, substEventXml(KEY), new Date('2026-10-10T21:43:04Z'))
     const v = await getServiceFiscalView(deps, A, webRef(A, INVOICE))
     expect(v.substitution?.substituteAccessKey).toBeNull()       // hoje: a própria KEY
   })
@@ -398,7 +398,7 @@ describe('ACHADO R13-04 (LOW) — D-F76 na nfse-api: `chSubstituta` igual à PR�
     const otherIssuer = `${SUBST_KEY.slice(0, 8)}2${'98765432000198'}${SUBST_KEY.slice(23)}`
     for (const [key, expected] of [[otherIssuer, null], [SUBST_KEY, SUBST_KEY]] as const) {
       fs.rmSync(path.join(storageRoot, CNPJ), { recursive: true, force: true })
-      deps.storage.save(CNPJ, `${KEY}-evt101101.xml`, substEventXml(key), new Date('2026-10-10T21:43:04Z'), 'H', 'America/Sao_Paulo')
+      deps.storage.save({ cnpj: CNPJ, kind: 'nfse', serie: '1', environment: 'H', zone: 'America/Sao_Paulo' }, `${KEY}-evt101101.xml`, substEventXml(key), new Date('2026-10-10T21:43:04Z'))
       expect((await getServiceFiscalView(deps, A, webRef(A, INVOICE))).substitution?.substituteAccessKey).toBe(expected)
     }
   })
@@ -444,7 +444,7 @@ describe('ACHADO R13-06 (LOW, delta NOVO durante o gate — D-F78, 21:33) — "c
     finalSubstitution()
     sefin({ typed: code => (code === '101101' ? typedOk(typedItem(arquivo2(generatedEventXml({ code: '101101' })))) : undefined) })
     await refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q')
-    expect(deps.storage.find(CNPJ, `${KEY}-evt101101.xml`, ['2026-10-10 21:43:04'], 'H', 'America/Sao_Paulo')).toBeNull()
+    expect(deps.storage.find({ cnpj: CNPJ, kind: 'nfse', serie: null, environment: 'H', zone: 'America/Sao_Paulo' }, `${KEY}-evt101101.xml`, ['2026-10-10 21:43:04'])).toBeNull()
   })
 })
 
@@ -498,7 +498,7 @@ describe('RESISTIU — D-F68: a substituição nunca manda o app aplicar o C loc
   it('resistiu: tentativa JÁ em C 105102 (XML do evento arquivado) → a consulta não volta ao fisco e devolve localCancelPending=false; C 101101 → true', async () => {
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'C', lastEvent: 2, lastCode: '105102' }))
     fs.rmSync(path.join(storageRoot, CNPJ), { recursive: true, force: true })
-    deps.storage.save(CNPJ, `${KEY}-evt101101.xml`, substEventXml(SUBST_KEY), new Date('2026-10-10T21:43:04Z'), 'H', 'America/Sao_Paulo')
+    deps.storage.save({ cnpj: CNPJ, kind: 'nfse', serie: '1', environment: 'H', zone: 'America/Sao_Paulo' }, `${KEY}-evt101101.xml`, substEventXml(SUBST_KEY), new Date('2026-10-10T21:43:04Z'))
     sefin()
     expect(await refreshServiceTransmission(realDeps(), A, webRef(A, INVOICE), 'Q')).toMatchObject({ kind: 'C', changed: false, localCancelPending: false })
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'C', lastEvent: 2, lastCode: '101101' }))
@@ -530,7 +530,7 @@ describe('RESISTIU — D-F76 na nfse-api: chSubstituta hostil não vira chave', 
     const current = tx({ attempt: 1, lastKind: 'C', lastCode: '105102' })
     ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [current], events: [] })
     fs.rmSync(path.join(storageRoot, CNPJ), { recursive: true, force: true })
-    deps.storage.save(CNPJ, `${KEY}-evt101101.xml`, substEventXml(hostile), new Date('2026-10-10T21:43:04Z'), 'H', 'America/Sao_Paulo')
+    deps.storage.save({ cnpj: CNPJ, kind: 'nfse', serie: '1', environment: 'H', zone: 'America/Sao_Paulo' }, `${KEY}-evt101101.xml`, substEventXml(hostile), new Date('2026-10-10T21:43:04Z'))
     const v = await getServiceFiscalView(deps, A, webRef(A, INVOICE))
     expect(v).toMatchObject({ localCancelPending: false, substitution: { substituteAccessKey: null } })
   })

@@ -17,7 +17,7 @@ import * as repo from '../nfse/repository'
 import { FsFiscalStorage, AuthorityHttpError, HttpError, MasterKeyRing } from 'fiscal-api'
 import {
   transmitServiceInvoice, refreshServiceTransmission, cancelServiceInvoiceAtAuthority, reconfirmBeforeLocalCancel,
-  refreshOpenServiceTransmissions, getServiceFiscalView, resetMunicipalTermsCache, NfseDeps, CEILING_LOOKUP_TIMEOUT_MS,
+  refreshOpenServiceTransmissions, getServiceFiscalView, readNfseXml, resetMunicipalTermsCache, NfseDeps, CEILING_LOOKUP_TIMEOUT_MS,
 } from '../nfse/transmission'
 import { webRef, refOf, WEB, webScope, itxLike } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
 
@@ -345,7 +345,7 @@ describe('consultar — a voz do fisco, idempotente, SEM efeito no ERP', () => {
     adapter.queryNfse.mockClear()
     const cTx = tx({ lastKind: 'C', lastCode: '101101' })
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(cTx)
-    deps.storage.save(CNPJ, `${KEY}-evt101101.xml`, '<evento/>', new Date(`${cTx.dhProc!.replace(' ', 'T')}Z`), 'H', 'America/Sao_Paulo')
+    deps.storage.save({ cnpj: CNPJ, kind: 'nfse', serie: '1', environment: 'H', zone: 'America/Sao_Paulo' }, `${KEY}-evt101101.xml`, '<evento/>', new Date(`${cTx.dhProc!.replace(' ', 'T')}Z`))
     try {
       await refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q')
       expect(adapter.queryNfse).not.toHaveBeenCalled()
@@ -359,7 +359,7 @@ describe('consultar — a voz do fisco, idempotente, SEM efeito no ERP', () => {
     try {
       await refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q')
       expect(adapter.queryNfse).toHaveBeenCalledTimes(1)
-      const hasFile = () => !!deps.storage.find(CNPJ, `${KEY}-evt101101.xml`, [cTx.dhProc, cTx.createdAt], 'H', 'America/Sao_Paulo')
+      const hasFile = () => !!deps.storage.find({ cnpj: CNPJ, kind: 'nfse', serie: null, environment: 'H', zone: 'America/Sao_Paulo' }, `${KEY}-evt101101.xml`, [cTx.dhProc, cTx.createdAt])
       expect(hasFile()).toBe(false)                                                     // o fisco falou de OUTRO código: nada arquivado
       adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'cancelled', nfseXml: NFSE_XML, dhProc: null,
         cancelled: { dhEvento: '2026-09-22T09:00:00-03:00', motive: 'x', eventCode: '105102', eventXml: '<evento>subst</evento>' } })
@@ -402,7 +402,7 @@ describe('cancelar no fisco — operação EM LINHA (D-F28)', () => {
     expect(eventXml).toContain('<xMotivo>cliente desistiu do serviço</xMotivo>')
     expect(eventXml).toContain(`<CNPJAutor>${CNPJ}</CNPJAutor>`)
     expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(itxLike(conn, 1, INVOICE), 1, A.userId, expect.objectContaining({ kind: 'C', source: 'P', dh: '2026-09-22 12:00:00' }))
-    expect(fs.readFileSync(path.join(storageRoot, CNPJ, 'H', '2026', '08', `${KEY}-evt101101.xml`), 'utf8')).toBe(EVT)
+    expect(fs.readFileSync(path.join(storageRoot, CNPJ, 'H', 'nfse', '1', '2026', '08', '15', `${KEY}-evt101101.xml`), 'utf8')).toBe(EVT)
     expect(conn.query.mock.calls.filter(([sql]) => /setes_setes/.test(sql))).toEqual([])
   })
 
@@ -763,11 +763,65 @@ describe('Rodada 13 (D-F67/D-F68/D-F71/D-F76, Valdo 2026-10-10) — código do e
     ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [current], events: [] })
     let v = await getServiceFiscalView(deps, A, webRef(A, INVOICE))
     expect(v).toMatchObject({ state: 'cancelled', localCancelPending: false, substitution: { substituteAccessKey: null } })   // XML ausente
-    deps.storage.save(CNPJ, `${KEY}-evt101101.xml`, substEventXml(SUBST_KEY), new Date('2026-10-10T21:43:04Z'), 'H', 'America/Sao_Paulo')
+    deps.storage.save({ cnpj: CNPJ, kind: 'nfse', serie: '1', environment: 'H', zone: 'America/Sao_Paulo' }, `${KEY}-evt101101.xml`, substEventXml(SUBST_KEY), new Date('2026-10-10T21:43:04Z'))
     v = await getServiceFiscalView(deps, A, webRef(A, INVOICE))
     expect(v.substitution).toEqual({ substituteAccessKey: SUBST_KEY })
     // C comum: nenhuma substituição na tela
     ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [tx({ attempt: 1, lastKind: 'C', lastCode: '101101' })], events: [] })
     expect((await getServiceFiscalView(deps, A, webRef(A, INVOICE))).substitution).toBeNull()
+  })
+})
+
+// DEPLOY.E1.P3 (D-F241, pacote 2.0.0 do núcleo — ficha projetos/nfse-api/GERAL/ficha-deploy-e1-p3-adocao-pacote-2-0-0.md): o XML da NFS-e
+// mora em <raiz>/<cnpj>/[H/]nfse/<série da DPS>/<ano>/<mês>/<dia>/ — a série é a da DPS (a chave da NFS-e não a leva), sem zeros à
+// esquerda; o dia é o da ZONA do estabelecimento (Q-TZ7 estendida ao dia). Na leitura a série pode faltar.
+describe('D-F241 — XML da NFS-e no layout por tipo, série e dia (DEPLOY.E1.P3)', () => {
+  const dayDir = (env: 'H' | 'P') => path.join(storageRoot, CNPJ, ...(env === 'H' ? ['H'] : []), 'nfse', '1', '2026', '11', '17')
+
+  it('o envio grava o DPS e a NFS-e em <cnpj>/H/nfse/1/2026/11/17/ (série 00001 da DPS → pasta 1; 02:30 UTC = 17/11 na zona) e a leitura acha com a série e sem ela', async () => {
+    fs.rmSync(path.join(storageRoot, CNPJ), { recursive: true, force: true })
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] })
+    try {
+      jest.setSystemTime(new Date('2026-11-18T02:30:00Z'))
+      const o = opened()
+      ;(fiscal.openIssuer as jest.Mock).mockResolvedValue({ ...o, issuer: { ...o.issuer, serie: '00001' } })
+      adapter.transmit.mockResolvedValue({ accessKey: KEY, nfseNumber: '123', dhProc: '2026-11-17T23:30:00-03:00', nfseXml: NFSE_XML, raw: {} })
+      const r = await transmitServiceInvoice(deps, A, webRef(A, INVOICE))
+      expect(r).toMatchObject({ dpsId: DPS_ID, accessKey: KEY, kind: 'A' })
+    } finally {
+      jest.useRealTimers()
+    }
+    expect(fs.readdirSync(dayDir('H')).sort()).toEqual([`${DPS_ID}-dps.xml`, `${KEY}-nfse.xml`].sort())
+    expect(fs.existsSync(path.join(storageRoot, CNPJ, 'H', '2026'))).toBe(false)              // nada no layout antigo
+    for (const serie of ['00001', null]) {
+      ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({
+        transmissions: [tx({ serie, dhProc: '2026-11-18 02:30:00', createdAt: '2026-11-18 02:29:59' })], events: [] })
+      expect(await readNfseXml(deps, A, webRef(A, INVOICE))).toEqual({ accessKey: KEY, xml: NFSE_XML, cancelled: false })
+    }
+  })
+
+  it('[gate SOC L1] a pasta é a da série CONGELADA na DPS da vida (00002), não a série atual do emissor (00001)', async () => {
+    fs.rmSync(path.join(storageRoot, CNPJ), { recursive: true, force: true })
+    const id2 = DPS_ID.replace('00001000000000000042', '00002000000000000042')
+    ;(repo.getLifeDps as jest.Mock).mockResolvedValue({ lifeEvent: 1, serie: '00002', dpsNumber: 42, dpsId: id2 })
+    adapter.transmit.mockResolvedValue({ accessKey: KEY, nfseNumber: '123', dhProc: '2026-09-21T10:15:30-03:00', nfseXml: NFSE_XML, raw: {} })
+    await transmitServiceInvoice(deps, A, webRef(A, INVOICE))
+    expect(fs.readdirSync(path.join(storageRoot, CNPJ, 'H', 'nfse'))).toEqual(['2'])
+    const files = fs.readdirSync(path.join(storageRoot, CNPJ, 'H', 'nfse', '2'), { recursive: true } as any).map(String)
+    expect(files.some(f => f.endsWith(`${id2}-dps.xml`)) && files.some(f => f.endsWith(`${KEY}-nfse.xml`))).toBe(true)
+  })
+
+  it('a consulta regrava o XML que falta na pasta da série da DPS; tentativa SEM série → não grava e só avisa (Q-N38: falhar ao gravar não derruba a consulta)', async () => {
+    fs.rmSync(path.join(storageRoot, CNPJ), { recursive: true, force: true })
+    adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'authorized', nfseXml: NFSE_XML, dhProc: '2026-11-17T23:30:00-03:00' })
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A', environment: 'P', dhProc: '2026-11-18 02:30:00' }))
+    await refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q')
+    expect(fs.readdirSync(dayDir('P'))).toEqual([`${KEY}-nfse.xml`])
+    fs.rmSync(path.join(storageRoot, CNPJ), { recursive: true, force: true })
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A', environment: 'P', serie: null, dhProc: '2026-11-18 02:30:00' }))
+    const r = await refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q')
+    expect(r).toMatchObject({ kind: 'A' })
+    expect(fs.existsSync(path.join(storageRoot, CNPJ))).toBe(false)
+    expect(fiscal.logger.warn).toHaveBeenCalledWith('XML da NFS-e não gravado na consulta', expect.objectContaining({ err: expect.stringMatching(/sem série da DPS/) }))
   })
 })

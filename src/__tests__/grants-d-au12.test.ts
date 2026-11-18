@@ -33,11 +33,24 @@ function codeOf(file: string): string {
   return ts.createPrinter({ removeComments: true }).printFile(sf)
 }
 
+/**
+ * DEPLOY.E1.P3 (Valdo 2026-11-18, "Cerca daqui resolve"): o pacote 2.0.0 do núcleo monta o nome da view pela constante PUBLICADA
+ * (`setes_central.${exports.ACCESS_VIEWS.interfaceCatalog}` — `access.licensedKeys`). A cerca resolve SÓ essa forma, pelo `ACCESS_VIEWS`
+ * do pacote INSTALADO; chave que não existe nele, valor que não é um nome simples ou qualquer outro `${` seguem recusados.
+ */
+const CORE_ACCESS_VIEWS: Record<string, unknown> = require('fiscal-api').access.ACCESS_VIEWS
+export function resolvePublishedViews(code: string): string {
+  return code.replace(/setes_central(`?)\.(`?)\$\{exports\.ACCESS_VIEWS\.([A-Za-z_][A-Za-z0-9_]*)\}/g, (all, a, b, key: string) => {
+    const name = Object.prototype.hasOwnProperty.call(CORE_ACCESS_VIEWS, key) ? CORE_ACCESS_VIEWS[key] : undefined
+    return typeof name === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? `setes_central${a}.${b}${name}` : all
+  })
+}
+
 /** `setes_central.<nome>` (com ou sem crase) lido pelo código de produção — arquivo → nomes. */
 function centralReads(): Map<string, Set<string>> {
   const out = new Map<string, Set<string>>()
   for (const f of [...codeFiles(NFSE_SRC, 'ts'), ...codeFiles(CORE_DIST, 'js')]) {
-    for (const m of codeOf(f).matchAll(/setes_central`?\.`?(\$\{|[A-Za-z_][A-Za-z0-9_]*)/g)) {
+    for (const m of resolvePublishedViews(codeOf(f)).matchAll(/setes_central`?\.`?(\$\{|[A-Za-z_][A-Za-z0-9_]*)/g)) {
       const name = m[1]
       if (!out.has(name)) out.set(name, new Set())
       out.get(name)!.add(path.relative(path.resolve(__dirname, '../../..'), f).replace(/\\/g, '/'))
@@ -53,6 +66,15 @@ const grantedTables = (host: string) => new Set(
 describe('D-AU12 — GRANT do usuário fiscal em setes_central: só o que o código lê', () => {
   it('o código não monta nome de tabela de setes_central dinamicamente (a cerca precisa ler o nome)', () => {
     expect(centralReads().get('${') ?? new Set()).toEqual(new Set())
+  })
+
+  it('só a constante PUBLICADA do núcleo é resolvida; chave inexistente ou outra expressão seguem como nome montado', () => {
+    expect(resolvePublishedViews('JOIN setes_central.${exports.ACCESS_VIEWS.interfaceCatalog} c')).toBe('JOIN setes_central.vw_interface_catalog c')
+    expect(resolvePublishedViews('setes_central.`${exports.ACCESS_VIEWS.userLink}`')).toBe('setes_central.`vw_user_link`')
+    for (const keep of ['setes_central.${exports.ACCESS_VIEWS.naoExiste}', 'setes_central.${exports.ACCESS_VIEWS.constructor}',
+      'setes_central.${exports.OUTRA.interfaceCatalog}', 'setes_central.${nome}', 'setes_central.${exports.ACCESS_VIEWS[k]}']) {
+      expect(resolvePublishedViews(keep)).toBe(keep)
+    }
   })
 
   it('toda tabela/view de setes_central lida pelo código de produção está no GRANT (tabela nova lida = linha nova no grants.sql)', () => {

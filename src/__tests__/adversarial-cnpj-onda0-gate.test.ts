@@ -128,8 +128,8 @@ describe('P3 — o eco no pedido de cancelamento é EXATO (RESISTIU)', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'adv-nfse-'))
     try {
       const st = new FsFiscalStorage(root)
-      expect(() => st.save(NUM, nfseFileName('../../etc/passwd'), '<x/>', new Date(), 'P', 'UTC')).toThrow(/Nome de arquivo fiscal inválido/)
-      expect(st.save(ALFA, nfseFileName(KEY_A), '<x/>', new Date('2026-10-15T12:00:00Z'), 'P', 'UTC')).toBe(path.join(root, ALFA, '2026', '10', `${KEY_A}-nfse.xml`))
+      expect(() => st.save({ cnpj: NUM, kind: 'nfse', serie: 1, environment: 'P', zone: 'UTC' }, nfseFileName('../../etc/passwd'), '<x/>', new Date())).toThrow(/Nome de arquivo fiscal inválido/)
+      expect(st.save({ cnpj: ALFA, kind: 'nfse', serie: 1, environment: 'P', zone: 'UTC' }, nfseFileName(KEY_A), '<x/>', new Date('2026-10-15T12:00:00Z'))).toBe(path.join(root, ALFA, 'nfse', '1', '2026', '10', '15', `${KEY_A}-nfse.xml`))
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
   })
 })

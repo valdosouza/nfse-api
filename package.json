@@ -17,12 +17,13 @@
     "migrate:setes": "tsx --require tsconfig-paths/register scripts/migrate-from-setes-api.ts",
     "token:dev": "tsx --require tsconfig-paths/register scripts/mint-dev-token.ts",
     "explain:leituras": "tsx --require tsconfig-paths/register scripts/explain-leituras.ts",
-    "smoke:adn-h": "tsx --require tsconfig-paths/register scripts/smoke-adn-homologacao.ts"
+    "smoke:adn-h": "tsx --require tsconfig-paths/register scripts/smoke-adn-homologacao.ts",
+    "migrate:xml-layout": "tsx --require tsconfig-paths/register scripts/migrate-xml-layout.ts"
   },
   "dependencies": {
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
-    "fiscal-api": "file:vendor/fiscal-api-1.0.0.tgz",
+    "fiscal-api": "file:vendor/fiscal-api-2.0.0.tgz",
     "pdfkit": "^0.20.2",
     "swagger-ui-express": "^5.0.1",
     "yaml": "^2.5.0",

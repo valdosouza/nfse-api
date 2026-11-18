@@ -9,12 +9,13 @@ import { MIGRATION_SETS } from './migrations'
 import { assertServiceVoiceDomainsEnforced, assertServiceStrictSession } from './nfse/voice-family'
 import { assertCorsOrigins } from './cors-origins'
 import { readBuildCheck, assertBuildCurrent } from './build-info'
+import { isProductionEnv } from './environment'
 
 async function main(): Promise<void> {
   // D-F222 (achado 3d do gate): versão do núcleo + selo do dist ANTES de qualquer migration (dist de outro commit = não sobe)
-  logger.info(assertBuildCurrent(readBuildCheck(), __filename.endsWith('.js'), process.env.NODE_ENV === 'production'))
+  logger.info(assertBuildCurrent(readBuildCheck(), __filename.endsWith('.js'), isProductionEnv(process.env.NODE_ENV)))
   const ctx = contextFromEnv()
-  logger.info(`CORS (origens do app — D-F146): ${assertCorsOrigins(ctx.corsOrigins)}`)
+  logger.info(`CORS (origens do app — D-F146): ${assertCorsOrigins(ctx.corsOrigins, process.env.NODE_ENV)}`)
   // migrations: núcleo primeiro, depois a família (trava nomeada — duas instâncias sobem juntas — D-F35)
   const applied = await runMigrations(ctx.db, MIGRATION_SETS)
   if (applied.length) logger.info('Migrations aplicadas no boot', { applied })

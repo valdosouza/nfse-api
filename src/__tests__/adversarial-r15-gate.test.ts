@@ -329,8 +329,8 @@ describe('RESISTIU — D-F85 na nfse-api: `chSubstituta` × emitente embutido na
     const current = tx({ attempt: 1, accessKey: REAL, lastKind: 'C', lastCode: '105102' })
     ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({ transmissions: [current], events: [] })
     fs.rmSync(path.join(storageRoot, CNPJ), { recursive: true, force: true })
-    deps.storage.save(CNPJ, `${REAL}-evt101101.xml`, generatedEventXml({ key: REAL, code: '105102', inner: `<chSubstituta>${sub}</chSubstituta>` }),
-      new Date('2026-10-10T21:43:04Z'), 'H', 'America/Sao_Paulo')
+    deps.storage.save({ cnpj: CNPJ, kind: 'nfse', serie: '1', environment: 'H', zone: 'America/Sao_Paulo' }, `${REAL}-evt101101.xml`,
+      generatedEventXml({ key: REAL, code: '105102', inner: `<chSubstituta>${sub}</chSubstituta>` }), new Date('2026-10-10T21:43:04Z'))
     const v = await getServiceFiscalView(deps, A, webRef(A, INVOICE))
     expect(v.substitution?.substituteAccessKey ?? null).toBe(expected ? sub.trim() : null)
   })

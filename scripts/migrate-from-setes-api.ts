@@ -53,7 +53,7 @@ import 'dotenv/config'
 import fs from 'fs'
 import path from 'path'
 import {
-  createFiscalPool, dbConfigFromEnv, MasterKeyRing, FsFiscalStorage, certificateInfo, keyMatchesCertificate,
+  createFiscalPool, dbConfigFromEnv, MasterKeyRing, FsFiscalStorage, fiscalStorageRootFromEnv, certificateInfo, keyMatchesCertificate,
   validatePrivateKeyPem, certificateAad, assertSchema, PoolConnection, ISSUER_MODELS, anyEmissionStillInErp, erp, CANCEL_EVENT_CODES,
 } from 'fiscal-api'
 import { SERVICE_MODEL } from '../src/facts/service-facts'
@@ -262,12 +262,14 @@ async function checkXmls(q: { query: PoolConnection['query'] }, storage: FsFisca
 
 async function checkXmlsUnsafe(q: { query: PoolConnection['query'] }, storage: FsFiscalStorage, rep: Report): Promise<void> {
   const [keyed] = await q.query<any[]>(
-    `SELECT t.access_key AS k, t.environment AS env, DATE_FORMAT(t.dh_proc, '%Y-%m-%d %H:%i:%s') AS dh, DATE_FORMAT(t.created_at, '%Y-%m-%d %H:%i:%s') AS cr, ce.cnpj
+    `SELECT t.access_key AS k, t.environment AS env, DATE_FORMAT(t.dh_proc, '%Y-%m-%d %H:%i:%s') AS dh, DATE_FORMAT(t.created_at, '%Y-%m-%d %H:%i:%s') AS cr, ce.cnpj, d.serie
        FROM tb_invoice_service_transmission t LEFT JOIN tb_establishment_certificate ce ON ce.tb_institution_id = t.tb_institution_id
+       LEFT JOIN tb_invoice_service_dps d ON d.tb_institution_id = t.tb_institution_id AND d.tb_invoice_id = t.tb_invoice_id
+        AND d.terminal = t.terminal AND d.life_event = t.life_event
       WHERE t.tb_institution_id = ? AND t.access_key IS NOT NULL`, [rep.institutionId])
   for (const k of keyed) {
     if (!k.cnpj) { rep.xmlMissing.push(`${k.k} (sem CNPJ do A1 para achar a pasta)`); continue }
-    if (!storage.find(k.cnpj, `${k.k}-nfse.xml`, [k.dh, k.cr], k.env, 'America/Sao_Paulo')) rep.xmlMissing.push(`${k.k}-nfse.xml (${k.env})`)
+    if (!storage.find({ cnpj: k.cnpj, kind: 'nfse', serie: k.serie ?? null, environment: k.env, zone: 'America/Sao_Paulo' }, `${k.k}-nfse.xml`, [k.dh, k.cr])) rep.xmlMissing.push(`${k.k}-nfse.xml (${k.env})`)
   }
 }
 
@@ -581,7 +583,7 @@ async function main(): Promise<void> {
   const pool = createFiscalPool(cfg)
   const keyring = MasterKeyRing.fromEnv()
   if (keyring.currentVersion === null) throw new Error('FISCAL_MASTER_KEYS ausente — o A1 não pode ser cifrado')
-  const storage = new FsFiscalStorage(path.resolve(process.env.STORAGE_PATH ?? 'storage'))
+  const storage = new FsFiscalStorage(fiscalStorageRootFromEnv())   // D-F241
   try {
     if (CUTOVER !== undefined) {
       const id = Number(CUTOVER)

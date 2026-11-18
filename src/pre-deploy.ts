@@ -2,13 +2,15 @@
 // molde do `pre-deploy-tz-check` do setes-api. SOMENTE LEITURA: confere, ANTES de subir, o que o boot recusaria ou deixaria passar calado
 // — o boot só descobre na partida (serviço fora do ar); este check descobre antes de parar o que está rodando.
 // Em PRODUÇÃO (NODE_ENV=production) cada item que falha é BLOQUEANTE; fora dela é aviso (o dev roda sem A1, por exemplo).
-// O CORS usa a regra do NÚCLEO (`assertCorsOrigins`); o corte "só https em produção" chega com o pacote da D-F236 — nunca aqui (regra única).
+// O CORS usa a regra do NÚCLEO (`assertCorsOrigins` com o ambiente — D-F236: em produção só `https://` e nada de localhost); regra única.
 import fs from 'fs'
 import path from 'path'
-import { MasterKeyRing, ProductTokenVerifier } from 'fiscal-api'
+import { MasterKeyRing, ProductTokenVerifier, fiscalStorageRootFromEnv } from 'fiscal-api'
 import { assertCorsOrigins } from './cors-origins'
 import { assertRetiredEnv } from './context'
 import { readBuildCheck, assertBuildCurrent } from './build-info'
+import { isProductionEnv } from './environment'
+import { scanOldLayout } from './nfse/xml-layout-migration'
 
 export interface PreDeployItem {
   item: string
@@ -35,7 +37,7 @@ function check(item: string, production: boolean, fn: () => string): PreDeployIt
 
 /** Os itens de CONFIGURAÇÃO e de BUILD (sem banco): puros sobre o `env` e o disco. */
 export function preDeployConfigItems(env: NodeJS.ProcessEnv, opts: PreDeployOptions = {}): PreDeployItem[] {
-  const production = env.NODE_ENV === 'production'
+  const production = isProductionEnv(env.NODE_ENV)
   const projectRoot = opts.projectRoot ?? path.resolve(__dirname, '..')
   const distDir = opts.distDir ?? path.join(projectRoot, 'dist')
   return [
@@ -45,7 +47,7 @@ export function preDeployConfigItems(env: NodeJS.ProcessEnv, opts: PreDeployOpti
     }),
     check('variáveis aposentadas', production, () => { assertRetiredEnv(env); return 'nenhuma' }),
     check('CORS_ORIGINS', production, () =>
-      assertCorsOrigins(String(env.CORS_ORIGINS ?? '').split(',').map(s => s.trim()).filter(Boolean))),
+      assertCorsOrigins(String(env.CORS_ORIGINS ?? '').split(',').map(s => s.trim()).filter(Boolean), env.NODE_ENV)),
     check('FISCAL_MASTER_KEYS', production, () => {
       const ring = MasterKeyRing.fromEnv(env)
       if (ring.currentVersion === null) throw new Error('ausente — o A1 não abre e as operações fiscais respondem 503 (D-F16)')
@@ -54,13 +56,24 @@ export function preDeployConfigItems(env: NodeJS.ProcessEnv, opts: PreDeployOpti
     }),
     check('chave pública do JWT', production, () => { ProductTokenVerifier.fromEnv(env); return 'carregada (D-F13)' }),
     check('STORAGE_PATH', production, () => {
-      const raw = env.STORAGE_PATH
-      if (!raw) throw new Error('ausente — o XML fiscal iria para ./storage da pasta de execução (P-DEP-2: disco do servidor)')
-      if (production && !path.isAbsolute(raw)) throw new Error(`${raw} é relativo — em produção o caminho é absoluto (não depende da pasta de execução)`)
-      const dir = path.resolve(raw)
-      if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) throw new Error(`${dir} não existe ou não é pasta`)
+      // DEPLOY.E1.P3 (D-F241): a MESMA raiz que o serviço usa — critério do núcleo (`fiscalStorageRootFromEnv`): em produção
+      // `STORAGE_PATH` obrigatório e absoluto; fora dela, `STORAGE_PATH` resolvido ou `<cwd>/storage`. O pacote 2.0.0 NUNCA cria a raiz
+      // (`save` e `probe` recusam pasta ausente — volume desmontado não vira pasta nova), então ela tem de existir e gravar.
+      const dir = fiscalStorageRootFromEnv(env)
+      const from = env.STORAGE_PATH ? '' : ' (STORAGE_PATH ausente — padrão do núcleo fora de produção)'
+      if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) throw new Error(`${dir} não existe ou não é pasta${from}`)
       fs.accessSync(dir, fs.constants.R_OK | fs.constants.W_OK)
-      return dir
+      return dir + from
+    }),
+    check('XML no layout D-F241', production, () => {
+      // DEPLOY.E1.P3 (gate socrático M2): o `find` do pacote 2.0.0 não acha o layout ANTIGO (`<cnpj>/[H/]<ano>/<mês>/`) — subir o build
+      // novo com arquivo lá deixa `/xml`, `/danfse` e "No fisco" sem o XML. Sobrou arquivo = rode a migração antes (GERAL/INDEX.md, 4a).
+      const dir = fiscalStorageRootFromEnv(env)
+      if (!fs.existsSync(dir)) throw new Error(`${dir} não existe (ver o item STORAGE_PATH)`)
+      const { files, unknown } = scanOldLayout(dir)
+      const left = files.length + unknown.length
+      if (left) throw new Error(`${left} arquivo(s) fora do layout novo em ${dir} — \`npm run migrate:xml-layout\` (ensaio) e \`-- --vai\` com o serviço parado`)
+      return 'nenhum arquivo no layout antigo'
     }),
     check('PORT', production, () => {
       const port = Number(env.PORT ?? 3002)
@@ -80,7 +93,7 @@ export async function preDeployDbItem(
   env: NodeJS.ProcessEnv,
   query: (sql: string) => Promise<Array<Record<string, unknown>>>,
 ): Promise<PreDeployItem> {
-  const production = env.NODE_ENV === 'production'
+  const production = isProductionEnv(env.NODE_ENV)
   try {
     const rows = await query('SELECT VERSION() AS version, DATABASE() AS db')
     return { item: 'banco', ok: true, blocking: false, detail: `${rows[0]?.version} · ${rows[0]?.db}` }

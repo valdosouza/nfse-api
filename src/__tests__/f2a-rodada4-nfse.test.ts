@@ -8,20 +8,20 @@ import { assertCorsOrigins } from '../cors-origins'
 
 describe('D-F146 — CORS_ORIGINS explícita por ambiente', () => {
   it('lista vazia → o boot RECUSA (o app cairia em "Failed to fetch" sem diagnóstico)', () => {
-    expect(() => assertCorsOrigins([])).toThrow(/CORS_ORIGINS vazia[\s\S]*D-F146/)
+    expect(() => assertCorsOrigins([], 'development')).toThrow(/CORS_ORIGINS vazia[\s\S]*D-F146/)
   })
   it('"*", caminho, curinga no host, esquema estranho ou lixo → RECUSA (o token do usuário no navegador falaria com qualquer site)', () => {
     for (const bad of ['*', 'http://localhost:5051/', 'https://app.setes.com.br/app', 'https://*.setes.com.br', 'ftp://x', 'localhost:5051', 'http://a b']) {
-      expect(() => assertCorsOrigins(['http://localhost:5051', bad])).toThrow(/ORIGEM canônica/)
+      expect(() => assertCorsOrigins(['http://localhost:5051', bad], 'development')).toThrow(/ORIGEM canônica/)
     }
   })
   it('origens na forma do navegador (esquema://host[:porta]) → passa e o boot as registra', () => {
-    expect(assertCorsOrigins(['http://localhost:5051', 'https://app.setes.com.br'])).toBe('http://localhost:5051, https://app.setes.com.br')
+    expect(assertCorsOrigins(['http://localhost:5051', 'https://app.setes.com.br'], 'development')).toBe('http://localhost:5051, https://app.setes.com.br')
   })
   it('o boot confere ANTES das migrations; o exemplo do .env declara a porta do app de dev (5051)', () => {
     const server = fs.readFileSync(path.join(__dirname, '..', 'server.ts'), 'utf8')
-    expect(server.indexOf('assertCorsOrigins(ctx.corsOrigins)')).toBeGreaterThan(0)
-    expect(server.indexOf('assertCorsOrigins(ctx.corsOrigins)')).toBeLessThan(server.indexOf('await runMigrations('))
+    expect(server.indexOf('assertCorsOrigins(ctx.corsOrigins, process.env.NODE_ENV)')).toBeGreaterThan(0)
+    expect(server.indexOf('assertCorsOrigins(ctx.corsOrigins, process.env.NODE_ENV)')).toBeLessThan(server.indexOf('await runMigrations('))
     expect(fs.readFileSync(path.join(__dirname, '..', '..', '.env.example'), 'utf8')).toMatch(/^CORS_ORIGINS=http:\/\/localhost:5051$/m)
   })
 })

@@ -1,7 +1,7 @@
 import { NfseErrorCodes } from './error-codes'
 import {
   Pool, PoolConnection, HttpError, ErrorCodes, logger, withTransaction, isDeadlock, isLockWaitTimeout,
-  MasterKeyRing, FiscalStorage, OpenedIssuer, openIssuer, nextDpsNumber, erp, AuthorityHttpError,
+  MasterKeyRing, FiscalStorage, FiscalFileKey, FiscalFileLookup, OpenedIssuer, openIssuer, nextDpsNumber, erp, AuthorityHttpError,
   signXml, isLocalCredentialError, toDbDateTime, nowIsoIn, withZoneWall, DEFAULT_TIME_ZONE,
   isLiveTransmission, isAuthorized, fiscalStateOf, localCancelPending, isSubstitutionCancel, CANCEL_EVENT_CODES, reconfirmationVerdict, ReconfirmReason, currentOf,
   acquireRefreshLease, releaseRefreshLease, renewRefreshLease, getIssuer, newCrashRef, contentionToHttpError, emissionStillInErp, SERVICE_ISSUER_MODEL,
@@ -88,6 +88,17 @@ export const dpsFileName = (dpsId: string) => `${dpsId}-dps.xml`
 // para chave numérica o nome é o mesmo de sempre). A chave chega aqui já conferida pela forma geral (`asNfseAccessKey`) na leitura da voz.
 export const nfseFileName = (accessKey: string) => `${accessKey}-nfse.xml`
 export const cancelEventFileName = (accessKey: string) => `${accessKey}-evt101101.xml`
+
+/**
+ * D-F241 (DEPLOY.E1.P3): onde o XML da NFS-e mora — `<raiz>/<cnpj>/[H/]nfse/<série da DPS>/<ano>/<mês>/<dia>/` (a chave da NFS-e não
+ * leva a série). Na busca a série pode faltar (`null` varre as séries do tipo).
+ */
+export function nfseFileKey(cnpj: string, serie: string | number, environment: AuthorityEnvironment, zone: string): FiscalFileKey {
+  return { cnpj, kind: 'nfse', serie, environment, zone }
+}
+export function nfseFileLookup(cnpj: string, serie: string | number | null, environment: AuthorityEnvironment, zone: string): FiscalFileLookup {
+  return { cnpj, kind: 'nfse', serie, environment, zone }
+}
 
 /**
  * NE-1a parte 2 (D-NE12/D-NE59): a nota chega INTEIRA da borda (`InvoiceRef` — o terminal vem da ROTA; `WEB_TERMINAL` só lá). A
@@ -317,10 +328,12 @@ async function termsWithin(adapter: TaxAuthorityAdapter, ctx: AuthorityContext, 
 export function resetMunicipalTermsCache(): void { termsCache.clear(); ceilingCache.clear() }
 
 /** Arquivo fiscal: falha ao gravar só AVISA (o fato já existe no fisco; a consulta regrava). */
-async function saveXmlSafe(deps: NfseDeps, actor: Actor, cnpj: string, name: string, xml: string, when: Date, environment: AuthorityEnvironment, label: string): Promise<void> {
+async function saveXmlSafe(deps: NfseDeps, actor: Actor, cnpj: string, serie: string | null, name: string, xml: string, when: Date, environment: AuthorityEnvironment, label: string): Promise<void> {
   try {
+    // D-F241: a pasta leva a série da DPS; sem ela não há pasta certa — não grava (Q-N38: falhar ao gravar só avisa)
+    if (serie === null) throw new Error('tentativa sem série da DPS')
     const zone = await erp.institutionZone(deps.pool, actor.schemaName, actor.institutionId)
-    deps.storage.save(cnpj, name, xml, when, environment, zone)
+    deps.storage.save(nfseFileKey(cnpj, serie, environment, zone), name, xml, when)
   } catch (err) {
     logger.warn(`${label} não gravado no arquivo fiscal`, { institutionId: actor.institutionId, name, err: errMsg(err) })
   }
@@ -400,13 +413,13 @@ export async function transmitServiceInvoice(deps: NfseDeps, actor: Actor, ref: 
     }
     const attempt = await insertTransmission(itx, life, opened.issuer.environment, userId)
     const { dpsId, xml } = buildSignedDps(base, dps.serie, dps.dpsNumber, opened, opened.issuer.environment)
-    return { attempt, dpsId, xml, opened }
+    return { attempt, dpsId, xml, opened, serie: dps.serie }
   }, { requireAlive: true })
   const environment = reserved.opened.issuer.environment
   const ctx = ctxFor(reserved.opened, environment)
 
   // (e) o DPS assinado no arquivo fiscal — snapshot do que foi dito ao fisco
-  await saveXmlSafe(deps, actor, base.emitter.cnpj, dpsFileName(reserved.dpsId), reserved.xml, new Date(), environment, 'DPS assinado')
+  await saveXmlSafe(deps, actor, base.emitter.cnpj, reserved.serie, dpsFileName(reserved.dpsId), reserved.xml, new Date(), environment, 'DPS assinado')
 
   // (f) o FISCO — fora de qualquer transação
   let outcome
@@ -455,7 +468,7 @@ export async function transmitServiceInvoice(deps: NfseDeps, actor: Actor, ref: 
     })
     return reserved.attempt
   })
-  await saveXmlSafe(deps, actor, base.emitter.cnpj, nfseFileName(outcome.accessKey), outcome.nfseXml, new Date(), environment, 'XML da NFS-e autorizada')
+  await saveXmlSafe(deps, actor, base.emitter.cnpj, reserved.serie, nfseFileName(outcome.accessKey), outcome.nfseXml, new Date(), environment, 'XML da NFS-e autorizada')
   logger.info('NFS-e autorizada', { institutionId, invoiceId, attempt: holderAttempt, accessKey: outcome.accessKey, nfseNumber: outcome.nfseNumber })
   return { invoiceId, attempt: holderAttempt, dpsId: reserved.dpsId, accessKey: outcome.accessKey, nfseNumber: outcome.nfseNumber, kind: 'A' }
 }
@@ -691,12 +704,14 @@ async function refreshServiceTransmissionInner(
       const zone = await erp.institutionZone(deps.pool, s, institutionId)
       const when = utcDate(target.dhProc)
       const hints = [target.dhProc, target.createdAt]
-      if (!deps.storage.find(cnpj, nfseFileName(result.accessKey), hints, target.environment, zone)) {
-        deps.storage.save(cnpj, nfseFileName(result.accessKey), nfse.nfseXml, when, target.environment, zone)
+      if (target.serie === null) throw new Error('tentativa sem série da DPS')   // D-F241: sem série não há pasta certa
+      const key = nfseFileKey(cnpj, target.serie, target.environment, zone)
+      if (!deps.storage.find(key, nfseFileName(result.accessKey), hints)) {
+        deps.storage.save(key, nfseFileName(result.accessKey), nfse.nfseXml, when)
       }
       const eventXml = nfse.cancelled?.eventXml
-      if (eventXml && !deps.storage.find(cnpj, cancelEventFileName(result.accessKey), hints, target.environment, zone)) {
-        deps.storage.save(cnpj, cancelEventFileName(result.accessKey), eventXml, when, target.environment, zone)
+      if (eventXml && !deps.storage.find(key, cancelEventFileName(result.accessKey), hints)) {
+        deps.storage.save(key, cancelEventFileName(result.accessKey), eventXml, when)
       }
     } catch (err) {
       logger.warn('XML da NFS-e não gravado na consulta', { institutionId, invoiceId, err: errMsg(err) })
@@ -719,7 +734,9 @@ async function archiveCancelEventIfMissing(deps: NfseDeps, actor: Actor, ref: In
     const cnpj = await emitterCnpj(deps.pool, institutionId)
     const zone = await erp.institutionZone(deps.pool, s, institutionId)
     const hints = [tx.dhProc, tx.createdAt]
-    if (deps.storage.find(cnpj, cancelEventFileName(tx.accessKey), hints, tx.environment, zone)) return
+    if (tx.serie === null) throw new Error('tentativa sem série da DPS')   // D-F241: sem série não há pasta certa
+    const key = nfseFileKey(cnpj, tx.serie, tx.environment, zone)
+    if (deps.storage.find(key, cancelEventFileName(tx.accessKey), hints)) return
     const opened = await openIssuer(estDeps(deps), institutionId, SERVICE_MODEL, { schemaName: s })
     const q = await deps.adapter.queryNfse(ctxFor(opened, tx.environment), tx.accessKey)
     const xml = q.status === 'cancelled' ? q.cancelled?.eventXml : null
@@ -727,7 +744,7 @@ async function archiveCancelEventIfMissing(deps: NfseDeps, actor: Actor, ref: In
       logger.warn('Consulta de C: o fisco não devolveu o evento deste cancelamento para arquivar', { institutionId, invoiceId, attempt: tx.attempt, code: tx.lastCode, got: q.cancelled?.eventCode ?? q.status })
       return
     }
-    deps.storage.save(cnpj, cancelEventFileName(tx.accessKey), xml, utcDate(tx.dhProc), tx.environment, zone)
+    deps.storage.save(key, cancelEventFileName(tx.accessKey), xml, utcDate(tx.dhProc))
   } catch (err) {
     logger.warn('XML do evento de cancelamento não arquivado na consulta', { institutionId, invoiceId, attempt: tx.attempt, err: errMsg(err) })
   }
@@ -958,7 +975,7 @@ export async function cancelServiceInvoiceAtAuthority(deps: NfseDeps, actor: Act
 
   // (4) Q-N38: o evento GERADO pelo fisco no arquivo fiscal (mesma pasta da NFS-e — mês da autorização)
   if (registered.eventXml) {
-    await saveXmlSafe(deps, actor, identity.cnpj, cancelEventFileName(tx.accessKey!), registered.eventXml, utcDate(tx.dhProc), tx.environment, 'XML do evento de cancelamento')
+    await saveXmlSafe(deps, actor, identity.cnpj, tx.serie, cancelEventFileName(tx.accessKey!), registered.eventXml, utcDate(tx.dhProc), tx.environment, 'XML do evento de cancelamento')
   }
 
   // (5) o fisco cancelou (irreversível): a VOZ C. O C local é do setes-api, que o app chama em seguida.
@@ -1196,7 +1213,7 @@ export async function getServiceFiscalView(deps: NfseDeps, actor: Actor, ref: In
   const withKey = [...transmissions].reverse().find(t => t.accessKey) ?? null
   if (withKey?.accessKey) {
     try {
-      xmlAvailable = !!deps.storage.find(await emitterCnpj(deps.pool, institutionId), nfseFileName(withKey.accessKey), [withKey.dhProc, withKey.createdAt], withKey.environment, zone)
+      xmlAvailable = !!deps.storage.find(nfseFileLookup(await emitterCnpj(deps.pool, institutionId), withKey.serie, withKey.environment, zone), nfseFileName(withKey.accessKey), [withKey.dhProc, withKey.createdAt])
     } catch { xmlAvailable = false }
   }
   const txKeys = ['dhProc', 'createdAt', 'lastQueriedAt', 'lastDh', 'lastEventAt'] as const
@@ -1226,7 +1243,7 @@ async function ibscbsViewOf(
   let groupInDps: boolean | null = null
   try {
     const file = tx.accessKey
-      ? deps.storage.find(await emitterCnpj(deps.pool, institutionId), nfseFileName(tx.accessKey), [tx.dhProc, tx.createdAt], tx.environment, zone)
+      ? deps.storage.find(nfseFileLookup(await emitterCnpj(deps.pool, institutionId), tx.serie, tx.environment, zone), nfseFileName(tx.accessKey), [tx.dhProc, tx.createdAt])
       : null
     if (file) {
       const doc = parseXml(deps.storage.read(file))
@@ -1249,7 +1266,7 @@ function sameIssuerKey(a: string, b: string): boolean {
 async function substituteKeyOf(deps: NfseDeps, institutionId: number, tx: TransmissionRow, zone: string): Promise<string | null> {
   if (!tx.accessKey) return null
   try {
-    const file = deps.storage.find(await emitterCnpj(deps.pool, institutionId), cancelEventFileName(tx.accessKey), [tx.dhProc, tx.createdAt], tx.environment, zone)
+    const file = deps.storage.find(nfseFileLookup(await emitterCnpj(deps.pool, institutionId), tx.serie, tx.environment, zone), cancelEventFileName(tx.accessKey), [tx.dhProc, tx.createdAt])
     if (!file) return null
     const key = parseEventXml(fs.readFileSync(file, 'utf8')).substituteKey
     // R13-04 do gate adversarial: a própria chave não é a substituta. D-F85 (= Q-F91, Valdo 2026-10-10): a substituta é do MESMO
@@ -1268,7 +1285,7 @@ export async function readNfseXml(deps: NfseDeps, actor: Actor, ref: InvoiceRef)
   const withKey = [...transmissions].reverse().find(t => t.accessKey) ?? null
   if (!withKey?.accessKey) throw new HttpError(404, `Nota ${invoiceId} sem NFS-e autorizada no fisco`, undefined, ErrorCodes.FISCAL_NFSE_NOT_FOUND)
   const zone = life ? await erp.institutionZone(deps.pool, s, institutionId) : DEFAULT_TIME_ZONE
-  const file = deps.storage.find(await emitterCnpj(deps.pool, institutionId), nfseFileName(withKey.accessKey), [withKey.dhProc, withKey.createdAt], withKey.environment, zone)
+  const file = deps.storage.find(nfseFileLookup(await emitterCnpj(deps.pool, institutionId), withKey.serie, withKey.environment, zone), nfseFileName(withKey.accessKey), [withKey.dhProc, withKey.createdAt])
   if (!file) throw new HttpError(404, `XML da NFS-e ${withKey.accessKey} não está no arquivo fiscal — consulte a nota para regravar`, undefined, ErrorCodes.FISCAL_NFSE_NOT_FOUND)
   // A8: cancelada = a voz vigente de quem DETÉM a chave é C (o arquivo não sabe do cancelamento)
   return { accessKey: withKey.accessKey, xml: deps.storage.read(file), cancelled: fiscalStateOf(withKey) === 'cancelled' }

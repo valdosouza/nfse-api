@@ -39,6 +39,7 @@ GRANT SELECT ON `setes_central`.`tb_state`                TO 'fiscal_api'@'%';
 GRANT SELECT ON `setes_central`.`tb_interface`            TO 'fiscal_api'@'%';
 GRANT SELECT ON `setes_central`.`tb_interface_has_config` TO 'fiscal_api'@'%';
 GRANT SELECT ON `setes_central`.`vw_user_link`            TO 'fiscal_api'@'%';
+GRANT SELECT ON `setes_central`.`vw_interface_catalog`    TO 'fiscal_api'@'%';   -- D-F240: access.licensedKeys (pacote 2.0.0)
 -- (MySQL 8 apenas, se a leitura travante for recusada:)
 -- GRANT LOCK TABLES ON `setes\_%`.* TO 'fiscal_api'@'%';
 

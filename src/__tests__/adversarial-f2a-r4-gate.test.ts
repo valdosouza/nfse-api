@@ -121,13 +121,13 @@ describe('2 — D-F146: o boot confere CORS_ORIGINS', () => {
   it('[RESISTIU] vazia, só vírgulas, ausente, "*", "null", barra final, caminho, espaço no meio, esquema estranho, IPv6 (sem forma aceita) → o boot RECUSA', () => {
     for (const raw of [undefined, '', ',', ' , ', '*', 'null', 'http://localhost:5051/', 'https://app.setes.com.br/app', 'http://local host:5051', 'ws://localhost:5051',
       'http://[::1]:5051', 'http://localhost:5051,*']) {
-      expect(() => assertCorsOrigins(envCtx(raw).corsOrigins)).toThrow(/D-F146/)
+      expect(() => assertCorsOrigins(envCtx(raw).corsOrigins, 'development')).toThrow(/D-F146/)
     }
   })
 
   it('[RESISTIU] espaços em volta e itens vazios entre vírgulas são aparados; a origem do dev passa e o preflight do navegador recebe o Allow-Origin — outra origem não', async () => {
     const c = envCtx(' http://localhost:5051 , ,https://app.setes.com.br ')
-    expect(assertCorsOrigins(c.corsOrigins)).toBe('http://localhost:5051, https://app.setes.com.br')
+    expect(assertCorsOrigins(c.corsOrigins, 'development')).toBe('http://localhost:5051, https://app.setes.com.br')
     expect(await preflight(c.corsOrigins, 'http://localhost:5051')).toBe('http://localhost:5051')
     expect(await preflight(c.corsOrigins, 'http://localhost:5052')).toBeUndefined()
     expect(await preflight(c.corsOrigins, 'http://evil.localhost:5051')).toBeUndefined()
@@ -137,7 +137,7 @@ describe('2 — D-F146: o boot confere CORS_ORIGINS', () => {
     const out: [string, boolean, string | undefined][] = []
     for (const o of ['HTTP://LOCALHOST:5051', 'http://localhost:80', 'https://app.setes.com.br:443', 'http://localhost:99999']) {
       let accepted = true
-      try { assertCorsOrigins([o]) } catch { accepted = false }
+      try { assertCorsOrigins([o], 'development') } catch { accepted = false }
       const sent = browserForm(o)
       const allowed = accepted && sent ? await preflight([o], sent) : undefined
       // CERTO: ou o boot recusa, ou o navegador (com a forma que ELE manda) recebe o Allow-Origin
@@ -148,7 +148,7 @@ describe('2 — D-F146: o boot confere CORS_ORIGINS', () => {
 
   it('[RESISTIU] a conferência roda no boot ANTES das migrations e do listen (estático)', () => {
     const server = fs.readFileSync(path.join(__dirname, '..', 'server.ts'), 'utf8')
-    const at = server.indexOf('assertCorsOrigins(ctx.corsOrigins)')
+    const at = server.indexOf('assertCorsOrigins(ctx.corsOrigins, process.env.NODE_ENV)')
     expect(at).toBeGreaterThan(0)
     expect(at).toBeLessThan(server.indexOf('await runMigrations('))
     expect(at).toBeLessThan(server.search(/\.listen\(/))

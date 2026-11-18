@@ -19,6 +19,7 @@ GRANT SELECT ON `setes_central`.`tb_state`                TO 'fiscal_api'@'local
 GRANT SELECT ON `setes_central`.`tb_interface`            TO 'fiscal_api'@'localhost';
 GRANT SELECT ON `setes_central`.`tb_interface_has_config` TO 'fiscal_api'@'localhost';
 GRANT SELECT ON `setes_central`.`vw_user_link`            TO 'fiscal_api'@'localhost';
+GRANT SELECT ON `setes_central`.`vw_interface_catalog`    TO 'fiscal_api'@'localhost';   -- D-F240: access.licensedKeys (pacote 2.0.0)
 
 GRANT SELECT, SHOW VIEW ON `setes_central`.* TO 'fiscal_api'@'127.0.0.1';
 REVOKE SELECT ON `setes_central`.* FROM 'fiscal_api'@'127.0.0.1';
@@ -32,6 +33,7 @@ GRANT SELECT ON `setes_central`.`tb_state`                TO 'fiscal_api'@'127.0
 GRANT SELECT ON `setes_central`.`tb_interface`            TO 'fiscal_api'@'127.0.0.1';
 GRANT SELECT ON `setes_central`.`tb_interface_has_config` TO 'fiscal_api'@'127.0.0.1';
 GRANT SELECT ON `setes_central`.`vw_user_link`            TO 'fiscal_api'@'127.0.0.1';
+GRANT SELECT ON `setes_central`.`vw_interface_catalog`    TO 'fiscal_api'@'127.0.0.1';   -- D-F240: access.licensedKeys (pacote 2.0.0)
 
 GRANT SELECT, SHOW VIEW ON `setes_central`.* TO 'fiscal_api'@'::1';
 REVOKE SELECT ON `setes_central`.* FROM 'fiscal_api'@'::1';
@@ -45,3 +47,4 @@ GRANT SELECT ON `setes_central`.`tb_state`                TO 'fiscal_api'@'::1';
 GRANT SELECT ON `setes_central`.`tb_interface`            TO 'fiscal_api'@'::1';
 GRANT SELECT ON `setes_central`.`tb_interface_has_config` TO 'fiscal_api'@'::1';
 GRANT SELECT ON `setes_central`.`vw_user_link`            TO 'fiscal_api'@'::1';
+GRANT SELECT ON `setes_central`.`vw_interface_catalog`    TO 'fiscal_api'@'::1';   -- D-F240: access.licensedKeys (pacote 2.0.0)
