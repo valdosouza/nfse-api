@@ -7,7 +7,7 @@ import { isValidCnpj } from 'fiscal-api'
 import { percentil, resumo } from '../../scripts/carga/estatistica'
 import { sortearFatia, agenda, MISTURA_PADRAO, Fatia } from '../../scripts/carga/mistura'
 import { acharDuplicados, LinhaTentativa } from '../../scripts/carga/duplicados'
-import { reescreverSchema, comandosDoDump } from '../../scripts/carga/reescrita-schema'
+import { reescreverSchema, comandosDoDump, semColunas } from '../../scripts/carga/reescrita-schema'
 import { cnpjSintetico } from '../../scripts/carga/cnpj-sintetico'
 import {
   assertPortaCarga, assertPastaCarga, assertStorageNaPasta, assertSchemaCarga, portaDoEnvArquivo, MARCADOR,
@@ -97,6 +97,15 @@ describe('carga — reescrita do schema-molde (D-F255)', () => {
     expect(cmds[1]).toMatch(/^CREATE TABLE `tb_x`/)
     expect(cmds[2]).toMatch(/^CREATE ALGORITHM=UNDEFINED\s+DEFINER=`setes`@`localhost` SQL SECURITY DEFINER\s+VIEW `vw_y`/)
     expect(cmds).toHaveLength(3)
+  })
+})
+
+describe('carga — catálogos sem as colunas GERADAS do destino (sql/77 do setes-api)', () => {
+  it('tira só as colunas pedidas; sem nada a tirar, as linhas passam iguais', () => {
+    const linhas = [{ id: 1, i18n_key: 'orders', i18n_key_live: 'orders' }, { id: 2, i18n_key: 'x', i18n_key_live: null }]
+    expect(semColunas(linhas, new Set(['i18n_key_live']))).toEqual([{ id: 1, i18n_key: 'orders' }, { id: 2, i18n_key: 'x' }])
+    expect(semColunas(linhas, new Set())).toEqual(linhas)
+    expect(linhas[0]).toHaveProperty('i18n_key_live')
   })
 })
 

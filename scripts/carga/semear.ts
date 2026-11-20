@@ -25,7 +25,7 @@ import {
 } from 'fiscal-api'
 import { MIGRATION_SETS } from '../../src/migrations'
 import { insertTransmissionEvent } from '../../src/nfse/repository'
-import { reescreverSchema, comandosDoDump } from './reescrita-schema'
+import { reescreverSchema, comandosDoDump, semColunas } from './reescrita-schema'
 import { cnpjSintetico } from './cnpj-sintetico'
 import { assertPortaCarga, assertSchemaCarga, portaDoEnvArquivo, PORTA_PRODUCAO_DEV } from './cercas'
 import { lerEstado, gravarEstado, EstadoCarga, LicenciadoCarga } from './estado'
@@ -244,7 +244,12 @@ export async function semear(raiz: string, n: number): Promise<EstadoCarga> {
   let volume: LicenciadoCarga
   try {
     await aplicarDdl(c, CARGA_CENTRAL, leitura.ddlCentral, 'utf8mb4_general_ci')
-    for (const t of CATALOGOS) await inserirEmBlocos(c, CARGA_CENTRAL, t, leitura.catalogos[t])
+    for (const t of CATALOGOS) {
+      // colunas GERADAS do destino (ex.: tb_interface.i18n_key_live, sql/77 do setes-api) não recebem valor explícito
+      const [geradas] = await c.query(`SELECT column_name AS c FROM information_schema.columns
+         WHERE table_schema = ? AND table_name = ? AND extra LIKE '%GENERATED%'`, [CARGA_CENTRAL, t]) as any
+      await inserirEmBlocos(c, CARGA_CENTRAL, t, semColunas(leitura.catalogos[t], new Set((geradas as any[]).map(g => String(g.c)))))
+    }
     for (let k = 1; k <= n; k++) {
       licenciados.push({ institutionId: k + 1, schema: `setes_carga_${String(k).padStart(4, '0')}`, cnpj: cnpjSintetico(k + 1), userId: ID_USUARIO(k + 1), tomadorId: ID_TOMADOR(k + 1), notas: NOTAS_POR_LICENCIADO })
     }

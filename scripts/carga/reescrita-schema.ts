@@ -22,3 +22,12 @@ export function comandosDoDump(dump: string): string[] {
     .map(c => c.trim())
     .filter(c => /^(CREATE\s+(TABLE|(ALGORITHM\S*\s+)?(DEFINER\S*\s+)?(SQL\s+SECURITY\s+\w+\s+)?VIEW)|DROP\s+(TABLE|VIEW))/i.test(c))
 }
+
+/**
+ * As linhas copiadas por `SELECT *` sem as colunas GERADAS do destino — o MariaDB recusa valor explícito nelas (1906 em modo estrito).
+ * Ex.: `setes_central.tb_interface.i18n_key_live` (STORED GENERATED, sql/77 do setes-api, PRIV.E7.P1 — aviso de 2026-11-20).
+ */
+export function semColunas<T extends Record<string, unknown>>(linhas: readonly T[], excluir: ReadonlySet<string>): Record<string, unknown>[] {
+  if (!excluir.size) return [...linhas]
+  return linhas.map(l => Object.fromEntries(Object.entries(l).filter(([k]) => !excluir.has(k))))
+}
