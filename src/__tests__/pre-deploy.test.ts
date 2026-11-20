@@ -67,6 +67,15 @@ describe('pre-deploy check da nfse-api (DEPLOY.E1.P1.T4)', () => {
     expect(preDeployReport(items).exitCode).toBe(1)
   })
 
+  it('D-F252: NFSE_REFRESH_WORKER fora de on/off bloqueia em QUALQUER ambiente (o boot sempre falha); ausente em produção LIGA; off em produção avisa sem bloquear', () => {
+    const item = (env: NodeJS.ProcessEnv) => byItem(preDeployConfigItems(env, { distDir, projectRoot: ROOT }), 'NFSE_REFRESH_WORKER')
+    expect(item(prodEnv({ NFSE_REFRESH_WORKER: 'sim' }))).toMatchObject({ ok: false, blocking: true })
+    expect(item(prodEnv({ NODE_ENV: 'development', NFSE_REFRESH_WORKER: 'sim' }))).toMatchObject({ ok: false, blocking: true })
+    expect(item(prodEnv())).toMatchObject({ ok: true, blocking: false, detail: expect.stringMatching(/^ligado/) })
+    expect(item(prodEnv({ NFSE_REFRESH_WORKER: 'off' }))).toMatchObject({ ok: false, blocking: false, detail: expect.stringMatching(/^DESLIGADO em produção/) })
+    expect(item(prodEnv({ NODE_ENV: 'development' }))).toMatchObject({ ok: true, blocking: false, detail: 'desligado' })
+  })
+
   it('STORAGE_PATH ausente, relativo em produção ou pasta que não existe: bloqueia', () => {
     for (const s of [undefined, 'storage', path.join(tmp, 'nao-existe')]) {
       expect(byItem(preDeployConfigItems(prodEnv({ STORAGE_PATH: s }), { distDir, projectRoot: ROOT }), 'STORAGE_PATH')).toMatchObject({ ok: false, blocking: true })

@@ -11,12 +11,15 @@ import { assertServiceVoiceDomainsEnforced, assertServiceStrictSession } from '.
 import { assertCorsOrigins } from './cors-origins'
 import { readBuildCheck, assertBuildCurrent } from './build-info'
 import { isProductionEnv } from './environment'
+import { RefreshWorker, refreshWorkerDeps, refreshWorkerEnabled } from './worker/refresh-worker'
 
 async function main(): Promise<void> {
   // D-F222 (achado 3d do gate): versão do núcleo + selo do dist ANTES de qualquer migration (dist de outro commit = não sobe)
   logger.info(assertBuildCurrent(readBuildCheck(), __filename.endsWith('.js'), isProductionEnv(process.env.NODE_ENV)))
   const ctx = contextFromEnv()
   logger.info(`CORS (origens do app — D-F146): ${assertCorsOrigins(ctx.corsOrigins, process.env.NODE_ENV)}`)
+  // D-F252: a variável do worker é lida ANTES das migrations — valor desconhecido derruba o boot cedo
+  const workerOn = refreshWorkerEnabled(process.env)
   // migrations: núcleo primeiro, depois a família (trava nomeada — duas instâncias sobem juntas — D-F35)
   const applied = await runMigrations(ctx.db, MIGRATION_SETS)
   if (applied.length) logger.info('Migrations aplicadas no boot', { applied })
@@ -36,6 +39,13 @@ async function main(): Promise<void> {
   keyProof.start()
   const port = Number(process.env.PORT ?? 3002)
   createApp(ctx, keyProof).listen(port, () => logger.info(`nfse-api ouvindo na porta ${port}`, { fiscalDb: ctx.fiscalDb }))
+  // D-F239/D-F252: o worker do rodízio (REFRESH_MIN_MINUTES depois de cada rodada, só habilitações viradas) — ligado só em produção, salvo a variável
+  if (workerOn) {
+    new RefreshWorker(refreshWorkerDeps(ctx)).start()
+    logger.info('Worker do rodízio LIGADO (D-F239) — consulta o fisco 5 min depois de cada rodada, pelas habilitações viradas')
+  } else {
+    logger.info('Worker do rodízio desligado (D-F252: fora de produção sem NFSE_REFRESH_WORKER=on, ou NFSE_REFRESH_WORKER=off)')
+  }
 }
 
 main().catch(err => {

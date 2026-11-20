@@ -243,10 +243,11 @@ describe('D — D-NE12 na nfse-api: o terminal da web só na borda', () => {
     expect(calls.length).toBeGreaterThanOrEqual(7)
     expect(calls.filter(c => !/^(?:ref|refOf\(actor, ref\))$/.test(c.ref))).toEqual([])
   })
-  it('[DECIDIDO — D-NE12/D-NE59, parte 2] `WEB_TERMINAL` só na BORDA (rotas HTTP e scripts); `webInvoice` não existe mais; dentro da composição a única referência montada é a da candidata do rodízio, com o terminal do ESCOPO dito pela borda', () => {
+  it('[DECIDIDO — D-NE12/D-NE59, parte 2] `WEB_TERMINAL` só na BORDA (rotas HTTP, scripts e o worker do rodízio — D-F253); `webInvoice` não existe mais; dentro da composição a única referência montada é a da candidata do rodízio, com o terminal do ESCOPO dito pela borda', () => {
     const files = [...walkTs(SRC_ROOT), ...walkTs(path.join(PROJECT_ROOT, 'scripts'))]
     const code = (f: string) => stripComments(read(f))
-    const border = (f: string) => /\.routes\.ts$/.test(f) || rel(f).startsWith('nfse-api/scripts/')
+    // D-F253 (Valdo, 2026-11-19, "Worker vira borda"): o worker é uma ENTRADA sem HTTP, como a rota e o script — o arquivo EXATO, nunca a pasta
+    const border = (f: string) => /\.routes\.ts$/.test(f) || rel(f).startsWith('nfse-api/scripts/') || rel(f) === 'nfse-api/src/worker/refresh-worker.ts'
     expect(files.filter(f => /\bWEB_TERMINAL\b/.test(code(f)) && !border(f)).map(rel)).toEqual([])
     expect(files.filter(f => /\bwebInvoice\b/.test(code(f))).map(rel)).toEqual([])
     const inner = files.filter(f => !border(f)).flatMap(f => [...code(f).matchAll(/\binvoiceRef\(([^)]*)\)/g)].map(m => `${rel(f)}: ${m[1]}`))

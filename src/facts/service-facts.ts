@@ -1,6 +1,6 @@
 import {
   HttpError, FieldError, ErrorCodes, Queryable, assertSchema, erp, nowIsoIn, InvoiceRef, InvoiceScope,
-  LIVE_VOICE_KINDS, AUTHORIZED_KINDS, sqlKindList, readFederalIdFact, FederalIdFact, FederalIdKind,
+  LIVE_VOICE_KINDS, AUTHORIZED_KINDS, sqlKindList, readFederalIdFact, FederalIdFact, FederalIdKind, SERVICE_ISSUER_MODEL,
 } from 'fiscal-api'
 import type { DpsInput, DpsIbscbs, DpsToma, DpsTotTrib, AuthorityEnvironment } from '../authority/types'
 import { dpsText } from '../authority/dps-builder'
@@ -457,4 +457,52 @@ export async function emitterDisplay(q: Queryable, institutionId: number): Promi
     name: (full?.nameCompany ?? full?.nickTrade ?? 'Emitente').trim() || 'Emitente',
     municipality: [addr?.cityName, addr?.stateName].filter(Boolean).join(' / ') || '—',
   }
+}
+
+/** Um estabelecimento que o worker do rodízio percorre (D-F239): habilitação SE VIRADA e institution viva, com o schema do cliente. */
+export interface TurnedServiceEstablishment {
+  institutionId: number
+  schemaName:    string
+}
+
+/** O predicado ÚNICO de "o worker pode consultar este estabelecimento" (D-F39 + D-F247) — a lista e a reconferência usam o mesmo. */
+const TURNED_SERVICE_SQL =
+  `SELECT e.tb_institution_id AS institutionId, i.schema_name AS schemaName
+     FROM tb_establishment_issuer e
+     JOIN setes_central.tb_institution i ON i.id = e.tb_institution_id AND i.active = 'S' AND i.deleted = 'N'
+    WHERE e.model = ? AND e.deleted = 'N' AND e.cutover_at IS NOT NULL`
+
+/**
+ * D-F239 (worker do rodízio): os estabelecimentos com a habilitação SE viva e VIRADA (`cutover_at` preenchido — a RÉPLICA do ERP nunca
+ * entra, D-F39) e a institution ATIVA e não excluída em `setes_central` (dá o `schema_name`). Ordem pelo id: as instâncias percorrem na
+ * mesma ordem e o aluguel (D-F41) faz a outra pular o que está em curso. Só LÊ.
+ * Gate adversarial M2: uma linha com `schema_name` fora do domínio NÃO derruba a lista inteira (o worker de todos pararia) — vai a
+ * [onInvalid] (o alarme, com o id) e fica de fora; as outras seguem (molde da D-F164).
+ */
+export async function turnedServiceEstablishments(
+  q: Queryable, onInvalid?: (institutionId: number, err: Error) => void,
+): Promise<TurnedServiceEstablishment[]> {
+  const [rows] = await q.query(`${TURNED_SERVICE_SQL} ORDER BY e.tb_institution_id`, [SERVICE_ISSUER_MODEL])
+  const out: TurnedServiceEstablishment[] = []
+  for (const r of rows as any[]) {
+    const institutionId = Number(r.institutionId)
+    try { out.push({ institutionId, schemaName: assertSchema(String(r.schemaName ?? '')) }) }
+    catch (err) {
+      if (!onInvalid) throw err
+      onInvalid(institutionId, err instanceof Error ? err : new Error(String(err)))
+    }
+  }
+  return out
+}
+
+/**
+ * D-F247 no worker (gates M1, 2026-11-20): a rodada lê a lista UMA vez e pode durar minutos — imediatamente antes da passada de cada
+ * estabelecimento o worker reconfere, pelo MESMO predicado, que ele segue virado, vivo e com o MESMO schema. Inativado, excluído, schema
+ * trocado ou habilitação desfeita no meio da rodada = falso (o fisco não é consultado). Necessário porque a licença vazia do
+ * `licensedKeys` não separa "inativo" de "nada contratado" (que segue consultando as vivas — D-F47).
+ */
+export async function serviceEstablishmentStillTurned(q: Queryable, est: TurnedServiceEstablishment): Promise<boolean> {
+  const [rows] = await q.query(`${TURNED_SERVICE_SQL} AND e.tb_institution_id = ? AND i.schema_name = ?`,
+    [SERVICE_ISSUER_MODEL, est.institutionId, est.schemaName])
+  return (rows as any[]).length > 0
 }

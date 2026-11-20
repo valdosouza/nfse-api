@@ -57,21 +57,42 @@ export interface NfseDeps {
   fiscalDb: string
 }
 
-/** Quem pede: institution + schema + usuário do JWT do produto (autoria opaca — D-F13). */
+/**
+ * Quem pede: institution + schema + usuário do JWT do produto (autoria opaca — D-F13). D-F239: o worker do rodízio pede SEM usuário
+ * (`userId` null — a voz da consulta gravada sem autor); por isso o que CRIA ou ENCERRA no fisco (transmitir, reconferir, cancelar) exige
+ * `UserActor` — o compilador recusa o ator do worker nesses atos.
+ */
 export interface Actor {
   schemaName:    string
   institutionId: number
-  userId:        number
+  userId:        number | null
+}
+/** Ator com usuário (JWT) — o único que transmite, reconfere e cancela (D-F239). */
+export interface UserActor extends Actor {
+  userId: number
+}
+/** D-F239 (gate adversarial L6): `as UserActor` ou chamada de JS passaria pelo tipo — o ato confere o usuário em execução. */
+function assertUserActor(actor: Actor): asserts actor is UserActor {
+  if (!Number.isSafeInteger(actor.userId) || (actor.userId as number) <= 0) {
+    throw new HttpError(500, 'Ato fiscal sem usuário — só a consulta roda sem autor (D-F239)', undefined, ErrorCodes.INTERNAL)
+  }
 }
 
-/** Consulta ativa: não reconsulta transmissão viva vista há menos de N minutos. */
+/**
+ * Ramos da passada do rodízio (D-F46): o MESMO domínio da guarda por nota (`erp.orderInterface` → requireBranchPrivilege) — a
+ * passada é o "consultar" de várias notas de uma vez, então cada nota só entra se o ramo dela entraria na rota por nota. Um dono só:
+ * a rota `POST /v1/nfse/refresh` e o worker (D-F239) usam esta lista.
+ */
+export const PASS_INTERFACES = ['service-orders', 'orders', 'order-returns'] as const
+
+/** Consulta ativa: não reconsulta transmissão viva vista há menos de N minutos. Também é o intervalo do worker do rodízio (D-F239). */
 export const REFRESH_MIN_MINUTES = 5
 /** Aluguel da passada do rodízio (segundos): cobre UMA candidata no PIOR caso e é RENOVADO antes de cada uma (gates R4);
  *  queda do processo = vence sozinho. D-F62 (= Q-F69 (a), Valdo 2026-10-10): com a leitura tipada dos eventos (D-F61) uma
  *  candidata faz até 6 idas ao fisco (GET /dps + GET /nfse + 4 eventos) × 30 s de timeout = 180 s, + 30 s de folga. */
 export const REFRESH_LEASE_SECONDS = 210
 export const REFRESH_MAX_PER_RUN = 8
-/** Orçamento TOTAL de uma passada — é a requisição de quem abriu a tela. */
+/** Orçamento TOTAL de uma passada — a requisição de quem abriu a tela e, no worker do rodízio (D-F239), cada estabelecimento da rodada. */
 export const REFRESH_BUDGET_MS = 20_000
 /** Reserva sem voz há mais de N minutos = envio interrompido (crash/timeout): pergunta ao fisco antes de nova tentativa. */
 export const IN_FLIGHT_MINUTES = 10
@@ -354,7 +375,8 @@ export interface TransmitResult {
   kind:       TransmissionEventKind
 }
 
-export async function transmitServiceInvoice(deps: NfseDeps, actor: Actor, ref: InvoiceRef): Promise<TransmitResult> {
+export async function transmitServiceInvoice(deps: NfseDeps, actor: UserActor, ref: InvoiceRef): Promise<TransmitResult> {
+  assertUserActor(actor)                                      // D-F239: o tipo é a 1ª cerca; esta é a de execução (gate L6)
   const { schemaName: s, institutionId, userId } = actor
   ref = refOf(actor, ref)                                     // conferida e COPIADA uma vez (NE1A2-12)
   const { invoiceId } = ref
@@ -776,7 +798,8 @@ export interface ReconfirmResult {
  * POSTERIOR ao F — D-F90) antes de cancelar localmente. Fisco fora/ambíguo → o erro sobe (fail-closed: não se prova
  * no escuro) e nada é carimbado como prova.
  */
-export async function reconfirmBeforeLocalCancel(deps: NfseDeps, actor: Actor, ref: InvoiceRef): Promise<ReconfirmResult> {
+export async function reconfirmBeforeLocalCancel(deps: NfseDeps, actor: UserActor, ref: InvoiceRef): Promise<ReconfirmResult> {
+  assertUserActor(actor)                                      // D-F239: o tipo é a 1ª cerca; esta é a de execução (gate L6)
   const { schemaName: s, institutionId } = actor
   ref = refOf(actor, ref)                                     // conferida e COPIADA uma vez (NE1A2-12)
   const { invoiceId } = ref
@@ -856,7 +879,8 @@ export interface CancelAtAuthorityResult {
   nextStep:          'apply-local-cancel'
 }
 
-export async function cancelServiceInvoiceAtAuthority(deps: NfseDeps, actor: Actor, ref: InvoiceRef, reason: string): Promise<CancelAtAuthorityResult> {
+export async function cancelServiceInvoiceAtAuthority(deps: NfseDeps, actor: UserActor, ref: InvoiceRef, reason: string): Promise<CancelAtAuthorityResult> {
+  assertUserActor(actor)                                      // D-F239: o tipo é a 1ª cerca; esta é a de execução (gate L6)
   const { schemaName: s, institutionId, userId } = actor
   ref = refOf(actor, ref)                                     // conferida e COPIADA uma vez (NE1A2-12)
   const { invoiceId } = ref

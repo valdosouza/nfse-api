@@ -434,7 +434,9 @@ paths:
       tags: [nfse]
       summary: Uma passada da consulta ativa do estabelecimento (vivas, autorizadas a cada 24 h — D-N21)
       description: >-
-        Orçamento de tempo por requisição; nenhum estado de controle em memória (a F3 troca por worker). UMA
+        O "consultar agora" do app (D-F239): a MESMA passada roda sozinha no worker do rodízio de cada instância, 5 min depois de cada rodada,
+        pelas habilitações viradas, com o escopo da LICENÇA e a voz gravada sem autor (ligado só em produção — D-F252); a rota segue
+        com o escopo do usuário. Orçamento de tempo por requisição; nenhum estado de controle em memória. UMA
         passada por estabelecimento por vez, em qualquer instância: ALUGUEL de 60 s na linha da habilitação SE
         (nenhuma conexão retida; devolvido SÓ pelo dono — a passada que estoura não apaga o aluguel da seguinte);
         quem não obtém o aluguel recebe 200 com skipped=true; sem habilitação SE → 409 FISCAL_ISSUER_MISSING.

@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { route, sendOk, institutionOf, InstitutionPayload, InvoiceRef, erp, invoiceRef, SERVICE_ISSUER_MODEL, WEB_TERMINAL } from 'fiscal-api'
 import type { AppContext } from '../../context'
-import type { Actor } from '../../nfse/transmission'
+import type { UserActor } from '../../nfse/transmission'
 import * as tx from '../../nfse/transmission'
 import { renderDanfse } from '../../nfse/danfse'
 import { emitterDisplay } from '../../facts/service-facts'
@@ -17,12 +17,9 @@ import { cancelDto, refreshPassDto, pendingQueryDto } from './nfse.dto'
  */
 
 const BRANCH_INTERFACES = ['service-orders', 'orders']
-/**
- * Passada do rodízio (D-F46): o MESMO domínio da guarda por nota (`erp.orderInterface` → requireBranchPrivilege) — a
- * passada é o "consultar" de várias notas de uma vez, então cada nota só entra se o ramo dela entraria na rota por nota.
- */
-const PASS_INTERFACES = ['service-orders', 'orders', 'order-returns'] as const
-const actorOf = (inst: InstitutionPayload): Actor => ({ schemaName: inst.schemaName, institutionId: inst.institutionId, userId: inst.userId })
+/** Passada do rodízio (D-F46): a lista mora na composição (`tx.PASS_INTERFACES`) — a mesma do worker (D-F239). */
+const PASS_INTERFACES = tx.PASS_INTERFACES
+const actorOf = (inst: InstitutionPayload): UserActor => ({ schemaName: inst.schemaName, institutionId: inst.institutionId, userId: inst.userId })
 /**
  * NE-1a parte 2 (D-NE12/D-NE59): a BORDA monta a referência INTEIRA da nota — o id da rota + o estabelecimento do token + o terminal das
  * notas da web (`WEB_TERMINAL` só aqui, na borda HTTP); daqui para dentro a nota viaja inteira (guardas, composição, SQL da família).

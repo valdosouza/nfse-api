@@ -12,6 +12,7 @@ import { assertRetiredEnv } from './context'
 import { readBuildCheck, assertBuildCurrent } from './build-info'
 import { isProductionEnv } from './environment'
 import { scanOldLayout } from './nfse/xml-layout-migration'
+import { refreshWorkerEnabled } from './worker/refresh-worker'
 
 export interface PreDeployItem {
   item: string
@@ -34,6 +35,21 @@ function check(item: string, production: boolean, fn: () => string): PreDeployIt
   } catch (err) {
     return { item, ok: false, blocking: production, detail: err instanceof Error ? err.message : String(err) }
   }
+}
+
+/**
+ * D-F252: a variável do worker do rodízio. Valor fora de on/off derruba o boot em QUALQUER ambiente — bloqueia sempre (gate L5). Em
+ * produção com `off` o worker não roda e ninguém consulta o fisco sozinho: aviso (não bloqueia — a D-F252 permite desligar), para um
+ * `.env` feito do `.env.example` não desligar calado (gate L4).
+ */
+function workerItem(env: NodeJS.ProcessEnv, production: boolean): PreDeployItem {
+  const item = 'NFSE_REFRESH_WORKER'
+  let on: boolean
+  try { on = refreshWorkerEnabled(env) }
+  catch (err) { return { item, ok: false, blocking: true, detail: err instanceof Error ? err.message : String(err) } }
+  if (on) return { item, ok: true, blocking: false, detail: 'ligado — consulta o fisco 5 min depois de cada rodada, pelas habilitações viradas (D-F239)' }
+  if (production) return { item, ok: false, blocking: false, detail: 'DESLIGADO em produção (NFSE_REFRESH_WORKER=off) — ninguém consulta o fisco sozinho; só numa janela de manutenção' }
+  return { item, ok: true, blocking: false, detail: 'desligado' }
 }
 
 /** Os itens de CONFIGURAÇÃO e de BUILD (sem banco): puros sobre o `env` e o disco. */
@@ -76,6 +92,7 @@ export function preDeployConfigItems(env: NodeJS.ProcessEnv, opts: PreDeployOpti
       if (left) throw new Error(`${left} arquivo(s) fora do layout novo em ${dir} — \`npm run migrate:xml-layout\` (ensaio) e \`-- --vai\` com o serviço parado`)
       return 'nenhum arquivo no layout antigo'
     }),
+    workerItem(env, production),
     check('PORT', production, () => {
       const port = Number(env.PORT ?? 3002)
       if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`PORT=${env.PORT} não é uma porta`)
