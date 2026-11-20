@@ -12,7 +12,7 @@
  */
 import fs from 'fs'
 import path from 'path'
-import { spawn, ChildProcess, execFileSync, spawnSync } from 'child_process'
+import { spawn, ChildProcess, execFileSync } from 'child_process'
 import jwt from 'jsonwebtoken'
 import mysql from 'mysql2/promise'
 import { lerEstado, EstadoCarga, LicenciadoCarga } from './estado'
@@ -44,6 +44,18 @@ function envBase(e: EstadoCarga): Record<string, string> {
   }
 }
 
+/** Roda um filho SEM bloquear o laço da carga (a 1ª corrida de 30 min usou `spawnSync` no meio: o laço parou 12 min e soltou ~3800 de uma vez). */
+function rodarFilho(args: string[], opts: { cwd: string; env: Record<string, string> }): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return new Promise(resolve => {
+    const f = spawn(process.execPath, args, { ...opts, windowsHide: true })
+    let stdout = '', stderr = ''
+    f.stdout.on('data', d => { stdout += d })
+    f.stderr.on('data', d => { stderr += d })
+    f.on('close', status => resolve({ status, stdout, stderr }))
+    f.on('error', err => resolve({ status: 1, stdout, stderr: stderr + String(err) }))
+  })
+}
+
 // ---------------------------------------------------------------------------------------------------------------------------------
 // T2
 // ---------------------------------------------------------------------------------------------------------------------------------
@@ -53,12 +65,12 @@ export async function leituras(raiz: string, rotulo: 'isolada' | 'sob-carga', en
   const { commit, limpo } = commitMedido(raiz, ensaio || rotulo === 'sob-carga')
   const env = { ...envBase(e), DB_USER: 'root', DB_PASSWORD: '', EXPLAIN_DB_USER: 'root', EXPLAIN_DB_PASSWORD: '', DB_POOL_SIZE: '4' }
   const script = path.join(raiz, 'scripts', 'explain-leituras.ts')
-  const comTeto = spawnSync(process.execPath, [tsxCli(), script, '--inst', String(e.volume.institutionId), '--schema', e.volume.schema, '--runs', '50', '--teto-ms', '300'],
-    { cwd: raiz, env, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+  const comTeto = await rodarFilho([tsxCli(), script, '--inst', String(e.volume.institutionId), '--schema', e.volume.schema, '--runs', '50', '--teto-ms', '300'],
+    { cwd: raiz, env })
   let saida = `# T2 (${rotulo}) — commit ${commit}${limpo ? '' : ' (ÁRVORE SUJA — ensaio, não vale como prova)'} — ${new Date().toISOString()}\n${comTeto.stdout}${comTeto.stderr}`
   if (rotulo === 'isolada') {
     // os posicionais de antes (sem opção) — os PLANOS das duas formas têm de ser iguais (ficha §6 item 2)
-    const semOpcao = spawnSync(process.execPath, [tsxCli(), script, String(e.volume.institutionId), e.volume.schema], { cwd: raiz, env, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+    const semOpcao = await rodarFilho([tsxCli(), script, String(e.volume.institutionId), e.volume.schema], { cwd: raiz, env })
     const planos = (s: string) => s.split('\n').filter(l => /^\s{3}\d/.test(l)).join('\n')
     const iguais = planos(semOpcao.stdout) === planos(comTeto.stdout)
     saida += `\n# Forma posicional (sem opções): planos ${iguais ? 'IGUAIS' : 'DIFERENTES'} aos da forma com opções\n`
@@ -77,12 +89,14 @@ export async function leituras(raiz: string, rotulo: 'isolada' | 'sob-carga', en
 // ---------------------------------------------------------------------------------------------------------------------------------
 interface Chamada { fatia: Fatia; rota: string; instancia: number; status: number; ms: number; fiscoMs: number; semAlvo: boolean; code?: string }
 
-const ACEITOS: Record<Fatia, (s: number) => boolean> = {
+/** 502/503/504 só é aceito quando é o AMBÍGUO DO FISCO (código `FISCAL_*`) — um 503 da própria API (ex.: SESSION_UNAVAILABLE) é achado. */
+const doFisco = (s: number, code?: string) => (s === 502 || s === 503 || s === 504) && /^FISCAL_/.test(code ?? '')
+export const ACEITOS: Record<Fatia, (s: number, code?: string) => boolean> = {
   'pendentes': s => s === 200,
-  'transmitir': s => s === 201 || s === 422 || s === 502 || s === 503 || s === 504,
-  'mesma-nota-duas-instancias': s => s === 201 || s === 409 || s === 422 || s === 502 || s === 503 || s === 504,
+  'transmitir': (s, c) => s === 201 || s === 422 || doFisco(s, c),
+  'mesma-nota-duas-instancias': (s, c) => s === 201 || s === 409 || s === 422 || doFisco(s, c),
   'repetir-autorizada': s => s === 409,
-  'consultar': s => s === 200 || s === 409 || s === 502 || s === 503 || s === 504,
+  'consultar': (s, c) => s === 200 || s === 409 || doFisco(s, c),
   'cancelar': s => s === 200 || s === 201,
   'xml-danfse': s => s === 200,
 }
@@ -214,9 +228,11 @@ export async function rodar(raiz: string, o: { minutos: number; rps: number; ens
     let t2SobCarga: boolean | null = null
     const meio = o.minutos >= 10 ? new Promise<void>(r => setTimeout(async () => { t2SobCarga = await leituras(raiz, 'sob-carga', true).catch(() => false); r() }, duracao / 2)) : Promise.resolve()
     let proximoLog = t0 + 60_000
+    let atrasoMaxLacoMs = 0
     for (const ms of instantes) {
       const espera = t0 + ms - Date.now()
       if (espera > 0) await sleep(espera)
+      atrasoMaxLacoMs = Math.max(atrasoMaxLacoMs, Date.now() - (t0 + ms))
       disparos.push(disparar().catch(err => { chamadas.push({ fatia: 'pendentes', rota: 'erro-orquestrador', instancia: 0, status: 0, ms: 0, fiscoMs: 0, semAlvo: false, code: String(err) }) }))
       if (Date.now() >= proximoLog) { proximoLog += 60_000; log(`${Math.round((Date.now() - t0) / 60_000)} min — ${chamadas.length} respostas, ${emVoo} em voo, ${autorizadas.length} autorizadas`) }
     }
@@ -249,7 +265,7 @@ export async function rodar(raiz: string, o: { minutos: number; rps: number; ens
         foraDoFisco: resumo(xs.filter(x => x.status > 0).map(x => Math.max(0, x.ms - x.fiscoMs))), total: resumo(xs.map(x => x.ms)) }
     }
     const http500 = chamadas.filter(x => x.status === 500)
-    const foraDosAceitos = chamadas.filter(x => !ACEITOS[x.fatia](x.status))
+    const foraDosAceitos = chamadas.filter(x => !ACEITOS[x.fatia](x.status, x.code))
     const achadosStatus: Record<string, number> = {}
     for (const x of foraDosAceitos) { const k = `${x.fatia} ${x.status} ${x.code ?? ''}`.trim(); achadosStatus[k] = (achadosStatus[k] ?? 0) + 1 }
     const global = resumo(foraDoFisco)
@@ -259,7 +275,7 @@ export async function rodar(raiz: string, o: { minutos: number; rps: number; ens
       p95ForaDoFiscoAbaixoDe5s: global.p95 < TETO_T1_MS,
       t2SobCarga: o.minutos >= 10 ? t2SobCarga === true : 'não se aplica (corrida < 10 min)',
     }
-    const ok = criterios.zero500 && criterios.zeroDuplicado && criterios.p95ForaDoFiscoAbaixoDe5s && (o.minutos < 10 || t2SobCarga === true)
+    const ok = atrasoMaxLacoMs < 1000 && criterios.zero500 && criterios.zeroDuplicado && criterios.p95ForaDoFiscoAbaixoDe5s && (o.minutos < 10 || t2SobCarga === true)
     const [variaveis] = await (async () => {
       const cc = await mysql.createConnection({ host: '127.0.0.1', port: e.porta, user: 'root', password: '' })
       try { return await cc.query(`SHOW GLOBAL VARIABLES WHERE Variable_name IN ('version','innodb_buffer_pool_size','max_connections','table_open_cache','character_set_server','collation_server','transaction_isolation','tx_isolation')`) }
@@ -268,14 +284,14 @@ export async function rodar(raiz: string, o: { minutos: number; rps: number; ens
     const rel = {
       passo: 'nfse-api:DEPLOY.E3.P1.T1', commit, arvoreLimpa: limpo, valeComoProva: limpo && !o.ensaio,
       inicio: inicioCorrida.toISOString(), fim: new Date().toISOString(), minutos: o.minutos, rps: o.rps, licenciados: e.licenciados.length,
-      instancias: PORTAS, chamadas: chamadas.length, global, porFatia, criterios, ok,
+      instancias: PORTAS, chamadas: chamadas.length, atrasoMaxLacoMs, lacoAbertoIntegro: atrasoMaxLacoMs < 1000, global, porFatia, criterios, ok,
       duplicados, http500: http500.slice(0, 20), achadosStatus, estadoFisco, estadoInstancias, servidor: variaveis,
     }
     fs.mkdirSync(path.join(raiz, 'carga-out'), { recursive: true })
     const arq = path.join(raiz, 'carga-out', `rodar-${o.minutos}min-${Date.now()}.json`)
     fs.writeFileSync(arq, JSON.stringify(rel, null, 2))
     log(`relatório: ${arq}`)
-    console.log(JSON.stringify({ commit, valeComoProva: rel.valeComoProva, chamadas: chamadas.length, global, criterios, ok, achadosStatus, estadoFisco, estadoInstancias }, null, 2))
+    console.log(JSON.stringify({ commit, valeComoProva: rel.valeComoProva, chamadas: chamadas.length, atrasoMaxLacoMs, global, criterios, ok, achadosStatus, estadoFisco, estadoInstancias }, null, 2))
     return ok
   } finally {
     for (const f of filhos) { try { f.kill() } catch { /* já saiu */ } }
