@@ -349,12 +349,30 @@ describe('CERCA D-F31: o que a API fiscal ESCREVE no ERP é lista fechada (src/ 
     // conexão. Exceção nomeada: \`${SMOKE_DB}\` é o banco DESCARTÁVEL do smoke (fiscal_api_smoke* — o script recusa outro nome)
     const ERP_WRITE = /(INSERT\s+(?:IGNORE\s+)?INTO|REPLACE\s+INTO|UPDATE|DELETE\s+FROM)\s+(?:\\`\$\{(?!SMOKE_DB\})\w+\}\\`|`?setes_\w*`?)\./g
     const writes = [path.join(root, 'src'), path.join(root, 'scripts')].flatMap(files).flatMap(f => {
+      const rel = path.relative(root, f).replace(/\\/g, '/')
       const code = fs.readFileSync(f, 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '')
-      return (code.match(ERP_WRITE) ?? []).map(m => `${path.relative(root, f).replace(/\\/g, '/')}: ${m.replace(/\s+/g, ' ')}`)
+      return (code.match(ERP_WRITE) ?? []).filter(m => !cargaWriteAllowed(rel, m)).map(m => `${rel}: ${m.replace(/\s+/g, ' ')}`)
     })
     expect(writes).toEqual(['scripts/cutover-erp.ts: UPDATE \\`${schema}\\`.'])
   })
+
+  // D-F257 (Valdo 2026-11-20, "Exceção nomeada"): o semeador do teste de carga (DEPLOY.E3.P1) escreve no ERP SINTÉTICO da instância
+  // descartável da 3307 (D-F255) — só pelos nomes `CARGA_SCHEMA`/`CARGA_CENTRAL` e só em arquivo sob `scripts/carga/`. O semeador recusa
+  // conectar na 3306 e schema fora de `setes_carga_*` (`scripts/carga/cercas.ts`). Fora dali o mesmo texto CAI.
+  it('D-F257: os nomes da carga só passam sob scripts/carga/ — o mesmo texto em outro arquivo cai', () => {
+    expect(cargaWriteAllowed('scripts/carga/semear.ts', 'INSERT INTO \\`${CARGA_SCHEMA}\\`.')).toBe(true)
+    expect(cargaWriteAllowed('scripts/carga/semear.ts', 'INSERT INTO \\`${CARGA_CENTRAL}\\`.')).toBe(true)
+    expect(cargaWriteAllowed('src/nfse/transmission.ts', 'INSERT INTO \\`${CARGA_SCHEMA}\\`.')).toBe(false)
+    expect(cargaWriteAllowed('scripts/cutover-erp.ts', 'UPDATE \\`${CARGA_CENTRAL}\\`.')).toBe(false)
+    expect(cargaWriteAllowed('scripts/carga/semear.ts', 'INSERT INTO \\`${schema}\\`.')).toBe(false)
+    expect(cargaWriteAllowed('scripts/carga/semear.ts', 'UPDATE setes_central.')).toBe(false)
+  })
 })
+
+/** D-F257: escrita no ERP aceita só sob `scripts/carga/` e só pelos dois nomes da carga. */
+function cargaWriteAllowed(relPath: string, match: string): boolean {
+  return relPath.startsWith('scripts/carga/') && /\\`\$\{(?:CARGA_SCHEMA|CARGA_CENTRAL)\}\\`\.$/.test(match)
+}
 
 describe('CERCA: tabela do ERP só na fonte de fatos (D-F10 / §12.8-1)', () => {
   it('nenhum tb_invoice / tb_order / tb_entity* fora de src/facts/ (as tabelas da FAMÍLIA no fiscal_api não contam)', () => {

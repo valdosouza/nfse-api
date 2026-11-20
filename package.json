@@ -19,7 +19,8 @@
     "token:dev": "tsx --require tsconfig-paths/register scripts/mint-dev-token.ts",
     "explain:leituras": "tsx --require tsconfig-paths/register scripts/explain-leituras.ts",
     "smoke:adn-h": "tsx --require tsconfig-paths/register scripts/smoke-adn-homologacao.ts",
-    "migrate:xml-layout": "tsx --require tsconfig-paths/register scripts/migrate-xml-layout.ts"
+    "migrate:xml-layout": "tsx --require tsconfig-paths/register scripts/migrate-xml-layout.ts",
+    "carga:fiscal": "tsx --require tsconfig-paths/register scripts/carga-fiscal.ts"
   },
   "dependencies": {
     "dotenv": "^16.3.1",

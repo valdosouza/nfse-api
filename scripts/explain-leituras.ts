@@ -22,16 +22,14 @@ import 'dotenv/config'
 import { createFiscalPool, dbConfigFromEnv, countLiveTransmissions, WEB_TERMINAL } from 'fiscal-api'
 import { listPendingServiceInvoices } from '../src/facts/service-facts'
 import { listRefreshCandidates, DEFAULT_CANCEL_DAYS, REFRESH_AUTHORIZED_MARGIN_DAYS } from '../src/nfse/repository'
-
-const INST = Number(process.argv[2] ?? 1)
-const SCHEMA = String(process.argv[3] ?? 'setes_setes')
-const RUNS = 7
-/** O escopo das leituras em lote (o estabelecimento + o terminal da web) — a borda do diagnóstico (NE-1a parte 2). */
-const SCOPE = { institutionId: INST, terminal: WEB_TERMINAL }
+import { temposPorChamada, avaliarTeto, opcoesLeituras } from './carga/leituras-teto'
 
 type Plan = { id: number; select_type: string; table: string; type: string; key: string | null; rows: number; Extra: string | null }
 
 async function main(): Promise<void> {
+  const { inst: INST, schema: SCHEMA, runs: RUNS, tetoMs } = opcoesLeituras(process.argv.slice(2))
+  /** O escopo das leituras em lote (o estabelecimento + o terminal da web) — a borda do diagnóstico (NE-1a parte 2). */
+  const SCOPE = { institutionId: INST, terminal: WEB_TERMINAL }
   const base = dbConfigFromEnv()
   const cfg = process.env.EXPLAIN_DB_USER
     ? { ...base, user: process.env.EXPLAIN_DB_USER, password: process.env.EXPLAIN_DB_PASSWORD ?? '' }
@@ -53,15 +51,20 @@ async function main(): Promise<void> {
     // NE-1a parte 2 (D-NE9): as vivas do EMITTER do núcleo (guarda do DELETE do A1 e da habilitação) — pela view publicada de cada família
     await countLiveTransmissions(capture('vivas do emissor'), INST, { branches: 'all' })
 
-    for (const c of captured) {
-      const [plan] = await pool.query(`EXPLAIN ${c.sql}`, c.params) as unknown as [Plan[]]
-      const times: number[] = []
-      for (let i = 0; i < RUNS; i++) {
+    // as SQLs da mesma chamada rodam na MESMA iteração (D-F40: o teto é por chamada — COUNT + página somados)
+    const iteracoes: Record<string, number>[] = []
+    for (let i = 0; i < RUNS; i++) {
+      const it: Record<string, number> = {}
+      for (const c of captured) {
         const t0 = process.hrtime.bigint()
         await pool.query(c.sql, c.params)
-        times.push(Number(process.hrtime.bigint() - t0) / 1e6)
+        it[c.label] = Number(process.hrtime.bigint() - t0) / 1e6
       }
-      times.sort((a, b) => a - b)
+      iteracoes.push(it)
+    }
+    for (const c of captured) {
+      const [plan] = await pool.query(`EXPLAIN ${c.sql}`, c.params) as unknown as [Plan[]]
+      const times = iteracoes.map(it => it[c.label]).sort((a, b) => a - b)
       console.log(`\n== ${c.label} — mediana ${times[Math.floor(RUNS / 2)].toFixed(1)} ms (máx ${times[RUNS - 1].toFixed(1)} ms)`)
       for (const p of plan) {
         console.log(`   ${String(p.id).padEnd(3)} ${String(p.select_type).padEnd(20)} ${String(p.table).padEnd(28)} ${String(p.type).padEnd(8)} ${String(p.key ?? '-').padEnd(42)} rows=${p.rows} ${p.Extra ?? ''}`)
@@ -70,6 +73,11 @@ async function main(): Promise<void> {
         else if (scan && /MATERIALIZED/.test(String(p.select_type))) failures.push(`${c.label}: ${p.select_type} em ${p.table} por ${p.type} (materialização sem o filtro da institution)`)
         else if (scan) warnings.push(`${c.label}: ${p.table} por ${p.type} (rows=${p.rows}) — conferir com volume na F3`)
       }
+    }
+    console.log(`\n== POR CHAMADA (${RUNS} execuções${tetoMs !== null ? `, teto p95 < ${tetoMs} ms` : ''})`)
+    for (const v of avaliarTeto(temposPorChamada(iteracoes), tetoMs)) {
+      console.log(`   ${v.chamada.padEnd(20)} mediana ${v.mediana.toFixed(1)} ms · p95 ${v.p95.toFixed(1)} ms${v.comTeto ? '' : ' (só registrada)'}${v.falha ? ' — ACIMA DO TETO' : ''}`)
+      if (v.falha) failures.push(`${v.chamada}: p95 ${v.p95.toFixed(1)} ms ≥ teto ${tetoMs} ms (D-F40)`)
     }
   } finally {
     await pool.end()
@@ -82,4 +90,4 @@ async function main(): Promise<void> {
   console.log('\nOK — nenhuma subconsulta dependente varrendo por linha nem materialização varrendo o banco inteiro.')
 }
 
-main().catch(err => { console.error('[explain-leituras] FALHA:', err?.message ?? err); process.exit(1) })
+if (require.main === module) main().catch(err => { console.error('[explain-leituras] FALHA:', err?.message ?? err); process.exit(1) })

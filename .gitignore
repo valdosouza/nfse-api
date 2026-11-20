@@ -8,3 +8,6 @@ secrets/
 .DS_Store
 Thumbs.db
 /storage-smoke/
+
+# DEPLOY.E3.P1: relatórios e ponteiro do teste de carga (a pasta descartável fica em os.tmpdir())
+carga-out/
