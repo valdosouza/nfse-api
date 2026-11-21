@@ -144,23 +144,28 @@ describe('signXml / verifyXml (XMLDSig enveloped, Manual 2022 §6.1.4)', () => {
     // sem prefixo ds: e a declaração XML preservada
     expect(signed).not.toContain('ds:')
     expect(signed.startsWith('<?xml version="1.0" encoding="UTF-8"?>')).toBe(true)
-    expect(verifyXml(signed, pair.cert)).toBe(true)
+    // 4.0.0 (D-NE194): verifica PELO ELEMENTO e devolve o trecho assinado — o Id é o do infDPS; elemento que não é o assinado = null
+    const part = verifyXml(signed, pair.cert, { element: 'infDPS', id: DPS_ID })
+    expect(part?.id).toBe(DPS_ID)
+    expect(part?.xml).toContain('<vServ>1234.50</vServ>')
+    expect(verifyXml(signed, pair.cert, { element: 'infDPS', id: 'DPS' + '9'.repeat(42) })).toBeNull()
+    expect(verifyXml(signed, pair.cert, { element: 'infNFSe' })).toBeNull()
   })
 
   it('alterar 1 caractere do conteúdo assinado invalida; outro certificado não verifica; XML sem assinatura = false', () => {
     const signed = signXml(xml, { referenceId: DPS_ID, cert: pair.cert, key: pair.key, algorithm: 'sha1' })
     const tampered = signed.replace('<vServ>1234.50</vServ>', '<vServ>1234.51</vServ>')
     expect(tampered).not.toBe(signed)
-    expect(verifyXml(tampered, pair.cert)).toBe(false)
-    expect(verifyXml(signed, other.cert)).toBe(false)
-    expect(verifyXml(xml, pair.cert)).toBe(false)
+    expect(verifyXml(tampered, pair.cert, { element: 'infDPS' })).toBeNull()
+    expect(verifyXml(signed, other.cert, { element: 'infDPS' })).toBeNull()
+    expect(verifyXml(xml, pair.cert, { element: 'infDPS' })).toBeNull()
   })
 
   it('sha256 parametrizado: rsa-sha256 + xmlenc#sha256, verificável', () => {
     const signed = signXml(xml, { referenceId: DPS_ID, cert: pair.cert, key: pair.key, algorithm: 'sha256' })
     expect(signed).toContain('<SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/>')
     expect(signed).toContain('<DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/>')
-    expect(verifyXml(signed, pair.cert)).toBe(true)
+    expect(verifyXml(signed, pair.cert, { element: 'infDPS' })).not.toBeNull()
   })
 
   it('Id inexistente no XML ou com caractere estranho → lança (nunca assina "nada")', () => {
@@ -175,7 +180,8 @@ describe('signXml / verifyXml (XMLDSig enveloped, Manual 2022 §6.1.4)', () => {
     const signed = signXml(ev, { referenceId: id, cert: pair.cert, key: pair.key, algorithm: 'sha1' })
     expect(signed).toMatch(/<\/infPedReg><Signature xmlns="http:\/\/www\.w3\.org\/2000\/09\/xmldsig#">[\s\S]*<\/Signature><\/pedRegEvento>$/)
     expect(signed).toContain(`<Reference URI="#${id}">`)
-    expect(verifyXml(signed, pair.cert)).toBe(true)
+    expect(verifyXml(signed, pair.cert, { element: 'infPedReg', id })?.id).toBe(id)
+    expect(verifyXml(signed, pair.cert, { element: 'infDPS' })).toBeNull()
   })
 })
 

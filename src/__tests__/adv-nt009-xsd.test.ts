@@ -153,8 +153,8 @@ describe.each(LAYOUTS)('o DPS montado no leiaute %s VALIDA no XSD oficial do pac
     for (const algorithm of ['sha1', 'sha256'] as const) {
       const signed = signXml(buildDpsXml({ ...cases[name], ...AT[layout] }, DPS_ID), { referenceId: DPS_ID, cert: pair.cert, key: pair.key, algorithm })
       expectValid(layout, signed, `${name} (${algorithm})`)
-      expect(verifyXml(signed, pair.cert)).toBe(true)
-      expect(verifyXml(signed, other.cert)).toBe(false)
+      expect(verifyXml(signed, pair.cert, { element: 'infDPS' })).not.toBeNull()
+      expect(verifyXml(signed, other.cert, { element: 'infDPS' })).toBeNull()
     }
   })
 })
@@ -178,13 +178,13 @@ describe('assinatura sobre o <gIBSCBS></gIBSCBS> vazio (D-IB112)', () => {
   it('o grupo vazio sobrevive à assinatura e a verificação passa; adulterar o vazio (vira filho) quebra a assinatura', () => {
     const signed = signXml(xml, { referenceId: DPS_ID, cert: pair.cert, key: pair.key, algorithm: 'sha1' })
     expect(signed).toMatch(/<gIBSCBS(><\/gIBSCBS>|\/>)<\/trib>/)
-    expect(verifyXml(signed, pair.cert)).toBe(true)
+    expect(verifyXml(signed, pair.cert, { element: 'infDPS' })).not.toBeNull()
     // a forma auto-fechada é a MESMA após C14N — quem a reescrever (proxy, ferramenta) não quebra a assinatura
     const selfClosed = signed.replace('<gIBSCBS></gIBSCBS>', '<gIBSCBS/>')
-    expect(verifyXml(selfClosed, pair.cert)).toBe(true)
+    expect(verifyXml(selfClosed, pair.cert, { element: 'infDPS' })).not.toBeNull()
     const tampered = signed.replace(/<gIBSCBS(><\/gIBSCBS>|\/>)/, '<gIBSCBS><cCredPres>01</cCredPres></gIBSCBS>')
     expect(tampered).not.toBe(signed)
-    expect(verifyXml(tampered, pair.cert)).toBe(false)
+    expect(verifyXml(tampered, pair.cert, { element: 'infDPS' })).toBeNull()
   })
   it('o digest do infDPS é o mesmo com <gIBSCBS/> e <gIBSCBS></gIBSCBS> (C14N inclusiva — o fisco recanonicaliza)', () => {
     const a = signXml(xml, { referenceId: DPS_ID, cert: pair.cert, key: pair.key, algorithm: 'sha256' })

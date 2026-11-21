@@ -192,7 +192,10 @@ async function cancelEventXmls(ctx: AuthorityContext, key: string, code: string)
   try {
     res = await call<any>(ctx, 'GET', `/nfse/${key}/eventos/${encodeURIComponent(code)}/1`, undefined, 'eventos')
   } catch (err) {
-    if (err instanceof AuthorityHttpError && err.authorityStatus === 404) {
+    // DEPLOY.E1.P4 (núcleo 4.0.0, D-NE93/D-NE164/D-F98): casar pelo CÓDIGO também — o 502 ambíguo do teto de 2 MB (`envelope-ilegivel`)
+    // leva o `authorityStatus` REAL do fisco (404/401/403) e não pode ser re-rotulado aqui (passa adiante intacto). O código é o que o
+    // `authorityJson` do núcleo dá a esses status; se o núcleo o trocar, a cerca é o `deploy-e1-p4.test.ts` (os 404/401/403 NORMAIS)
+    if (err instanceof AuthorityHttpError && err.authorityStatus === 404 && err.code === ErrorCodes.FISCAL_NFSE_NOT_FOUND) {
       if (isSefinNoEventEnvelope(err.body, ctx.environment)) return null
       // M5 dos gates: contrato do fisco DIVERGENTE do cravado — log de ERRO próprio (o alarme por padrão de log é da F3)
       logger.error('Contrato da Sefin divergente: 404 de evento fora do envelope cravado', { code, environment: ctx.environment, bytes: Buffer.byteLength(err.body ?? '', 'utf8') })
@@ -200,7 +203,7 @@ async function cancelEventXmls(ctx: AuthorityContext, key: string, code: string)
     }
     // D-F65 (= Q-F72 (a), Valdo 2026-10-10): 401/403 numa rota de EVENTO depois do 200 do GET /nfse da MESMA nota (mesmo
     // certificado) é falha DESTA nota, não do emissor — 502 ambíguo: o rodízio carimba e segue (antes parava a passada para sempre)
-    if (err instanceof AuthorityHttpError && (err.authorityStatus === 401 || err.authorityStatus === 403)) {
+    if (err instanceof AuthorityHttpError && (err.authorityStatus === 401 || err.authorityStatus === 403) && err.code === ErrorCodes.FISCAL_AUTHORITY_AUTH_FAILED) {
       logger.error('Fisco recusou a rota de EVENTO depois de aceitar o GET da NFS-e (mesmo certificado)', { code, environment: ctx.environment, status: err.authorityStatus })
       throw tagAmbiguous(new AuthorityHttpError(502, `Fisco recusou (${err.authorityStatus}) a consulta do evento ${code} desta NFS-e — situação ambígua; a próxima consulta pergunta de novo`,
         ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE, err.authorityStatus, err.body), 'evento-recusado')
@@ -356,7 +359,8 @@ export const adnAdapter: TaxAuthorityAdapter = {
     } catch (err) {
       // Q-ADV1a (Valdo 2026-09-30): 404 só é "DPS sem NFS-e" (conclusivo → F) quando é a RESPOSTA do fisco
       // (corpo JSON estruturado); 404 vazio/HTML (gateway, proxy, rota) é ilegível → 502, a tentativa fica em voo
-      if (err instanceof AuthorityHttpError && err.authorityStatus === 404) {
+      // DEPLOY.E1.P4: só o 404 TRADUZIDO pelo núcleo (FISCAL_NFSE_NOT_FOUND); o 502 do teto de 2 MB passa adiante com a causa dele
+      if (err instanceof AuthorityHttpError && err.authorityStatus === 404 && err.code === ErrorCodes.FISCAL_NFSE_NOT_FOUND) {
         if (isDpsNotGenerated(err.body, ctx.environment)) return null
         throw unknownResponse('dps-fora-do-contrato', 'dps: 404 sem resposta estruturada do fisco', 404, err.body)
       }

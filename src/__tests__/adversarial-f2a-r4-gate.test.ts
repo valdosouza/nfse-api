@@ -12,7 +12,7 @@ import path from 'path'
 import jwt from 'jsonwebtoken'
 import request from 'supertest'
 import * as fiscal from 'fiscal-api'
-import { wireAccess } from './access-stub'
+import { wireAccess, live } from './access-stub'
 import * as repo from '../nfse/repository'
 import * as txMod from '../nfse/transmission'
 import { FsFiscalStorage, MasterKeyRing, ProductTokenVerifier, corsFor } from 'fiscal-api'
@@ -60,12 +60,12 @@ afterAll(() => fs.rmSync(storageRoot, { recursive: true, force: true }))
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
 const privPem = privateKey.export({ type: 'pkcs8', format: 'pem' }) as string
 const pubPem = publicKey.export({ type: 'spki', format: 'pem' }) as string
-const token = (claims: any = {}) => jwt.sign({ institutionId: 1, userId: 7, role: 'user', schemaName: 'setes_setes', ...claims }, privPem, { algorithm: 'RS256', keyid: 'k1', expiresIn: '1h' })
+const token = (claims: any = {}) => jwt.sign(live({ institutionId: 1, userId: 7, role: 'user', schemaName: 'setes_setes', ...claims }), privPem, { algorithm: 'RS256', keyid: 'k1', expiresIn: '1h' })
 const pool = { query: jest.fn(async (sql: string) => (/SUM\(cutover_at IS NULL\)/.test(sql) ? [[{ n: 1, r: 0 }]] : [[]])), getConnection: jest.fn() } as any
 const ctx = (corsOrigins: string[] = []): AppContext => ({
   db: { host: 'x', port: 0, user: 'x', password: 'x', database: 'fiscal_api' },
   pool, keyring: MasterKeyRing.of({ 1: randomBytes(32) }), storage: new FsFiscalStorage(storageRoot), adapter: {} as any,
-  fiscalDb: 'fiscal_api', verifier: ProductTokenVerifier.of({ k1: pubPem }), corsOrigins, checkIdentity: false,
+  fiscalDb: 'fiscal_api', verifier: ProductTokenVerifier.of({ k1: pubPem }), corsOrigins, checkIdentity: true,
 })
 const contracted = (...keys: string[]) => licensedM.mockImplementation(async (_p: any, _s: string, _i: number, k: string) => keys.includes(k))
 

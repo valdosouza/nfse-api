@@ -96,6 +96,6 @@ describe('(informativo, verde) a forma do <gIBSCBS> vazio que de fato vai ao fis
     const signed = signXml(xml, { referenceId: DPS_ID, cert: certPem, key: Buffer.from(keyPem), algorithm: 'sha1' })
     const form = signed.includes('<gIBSCBS></gIBSCBS>') ? 'aberto-fechado' : signed.includes('<gIBSCBS/>') ? 'auto-fechado' : 'ausente'
     expect(['aberto-fechado', 'auto-fechado']).toContain(form)
-    expect(verifyXml(signed, certPem)).toBe(true)
+    expect(verifyXml(signed, certPem, { element: 'infDPS' })).not.toBeNull()
   })
 })

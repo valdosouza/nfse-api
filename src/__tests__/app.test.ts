@@ -9,7 +9,7 @@ import { generateKeyPairSync, randomBytes } from 'crypto'
 import jwt from 'jsonwebtoken'
 import request from 'supertest'
 import * as fiscal from 'fiscal-api'
-import { wireAccess } from './access-stub'
+import { wireAccess, live } from './access-stub'
 import { MasterKeyRing, ProductTokenVerifier, FsFiscalStorage } from 'fiscal-api'
 import * as tx from '../nfse/transmission'
 import { createApp, loadOpenApi } from '../app'
@@ -47,7 +47,7 @@ wireAccess(fiscal.access, licensedM, grantedM)
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
 const privPem = privateKey.export({ type: 'pkcs8', format: 'pem' }) as string
 const pubPem = publicKey.export({ type: 'spki', format: 'pem' }) as string
-const token = (claims: any = {}) => jwt.sign({ institutionId: 1, userId: 7, role: 'user', schemaName: 'setes_setes', ...claims }, privPem, { algorithm: 'RS256', keyid: 'k1', expiresIn: '1h' })
+const token = (claims: any = {}) => jwt.sign(live({ institutionId: 1, userId: 7, role: 'user', schemaName: 'setes_setes', ...claims }), privPem, { algorithm: 'RS256', keyid: 'k1', expiresIn: '1h' })
 const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nfse-api-app-'))
 afterAll(() => fs.rmSync(storageRoot, { recursive: true, force: true }))
 
@@ -56,7 +56,7 @@ const ctx = (over: Partial<AppContext> = {}): AppContext => ({
   db: { host: 'x', port: 0, user: 'x', password: 'x', database: 'fiscal_api' },
   pool, keyring: MasterKeyRing.of({ 1: randomBytes(32) }), storage: new FsFiscalStorage(storageRoot), adapter: {} as any,
   fiscalDb: 'fiscal_api', verifier: ProductTokenVerifier.of({ k1: pubPem }), corsOrigins: ['https://app.setesgestao.com.br'],
-  checkIdentity: false, ...over,
+  checkIdentity: true, ...over,
 })
 
 beforeEach(() => {

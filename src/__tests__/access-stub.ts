@@ -37,5 +37,31 @@ export function wireAccess(access: any, licensed: Licensed, granted: Granted): v
     if ((await filter(keys, k => allows(q, who, k, v))).length > 0) return 'ok'
     return (await filter(keys, k => reach(q, who, k))).length > 0 ? 'no-privilege' : 'not-contracted'
   })
-  if (access.liveIdentity?.mockImplementation) access.liveIdentity.mockImplementation(async (_q: unknown, p: unknown) => p)
+  if (access.liveIdentity?.mockImplementation) access.liveIdentity.mockImplementation(async (_q: unknown, p: any) => {
+    const role = liveProfiles.get(liveKey(p))
+    return role === undefined ? p : { ...p, role }
+  })
+}
+
+/**
+ * Núcleo 3.0.0+ (D-AU3/D-AU19, nfse-api:AUTH.E2.P2 absorvido pelo DEPLOY.E1.P4): o verificador IGNORA o `role` do token (devolve
+ * `role: ''`) — o perfil (admin/super) vem SÓ da sessão viva (`access.liveIdentity`, com `checkIdentity: true`). Os testes declaram o
+ * perfil VIVO do usuário com `liveAs` (o `role` das claims de quem cunha o token vira o perfil vivo daquele institutionId:userId); o
+ * `role` que viaja no token é só o legado que o núcleo descarta.
+ */
+// CONHECIMENTO NEGATIVO (gates de 2026-11-21): o mapa é por arquivo (o jest isola os módulos) e NÃO é limpo entre testes — a última
+// cunhagem do mesmo institutionId:userId vence; quem guarda um token numa variável e cunha outro do MESMO usuário antes de usá-lo herda o
+// perfil do segundo. A prova de que o `role` do TOKEN nunca concede é do `auth-e2-p2-token-contract.test.ts` (o vivo recebe `role: ''`).
+const liveProfiles = new Map<string, string>()
+const liveKey = (p: { institutionId?: unknown; userId?: unknown }) => `${String(p.institutionId)}:${String(p.userId)}`
+export function liveAs(claims: { institutionId?: unknown; userId?: unknown; role?: unknown }): void {
+  // id que não é inteiro (o "institutionId como texto" do pv2-gate) o verificador recusa (401) — não pode gravar perfil na chave do numérico
+  if (!Number.isSafeInteger(claims.institutionId) || !Number.isSafeInteger(claims.userId)) return
+  if (typeof claims.role === 'string') liveProfiles.set(liveKey(claims), claims.role)
+  else liveProfiles.delete(liveKey(claims))
+}
+/** Cunhar o token e declarar o perfil VIVO do mesmo usuário num passo só: `jwt.sign(live(claims), …)`. */
+export function live<T extends { institutionId?: unknown; userId?: unknown; role?: unknown }>(claims: T): T {
+  liveAs(claims)
+  return claims
 }

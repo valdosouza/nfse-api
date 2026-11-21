@@ -14,7 +14,7 @@ import { generateKeyPairSync } from 'crypto'
 import jwt from 'jsonwebtoken'
 import request from 'supertest'
 import * as fiscal from 'fiscal-api'
-import { wireAccess } from './access-stub'
+import { wireAccess, live } from './access-stub'
 import * as repo from '../nfse/repository'
 import { FsFiscalStorage, MasterKeyRing, ProductTokenVerifier, transport } from 'fiscal-api'
 import { refreshOpenServiceTransmissions, resetMunicipalTermsCache, NfseDeps } from '../nfse/transmission'
@@ -64,11 +64,11 @@ const NFSE_XML = `<NFSe xmlns="http://www.sped.fazenda.gov.br/nfse" versao="1.01
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
 const privPem = privateKey.export({ type: 'pkcs8', format: 'pem' }) as string
 const pubPem = publicKey.export({ type: 'spki', format: 'pem' }) as string
-const token = (claims: any = {}) => jwt.sign({ institutionId: 1, userId: 990003, role: 'admin', schemaName: 'setes_setes', ...claims }, privPem, { algorithm: 'RS256', keyid: 'k1', expiresIn: '1h' })
+const token = (claims: any = {}) => jwt.sign(live({ institutionId: 1, userId: 990003, role: 'admin', schemaName: 'setes_setes', ...claims }), privPem, { algorithm: 'RS256', keyid: 'k1', expiresIn: '1h' })
 const auth = (claims: any = {}) => ({ Authorization: `Bearer ${token(claims)}` })
 const appFor = (over: Partial<AppContext> = {}) => createApp({
   ...deps, db: { host: 'x', port: 0, user: 'x', password: 'x', database: 'fiscal_api' },
-  verifier: ProductTokenVerifier.of({ k1: pubPem }), corsOrigins: [], checkIdentity: false, ...over,
+  verifier: ProductTokenVerifier.of({ k1: pubPem }), corsOrigins: [], checkIdentity: true, ...over,
 } as AppContext)
 
 const tx = (over: any = {}) => withRecord({

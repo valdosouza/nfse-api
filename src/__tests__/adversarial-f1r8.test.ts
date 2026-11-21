@@ -22,7 +22,7 @@ import { generateKeyPairSync, randomBytes } from 'crypto'
 import jwt from 'jsonwebtoken'
 import request from 'supertest'
 import * as fiscal from 'fiscal-api'
-import { wireAccess } from './access-stub'
+import { wireAccess, live } from './access-stub'
 import * as repo from '../nfse/repository'
 import * as txMod from '../nfse/transmission'
 import { FsFiscalStorage, MasterKeyRing, ProductTokenVerifier } from 'fiscal-api'
@@ -142,13 +142,13 @@ describe('D-F46 — ataques à borda: ramo não contratado, admin, lista vazia, 
   const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
   const privPem = privateKey.export({ type: 'pkcs8', format: 'pem' }) as string
   const pubPem = publicKey.export({ type: 'spki', format: 'pem' }) as string
-  const token = (claims: any = {}) => jwt.sign({ institutionId: 1, userId: 7, role: 'user', schemaName: 'setes_setes', ...claims }, privPem, { algorithm: 'RS256', keyid: 'k1', expiresIn: '1h' })
+  const token = (claims: any = {}) => jwt.sign(live({ institutionId: 1, userId: 7, role: 'user', schemaName: 'setes_setes', ...claims }), privPem, { algorithm: 'RS256', keyid: 'k1', expiresIn: '1h' })
   // pool da borda: a cerca (issuerRowsState) diz VIRADA — o resto não chega ao banco (as peças do serviço são espiadas)
   const pool = { query: jest.fn(async (sql: string) => (/SUM\(cutover_at IS NULL\)/.test(sql) ? [[{ n: 1, r: 0 }]] : [[]])), getConnection: jest.fn() } as any
   const ctx = (): AppContext => ({
     db: { host: 'x', port: 0, user: 'x', password: 'x', database: 'fiscal_api' },
     pool, keyring: MasterKeyRing.of({ 1: randomBytes(32) }), storage: new FsFiscalStorage(storageRoot), adapter: {} as any,
-    fiscalDb: 'fiscal_api', verifier: ProductTokenVerifier.of({ k1: pubPem }), corsOrigins: [], checkIdentity: false,
+    fiscalDb: 'fiscal_api', verifier: ProductTokenVerifier.of({ k1: pubPem }), corsOrigins: [], checkIdentity: true,
   })
   const NAMES = ['refreshOpenServiceTransmissions', 'transmitServiceInvoice', 'refreshServiceTransmission', 'reconfirmBeforeLocalCancel',
     'cancelServiceInvoiceAtAuthority', 'getServiceFiscalView', 'readNfseXml', 'listPending'] as const
