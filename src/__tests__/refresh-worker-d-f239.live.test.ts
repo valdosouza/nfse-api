@@ -20,7 +20,7 @@ import dotenv from 'dotenv'
 import * as fiscal from 'fiscal-api'
 import { AuthorityHttpError, FsFiscalStorage, FiscalStorage, createFiscalPool } from 'fiscal-api'
 import { contextFromEnv, AppContext } from '../context'
-import { disposableFiscalDb, DisposableFiscalDb } from './live-harness'
+import { disposableFiscalDb, DisposableFiscalDb, attackVerifier } from './live-harness'
 import type { TaxAuthorityAdapter, AuthorityContext } from '../authority/types'
 import { resetMunicipalTermsCache } from '../nfse/transmission'
 import { RefreshWorker, refreshWorkerDeps, EstablishmentRun } from '../worker/refresh-worker'
@@ -126,7 +126,7 @@ d('DEPLOY.E2.P1.T1 — worker do rodízio em DUAS instâncias (D-F239, aluguel D
     ;(fiscal as any).transport.request = async () => { throw new Error('ADV worker: rede bloqueada — nenhum fisco real') }
     const cwd = process.cwd(); process.chdir(ROOT)
     harness = await disposableFiscalDb(ROOT, 'fiscal_api_adv_worker', { turned: true })
-    const base = contextFromEnv(process.env, { adapter: fakeAdapter, checkIdentity: true, pool: harness.pool })
+    const base = contextFromEnv(process.env, { adapter: fakeAdapter, checkIdentity: true, pool: harness.pool, verifier: attackVerifier() })
     process.chdir(cwd)
     const storage = new SandboxStorage(base.storage, new FsFiscalStorage(tmpRoot))
     ctx1 = { ...base, db: harness.cfg, fiscalDb: harness.cfg.database, storage }

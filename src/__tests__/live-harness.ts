@@ -15,7 +15,8 @@
 import fs from 'fs'
 import path from 'path'
 import dotenv from 'dotenv'
-import { createFiscalPool, dbConfigFromEnv, runMigrations, FiscalDbConfig, Pool } from 'fiscal-api'
+import jwt from 'jsonwebtoken'
+import { createFiscalPool, dbConfigFromEnv, runMigrations, FiscalDbConfig, Pool, ProductTokenVerifier, InstitutionPayload } from 'fiscal-api'
 import { MIGRATION_SETS } from '../migrations'
 
 const ERP_WATCH = ['tb_invoice', 'tb_invoice_event', 'tb_invoice_service', 'tb_establishment_issuer', 'tb_institution_has_interface',
@@ -258,6 +259,27 @@ export function cancelledAtAuthorityNote(q: { query: (sql: string, p?: any[]) =>
 
 /** D-F231: os usuários do ATAQUE são marcadores sintéticos (990001…990999 — marcam as linhas que o ataque grava na cópia). */
 export const isAttackUser = (userId: unknown): boolean => Number.isInteger(userId) && (userId as number) >= 990000 && (userId as number) <= 990999
+
+/**
+ * DEPLOY.E1.P4.T3 (núcleo 3.0.0+, D-AU3/D-AU19): o verificador do núcleo DESCARTA o `role` do token (devolve `role: ''`); o perfil é só o
+ * da sessão viva. Os ataques ao vivo declaram o perfil do usuário SINTÉTICO no próprio token (`role: 'user'` = comum; senão o do admin
+ * real que ele empresta — `attackSession`) e há apps sem sessão viva (`checkIdentity: false`) que contam com o perfil declarado. Este
+ * verificador de TESTE devolve ao payload o `role` declarado SÓ para os usuários do ataque (990000–990999 — `isAttackUser`): a
+ * assinatura, o `kid`, o `exp`, o `iat` e a forma continuam pelo verificador REAL; todo outro usuário segue o núcleo (`role: ''`).
+ * Nunca em produção: o `context.ts` monta o verificador do núcleo direto.
+ */
+export function attackVerifier(env: NodeJS.ProcessEnv = process.env): ProductTokenVerifier {
+  const real = ProductTokenVerifier.fromEnv(env)
+  const declared = (token: string, p: InstitutionPayload): InstitutionPayload => {
+    if (!isAttackUser(p.userId)) return p
+    const role = (jwt.decode(token) as { role?: unknown } | null)?.role
+    return typeof role === 'string' ? { ...p, role } : p
+  }
+  const v = Object.create(real) as ProductTokenVerifier
+  v.verify = (token: string) => declared(token, real.verify(token))
+  v.verifyWithIat = (token: string) => { const r = real.verifyWithIat(token); return { ...r, payload: declared(token, r.payload) } }
+  return v
+}
 
 /**
  * D-F231 — SESSÃO DO ATAQUE pela costura A1. Desde a costura (D-AU3/D-AU6, 2026-11-01) a nfse-api lê a SESSÃO VIVA a cada requisição

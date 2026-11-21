@@ -18,7 +18,7 @@ import request from 'supertest'
 import * as fiscal from 'fiscal-api'
 import { AuthorityHttpError, FsFiscalStorage, FiscalStorage, HttpError } from 'fiscal-api'
 import { contextFromEnv, AppContext } from '../context'
-import { disposableFiscalDb, DisposableFiscalDb, cancelledAtAuthorityNote, attackSession, trimToOrigin } from './live-harness'
+import { disposableFiscalDb, DisposableFiscalDb, attackVerifier, cancelledAtAuthorityNote, attackSession, trimToOrigin } from './live-harness'
 import { createApp } from '../app'
 import type { TaxAuthorityAdapter, AuthorityContext } from '../authority/types'
 import { refreshOpenServiceTransmissions, resetMunicipalTermsCache, IN_FLIGHT_MINUTES, REFRESH_MIN_MINUTES } from '../nfse/transmission'
@@ -181,7 +181,7 @@ d('GATE ADVERSARIAL F1 — 2ª rodada — banco real + fisco falso', () => {
     const cwd = process.cwd(); process.chdir(ROOT)
     // gates R4: o ataque roda numa CÓPIA descartável do fiscal_api (virada SÓ na cópia) — o real nunca é virado
     harness = await disposableFiscalDb(ROOT, 'fiscal_api_adv_r2', { turned: true })
-    const base = contextFromEnv(process.env, { adapter: fakeAdapter, checkIdentity: true, pool: harness.pool })
+    const base = contextFromEnv(process.env, { adapter: fakeAdapter, checkIdentity: true, pool: harness.pool, verifier: attackVerifier() })
     process.chdir(cwd)
     ctx = { ...base, db: harness.cfg, fiscalDb: harness.cfg.database, storage: new SandboxStorage(base.storage, new FsFiscalStorage(tmpRoot)) }
     attack = await attackSession(fiscal, harness!.pool, SCHEMA, INST)   // D-F231: acesso VIVO de um admin real — depois do ctx (falhar aqui ainda passa pelo afterAll)
