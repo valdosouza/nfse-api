@@ -18,6 +18,7 @@ import type { StoredKeyCheck } from 'fiscal-api'
 import type { AppContext } from '../context'
 import { emitterRoutes } from '../modules/emitter/emitter.routes'
 import { nfseRoutes } from '../modules/nfse/nfse.routes'
+import { providerRoutes } from '../modules/provider/provider.routes'
 import { refLike, WEB } from './fixture-ref'   // NE-1a parte 2: a nota viaja inteira
 
 jest.mock('fiscal-api', () => {
@@ -329,6 +330,7 @@ describe('CERCA: contrato OpenAPI × rotas reais (design-first — D-F8)', () =>
       'GET /v1/health',
       ...fromRouter('/v1/emitter', emitterRoutes(ctx())),
       ...fromRouter('/v1/nfse', nfseRoutes(ctx())),
+      ...fromRouter('/v1/provider', providerRoutes(ctx())),
     ])
     const doc = loadOpenApi()
     const documented = new Set<string>()

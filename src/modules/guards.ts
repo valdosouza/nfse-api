@@ -1,4 +1,4 @@
-import { HttpError, ErrorCodes, InstitutionPayload, isAdmin, erp, access, emissionStillInErp, anyEmissionStillInErp, IssuerModel, InvoiceRef } from 'fiscal-api'
+import { HttpError, ErrorCodes, InstitutionPayload, isAdmin, isSuper, erp, access, emissionStillInErp, anyEmissionStillInErp, IssuerModel, InvoiceRef } from 'fiscal-api'
 import type { AppContext } from '../context'
 
 /**
@@ -98,6 +98,16 @@ export async function requireAnyInterface(ctx: AppContext, inst: InstitutionPayl
 /** Emitente (A1 + habilitação) é ato do ADMIN do estabelecimento (adminGuard do produto) — pelo perfil VIVO (`access.liveIdentity`). */
 export function requireAdmin(inst: InstitutionPayload): void {
   if (!isAdmin(inst)) throw new HttpError(403, 'Ação exclusiva do administrador do estabelecimento', undefined, ErrorCodes.ADMIN_REQUIRED)
+}
+
+/**
+ * Configuração do FORNECEDOR (credencial fiscal por UF — D-NE224): só o SUPER com vínculo à Setes. `isSuper` do núcleo = perfil VIVO
+ * 'super' na institution da Setes (a única `vendor` — D-PV37); sem a sessão viva o perfil é vazio e a guarda recusa (falha fechada).
+ */
+export function requireVendorSuper(inst: InstitutionPayload): void {
+  if (!isSuper(inst)) {
+    throw new HttpError(403, 'Ação exclusiva do super da Setes (credencial fiscal do fornecedor)', undefined, 'VENDOR_SUPER_REQUIRED')
+  }
 }
 
 /** id de rota: inteiro positivo, senão 400. */

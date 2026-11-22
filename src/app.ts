@@ -9,6 +9,7 @@ import { healthHandler } from './health'
 import { KeyProof } from './key-proof'
 import { emitterRoutes } from './modules/emitter/emitter.routes'
 import { nfseRoutes } from './modules/nfse/nfse.routes'
+import { providerRoutes } from './modules/provider/provider.routes'
 
 /** Contrato DESIGN-FIRST (D-F8): o YAML é a fonte; servido em /docs e /v1/openapi.yaml. */
 export const OPENAPI_PATH = path.resolve(__dirname, '..', 'openapi', 'nfse-api.v1.yaml')
@@ -39,6 +40,7 @@ export function createApp(ctx: AppContext, keyProof: KeyProof = new KeyProof(ctx
     : undefined)
   app.use('/v1/emitter', auth, emitterRoutes(ctx))
   app.use('/v1/nfse', auth, nfseRoutes(ctx))
+  app.use('/v1/provider', auth, providerRoutes(ctx))      // CRED.E1.P1 (D-NE224): a credencial fiscal do fornecedor, só o super da Setes
 
   app.use((_req, res) => { res.status(404).json({ error: 'Rota não encontrada', code: 'NOT_FOUND' }) })
   app.use(errorMiddleware)

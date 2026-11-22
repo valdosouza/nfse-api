@@ -36,6 +36,7 @@ tags:
   - name: operação
   - name: emitente
   - name: nfse
+  - name: fornecedor
 paths:
   /v1/health:
     get:
@@ -472,6 +473,89 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
 
+  # CRED.E1.P1 (D-NE221…D-NE226, 2026-11-22): a credencial fiscal do FORNECEDOR por UF (o CSRT do PR), pela peça do núcleo 4.1.0.
+  /v1/provider/fiscal-credentials:
+    get:
+      tags: [fornecedor]
+      summary: Lista as credenciais fiscais do fornecedor — SEM o valor
+      description: >-
+        Só o super com vínculo à Setes (D-NE224; a leitura também — escolha da ficha CRED.E1.P1). Devolve as vivas (encerradas inclusive),
+        com o id do código, a vigência e o autor; o VALOR é só de escrita e nunca volta (D-NE224).
+      responses:
+        '200':
+          description: credenciais vivas do fornecedor
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data: { type: array, items: { $ref: '#/components/schemas/ProviderFiscalCredential' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ProviderForbidden' }
+        '503': { $ref: '#/components/responses/FiscalCodeUnavailable' }
+    post:
+      tags: [fornecedor]
+      summary: Grava uma credencial fiscal do fornecedor (o valor é write-only)
+      description: >-
+        INSERT pela chave (UF × modelo × ambiente × tipo × início); a nova ENCERRA, no início dela, a anterior ainda aberta da mesma
+        UF × modelo × ambiente × tipo — na mesma transação. O tipo tem de ser de dono `provider` no catálogo e o `codeId` na forma do tipo
+        (CSRT: dois dígitos — RF-NFE-30). O valor fica em texto puro no banco (D-NE223) e nunca sai em resposta, erro ou log.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProviderFiscalCredentialInput' }
+      responses:
+        '201':
+          description: gravada (sem o valor)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data: { $ref: '#/components/schemas/ProviderFiscalCredential' }
+        '400': { $ref: '#/components/responses/FiscalCodeInvalid' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ProviderForbidden' }
+        '409': { $ref: '#/components/responses/FiscalCodeConflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '503': { $ref: '#/components/responses/FiscalCodeUnavailable' }
+  /v1/provider/fiscal-credentials/end:
+    post:
+      tags: [fornecedor]
+      summary: Encerra uma credencial fiscal do fornecedor (fim da vigência)
+      description: >-
+        Fecha (`valid_until`) a credencial viva e ainda aberta identificada pela chave; o fim padrão é agora e tem de ser depois do
+        início. Encerrar não apaga: a credencial é fato com vigência (a revogação no portal da SEFAZ gera a rej. 977 — RF-NFE-30).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProviderFiscalCredentialEnd' }
+      responses:
+        '200':
+          description: encerrada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data: { type: object, properties: { ended: { type: boolean, enum: [true] } } }
+        '400': { $ref: '#/components/responses/FiscalCodeInvalid' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ProviderForbidden' }
+        '404':
+          description: FISCAL_CODE_NOT_FOUND — nenhuma credencial viva e não encerrada com esta chave
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '409': { $ref: '#/components/responses/FiscalCodeConflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '503': { $ref: '#/components/responses/FiscalCodeUnavailable' }
+
 components:
   securitySchemes:
     BearerAuth:
@@ -522,6 +606,20 @@ components:
     MasterKeyUnavailable:
       description: FISCAL_MASTER_KEY_UNAVAILABLE — chave-mestra do cofre ausente na instância (o A1 não cifra/abre)
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    ProviderForbidden:
+      description: VENDOR_SUPER_REQUIRED — só o super com vínculo à Setes mantém a credencial do fornecedor (D-NE224)
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    FiscalCodeInvalid:
+      description: >-
+        VALIDATION_FAILED (forma do corpo) · FISCAL_CODE_INVALID (domínio — UF, modelo, ambiente, tipo do catálogo, forma do codeId ou do
+        valor, vigência); o campo em fields[], NUNCA o valor recebido
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    FiscalCodeConflict:
+      description: FISCAL_CODE_CONFLICT (já existe credencial com o mesmo início na mesma chave) · RESOURCE_BUSY (contenção — tente de novo)
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    FiscalCodeUnavailable:
+      description: FISCAL_CODE_STORE_FAILED — o banco fiscal não respondeu (sem SQL nem valor na resposta)
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
   schemas:
     Error:
       type: object
@@ -538,6 +636,40 @@ components:
               field:    { type: string }
               message:  { type: string }
               expected: { description: valor esperado quando a recusa depende de dado que mudou fora da tela }
+    ProviderFiscalCredential:
+      type: object
+      description: credencial fiscal do fornecedor por UF — NUNCA o valor (D-NE224)
+      properties:
+        state:       { type: string, example: PR, description: sigla da UF }
+        model:       { type: string, enum: ['55', '65'] }
+        environment: { type: string, enum: [H, P] }
+        type:        { type: string, example: CSRT, description: tipo do código no catálogo (dono provider) }
+        codeId:      { type: string, example: '03', description: 'id do código (CSRT: idCSRT, dois dígitos — RF-NFE-30)' }
+        validFrom:   { type: string, format: date-time }
+        validUntil:  { type: string, format: date-time, nullable: true }
+        userId:      { type: integer, nullable: true, description: autor (NULL = gravada pelo script do núcleo — D-NE226) }
+    ProviderFiscalCredentialInput:
+      type: object
+      required: [state, model, environment, type, codeId, codeValue, validFrom]
+      properties:
+        state:       { type: string, minLength: 2, maxLength: 2 }
+        model:       { type: string, enum: ['55', '65'] }
+        environment: { type: string, enum: [H, P] }
+        type:        { type: string, maxLength: 20 }
+        codeId:      { type: string, maxLength: 10 }
+        codeValue:   { type: string, writeOnly: true, description: 'o código secreto (1 a 100 ASCII visíveis, sem espaço); só de escrita — D-NE223/D-NE224' }
+        validFrom:   { type: string, format: date-time, description: instante ISO com fuso }
+        validUntil:  { type: string, format: date-time, description: opcional }
+    ProviderFiscalCredentialEnd:
+      type: object
+      required: [state, model, environment, type, validFrom]
+      properties:
+        state:       { type: string, minLength: 2, maxLength: 2 }
+        model:       { type: string, enum: ['55', '65'] }
+        environment: { type: string, enum: [H, P] }
+        type:        { type: string, maxLength: 20 }
+        validFrom:   { type: string, format: date-time, description: o início da credencial (como a lista devolve) }
+        validUntil:  { type: string, format: date-time, description: 'fim da vigência (padrão: agora); depois do início' }
     Health:
       type: object
       properties:
