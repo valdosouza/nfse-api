@@ -35,7 +35,15 @@ export const FISCAL_COPY_TABLES = [
  * criada pelas migrations da família na lista (ou numa exceção NOMEADA); (2) a cópia tolera a ausência no REAL só da tabela cuja migration
  * ainda NÃO foi aplicada nele (`_migrations`) — tabela da lista ausente com a migration aplicada segue falhando alto (schema errado).
  */
-export const FISCAL_COPY_EXCEPTIONS: Readonly<Record<string, string>> = Object.freeze({})
+export const FISCAL_COPY_EXCEPTIONS: Readonly<Record<string, string>> = Object.freeze({
+  // CRED.E1.P1 (2026-11-22) — núcleo 4.1.0, migration 006 (D-NE221). Nenhuma das quatro é copiada do real; o real segue vigiado pelo
+  // CHECKSUM de toda tabela-base (D-F231). Catálogo e regra: a própria 006 os semeia na cópia (copiar do real duplicaria a PK). Credenciais:
+  // o VALOR fica em texto puro (D-NE223) — nunca vai aos bancos descartáveis do ataque; a cópia nasce com a tabela VAZIA.
+  tb_fiscal_code_type:                'semeada pela migration 006 na própria cópia',
+  tb_fiscal_code_requirement:         'semeada pela migration 006 na própria cópia',
+  tb_provider_fiscal_credential:      'valor do CSRT em texto puro (D-NE223) — não sai do fiscal_api real',
+  tb_establishment_fiscal_credential: 'valor do código do contribuinte em texto puro (D-NE223) — não sai do fiscal_api real',
+})
 
 /** Tabelas que cada migration da família CRIA (`CREATE TABLE …` fora de comentário), com o projeto e a versão. */
 export function tablesByMigration(): { project: string; version: string; table: string }[] {
