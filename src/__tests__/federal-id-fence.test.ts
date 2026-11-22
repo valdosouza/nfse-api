@@ -18,6 +18,18 @@ const ALLOWED: Record<string, string> = {
     + 'A inscrição do Id do DPS já saiu daqui (gate socrático da onda 0). A onda 1 tira a inscrição do montador inteiro (Q-CJ15).',
   "src/facts/service-facts.ts: String(v ?? '').replace(/\\D/g, '')":
     'digitsOf do CEP do tomador (8 dígitos) — a inscrição é lida pela peça (readFederalIdFact)',
+  // D-CJ15 (cerca alargada pelo setes-api, b40844c — vigia o VALOR): o mesmo digits() acima, agora visto na CHAMADA sobre a inscrição.
+  // DÍVIDA DA ONDA 1 (Q-CJ15): sempre com tamanho — LANÇA em vez de mutilar; o CNPJ alfanumérico é recusado ANTES (`DPS_NUMERIC_CNPJ`).
+  "src/authority/dps-builder.ts: digits(p.cnpj, 'CNPJ do prestador', 14)":
+    'CNPJ do prestador no DPS — dívida da onda 1 (Q-CJ15): tamanho 14 obrigatório, lança em vez de mutilar; alfanumérico recusado antes',
+  "src/authority/dps-builder.ts: digits(t.cnpj, 'CNPJ do tomador', 14)":
+    'CNPJ do tomador no DPS — dívida da onda 1 (Q-CJ15): tamanho 14 obrigatório, lança em vez de mutilar; alfanumérico recusado antes',
+  "src/authority/dps-builder.ts: digits(t.cpf!, 'CPF do tomador', 11)":
+    'CPF do tomador no DPS — dívida da onda 1 (Q-CJ15): tamanho 11 obrigatório, lança em vez de mutilar (CPF segue numérico)',
+  "src/authority/dps-builder.ts: digits(input.cnpjAutor, 'CNPJ do autor', 14)":
+    'CNPJ do autor do evento — dívida da onda 1 (Q-CJ15): tamanho 14 obrigatório, lança em vez de mutilar; alfanumérico recusado antes',
+  "src/authority/dps-builder.ts: digits(input.cpfAutor!, 'CPF do autor', 11)":
+    'CPF do autor do evento — dívida da onda 1 (Q-CJ15): tamanho 11 obrigatório, lança em vez de mutilar (CPF segue numérico)',
 }
 
 describe('D-CJ12 — cerca: nunca "tirar o que não é dígito" de inscrição federal ou chave de acesso', () => {
