@@ -59,6 +59,18 @@ GRANT ALL PRIVILEGES ON `fiscal\_api\_adv%`.* TO 'fiscal_api'@'%';
 --    que é da nfse-api (o app compõe — D-F79). Família nova = a view de tentativas DELA (D-F113: o catálogo
 --    `VOICE_READINGS` da biblioteca é a lista das famílias instaladas; o boot do setes-api confere cada view).
 --    Aplicar na JANELA da F2a (D-F111), junto do usuário 'setes_api' da instância — antes não há leitor.
+--    NÚCLEO 5.0.0 (DEPLOY.E1.P6 — janela da NE-6, fiscal-api:FAMILIA.E5.P3): o catálogo `VOICE_READINGS` passou a listar também a
+--    família da NF-e (`merchandise`). DESTE arquivo o 'setes_api' segue recebendo SÓ a linha abaixo (a view de tentativas da NFS-e). O
+--    setes-api que adotar esse núcleo confere no boot a view de cada família que lê e, ao cunhar número do 55, lê a numeração e a
+--    habilitação. Ele precisa das TRÊS linhas da seção 2 do `nfe-api/ops/grants.sql` (as três estão lá; a terceira pela
+--    nfe-api:DEPLOY.E1.P10) — num lugar só, para ninguém aplicar pela metade (combinado nfe-api × nfse-api, 2026-11-22). Ordem: DEPOIS das migrations
+--    (núcleo 001–007 e a 001 da nfe-api — GRANT em view que ainda não existe falha) e ANTES de reiniciar o setes-api com esse núcleo:
+--      - `vw_invoice_merchandise_transmission` — a view de tentativas da NF-e (o mesmo GRANT mínimo daqui, para a outra família);
+--      - `vw_invoice_number_void` — as faixas de numeração (D-NE161);
+--      - `vw_establishment_issuer` — o ambiente e a virada da habilitação por modelo (D-NE170; migration 007 do NÚCLEO — o boot desta
+--        API também a cria, mas quem a lê é o setes-api ao cunhar o número do 55, por isso a linha fica com as da NF-e).
+--    A nfse-api NÃO precisa de GRANT novo para subir com o 5.0.0: as views são do 'fiscal_api', que as cria, e o boot daqui confere só
+--    a view da NFS-e (`[SERVICE_VOICE_READING]` — D-NE76).
 -- GRANT SELECT ON `fiscal_api`.`vw_invoice_service_transmission` TO 'setes_api'@'%';
 
 -- 3. Conferência (critério §12.8-2): pela conexão do 'fiscal_api', um INSERT em setes_<cliente>.tb_invoice_event
