@@ -57,7 +57,18 @@ function translate(err: unknown, renameField: Record<string, string> = {}): neve
     }
     throw new HttpError(503, 'Configuração fiscal indisponível — tente novamente', undefined, err.code)
   }
-  throw err
+  // Qualquer outro erro (gates da CRED.E1.P1 — socrático MED-1, adversarial L1/L2): a lista e o SELECT do catálogo não embrulham o erro do
+  // banco, e o `getConnection`/`commit` também não. NUNCA repassar cru: o `sendError` do núcleo loga `message` e `stack`, e um erro do motor
+  // pode trazer o valor no texto ("Incorrect string value: '…'") ou no `sql`. Ao log vai só a CLASSE (errno/code/nome); a contenção crua é 409.
+  const e = err as { errno?: unknown; code?: unknown; name?: unknown }
+  const dbCode = typeof e?.code === 'string' ? e.code : null
+  if (dbCode !== null && CONTENTION.has(dbCode)) {
+    throw new HttpError(409, 'Registro em uso por outra operação — tente novamente', undefined, ErrorCodes.RESOURCE_BUSY)
+  }
+  logger.error('Configuração fiscal do fornecedor: falha sem classe da peça', {
+    errno: typeof e?.errno === 'number' ? e.errno : null, code: dbCode, name: typeof e?.name === 'string' ? e.name : null,
+  })
+  throw new HttpError(503, 'Configuração fiscal indisponível — tente novamente', undefined, 'FISCAL_CODE_STORE_FAILED')
 }
 
 export async function listCredentials(ctx: AppContext): Promise<ProviderFiscalCredentialView[]> {
@@ -88,7 +99,14 @@ export async function endCredential(ctx: AppContext, inst: InstitutionPayload, d
     ended = await endProviderFiscalCredential(ctx.pool, {
       state: dto.state, model: dto.model, environment: dto.environment, type: dto.type, validFrom: dto.validFrom,
     }, at)
-  } catch (err) { translate(err, { at: 'validUntil' }) }
+  } catch (err) {
+    // sem `validUntil` no corpo o fim é AGORA — o erro diz isso, em vez de apontar um campo que o cliente não mandou (gate socrático 4)
+    if (err instanceof FiscalCodeInvalidError && err.field === 'at' && dto.validUntil === undefined) {
+      throw new HttpError(400, 'Credencial fiscal recusada', [{ field: 'validUntil',
+        message: 'Sem validUntil o fim é agora, e agora não é depois do início — informe um fim depois do início' }], err.code)
+    }
+    translate(err, { at: 'validUntil' })
+  }
   if (!ended) {
     throw new HttpError(404, 'Nenhuma credencial viva e não encerrada com esta chave', undefined, 'FISCAL_CODE_NOT_FOUND')
   }

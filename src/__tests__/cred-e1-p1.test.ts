@@ -178,9 +178,34 @@ describe('CRED.E1.P1.T1 — gravar, listar e encerrar; o valor só de escrita', 
     saveM.mockRejectedValue(new actual.FiscalCodeStoreError(1213, 'ER_LOCK_DEADLOCK'))
     const b = await request(createApp(ctx())).post('/v1/provider/fiscal-credentials').set(auth()).send(body())
     expect([b.status, b.body.code]).toEqual([409, 'RESOURCE_BUSY'])
-    listM.mockRejectedValue(new actual.FiscalCodeStoreError(1205, 'ER_LOCK_WAIT_TIMEOUT'))
+    expectNoValueLeak(b)
+  })
+
+  // a LISTA da peça (e o SELECT do catálogo, o getConnection e o commit) não embrulham o erro do banco: o erro CRU do mysql2 chega à borda
+  const rawDbError = (code: string, errno: number) =>
+    Object.assign(new Error(`erro do motor com o valor ${MARK}`), { code, errno, sql: `INSERT … '${MARK}'`, sqlMessage: MARK })
+
+  it('7b · erro CRU do banco na lista → 503 FISCAL_CODE_STORE_FAILED; contenção crua → 409; nada do erro vai ao log além da classe', async () => {
+    listM.mockRejectedValue(rawDbError('ECONNREFUSED', -4078))
+    const a = await request(createApp(ctx())).get('/v1/provider/fiscal-credentials').set(auth())
+    expect([a.status, a.body.code]).toEqual([503, 'FISCAL_CODE_STORE_FAILED'])
+    expect(loggerM.error).toHaveBeenCalledWith(expect.any(String), { errno: -4078, code: 'ECONNREFUSED', name: 'Error' })
+    expectNoValueLeak(a)
+    listM.mockRejectedValue(rawDbError('ER_LOCK_WAIT_TIMEOUT', 1205))
     const c = await request(createApp(ctx())).get('/v1/provider/fiscal-credentials').set(auth())
     expect([c.status, c.body.code]).toEqual([409, 'RESOURCE_BUSY'])
+    expectNoValueLeak(c)
+  })
+
+  it('7c · getConnection ou commit falham com erro cru que traz o valor → 503, sem vazar', async () => {
+    pool.getConnection.mockRejectedValueOnce(rawDbError('PROTOCOL_CONNECTION_LOST', 0))
+    const a = await request(createApp(ctx())).post('/v1/provider/fiscal-credentials').set(auth()).send(body())
+    expect([a.status, a.body.code]).toEqual([503, 'FISCAL_CODE_STORE_FAILED'])
+    expectNoValueLeak(a)
+    conn.commit.mockRejectedValueOnce(rawDbError('ER_ERROR_DURING_COMMIT', 1180))
+    const b = await request(createApp(ctx())).post('/v1/provider/fiscal-credentials').set(auth()).send(body())
+    expect([b.status, b.body.code]).toEqual([503, 'FISCAL_CODE_STORE_FAILED'])
+    expectNoValueLeak(b)
   })
 
   it('8 · encerrar: true → 200 data.ended; false → 404 FISCAL_CODE_NOT_FOUND; o `at` da peça vira `validUntil` no erro', async () => {
@@ -198,23 +223,37 @@ describe('CRED.E1.P1.T1 — gravar, listar e encerrar; o valor só de escrita', 
       .send({ ...KEY, validUntil: '2026-11-01T03:00:00Z' })
     expect([early.status, early.body.code, early.body.fields?.[0]?.field]).toEqual([400, 'FISCAL_CODE_INVALID', 'validUntil'])
     expect(early.body.fields[0].message).not.toMatch(/\bat\b/)
+    const now = await request(createApp(ctx())).post('/v1/provider/fiscal-credentials/end').set(auth()).send(KEY)
+    expect([now.status, now.body.fields?.[0]?.field]).toEqual([400, 'validUntil'])
+    expect(now.body.fields[0].message).toMatch(/Sem validUntil o fim é agora/)
   })
 
   it('9 · corpo fora da forma → 400 VALIDATION_FAILED, peça não chamada, valor não ecoado', async () => {
     for (const b of [body({ validFrom: '22/11/2026' }), body({ codeValue: undefined }), body({ validFrom: '2026-11-22T03:00:00' }),
-      body({ codeValue: 12345 }), body({ state: 'PRX' })]) {
+      body({ codeValue: 12345 }), body({ state: 'PRX' }),
+      // o MARCADOR dentro do campo recusado: o zod não pode ecoá-lo
+      body({ codeValue: { x: MARK } }), body({ codeValue: [MARK] }), body({ codeValue: null }), body({ validFrom: MARK })]) {
       const r = await request(createApp(ctx())).post('/v1/provider/fiscal-credentials').set(auth()).send(b)
       expect([r.status, r.body.code]).toEqual([400, 'VALIDATION_FAILED'])
       expectNoValueLeak(r)
     }
+    // JSON malformado que contém o marcador → 400 de texto fixo (errorMiddleware), sem eco
+    const bad = await request(createApp(ctx())).post('/v1/provider/fiscal-credentials').set(auth())
+      .set('Content-Type', 'application/json').send(`{"codeValue":"${MARK}",`)
+    expect([bad.status, bad.body.code]).toEqual([400, 'VALIDATION_FAILED'])
+    expectNoValueLeak(bad)
     expect(saveM).not.toHaveBeenCalled()
   })
 
-  it('10 · erro INESPERADO do núcleo (500 com ref, pelo logger interno → console) também não leva o valor', async () => {
-    saveM.mockRejectedValue(new Error('falha qualquer'))
+  it('10 · erro INESPERADO com o valor na mensagem e no `sql` → 503 sem ref, e nada do texto vai ao log nem ao console', async () => {
+    saveM.mockRejectedValue(rawDbError('ER_TRUNCATED_WRONG_VALUE_FOR_FIELD', 1366))
     const r = await request(createApp(ctx())).post('/v1/provider/fiscal-credentials').set(auth()).send(body())
-    expect([r.status, r.body.code]).toEqual([500, 'INTERNAL'])
+    expect([r.status, r.body.code]).toEqual([503, 'FISCAL_CODE_STORE_FAILED'])
     expectNoValueLeak(r)
+    saveM.mockRejectedValue(new TypeError(`bug com ${MARK}`))
+    const t = await request(createApp(ctx())).post('/v1/provider/fiscal-credentials').set(auth()).send(body())
+    expect([t.status, t.body.code]).toEqual([503, 'FISCAL_CODE_STORE_FAILED'])
+    expectNoValueLeak(t)
   })
 })
 

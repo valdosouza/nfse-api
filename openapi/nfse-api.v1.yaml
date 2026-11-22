@@ -493,6 +493,7 @@ paths:
                   data: { type: array, items: { $ref: '#/components/schemas/ProviderFiscalCredential' } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/ProviderForbidden' }
+        '409': { $ref: '#/components/responses/Busy' }
         '503': { $ref: '#/components/responses/FiscalCodeUnavailable' }
     post:
       tags: [fornecedor]
@@ -551,7 +552,7 @@ paths:
         '404':
           description: FISCAL_CODE_NOT_FOUND — nenhuma credencial viva e não encerrada com esta chave
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
-        '409': { $ref: '#/components/responses/FiscalCodeConflict' }
+        '409': { $ref: '#/components/responses/Busy' }
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '503': { $ref: '#/components/responses/FiscalCodeUnavailable' }
@@ -606,8 +607,13 @@ components:
     MasterKeyUnavailable:
       description: FISCAL_MASTER_KEY_UNAVAILABLE — chave-mestra do cofre ausente na instância (o A1 não cifra/abre)
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Busy:
+      description: RESOURCE_BUSY — contenção no banco fiscal; tente de novo
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
     ProviderForbidden:
-      description: VENDOR_SUPER_REQUIRED — só o super com vínculo à Setes mantém a credencial do fornecedor (D-NE224)
+      description: >-
+        VENDOR_SUPER_REQUIRED — só o super com vínculo à Setes mantém a credencial do fornecedor (D-NE224), e com a SESSÃO na institution
+        da Setes: o super logado na institution de um cliente troca de estabelecimento antes
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
     FiscalCodeInvalid:
       description: >-
@@ -618,7 +624,7 @@ components:
       description: FISCAL_CODE_CONFLICT (já existe credencial com o mesmo início na mesma chave) · RESOURCE_BUSY (contenção — tente de novo)
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
     FiscalCodeUnavailable:
-      description: FISCAL_CODE_STORE_FAILED — o banco fiscal não respondeu (sem SQL nem valor na resposta)
+      description: FISCAL_CODE_STORE_FAILED — o banco fiscal falhou (qualquer erro do banco; sem SQL nem valor na resposta ou no log)
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
   schemas:
     Error:
@@ -658,7 +664,7 @@ components:
         type:        { type: string, maxLength: 20 }
         codeId:      { type: string, maxLength: 10 }
         codeValue:   { type: string, writeOnly: true, description: 'o código secreto (1 a 100 ASCII visíveis, sem espaço); só de escrita — D-NE223/D-NE224' }
-        validFrom:   { type: string, format: date-time, description: instante ISO com fuso }
+        validFrom:   { type: string, format: date-time, description: 'instante ISO com fuso; guardado em UTC com precisão de SEGUNDOS (a fração é cortada)' }
         validUntil:  { type: string, format: date-time, description: opcional }
     ProviderFiscalCredentialEnd:
       type: object
