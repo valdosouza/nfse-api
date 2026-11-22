@@ -41,8 +41,11 @@ async function main(): Promise<void> {
     const captured: { label: string; sql: string; params: unknown[] }[] = []
     const capture = (label: string) => ({
       query: async (sql: string, params: unknown[] = []) => {
+        // DEPLOY.E1.P5 (gate adversarial, M1): só entra na lista a SQL que RESPONDEU. Com o núcleo 5.0.0 o emitter pergunta também a view
+        // da NF-e; num banco sem essa família o 1146 é tolerado lá dentro (0 legítimo — D-NE76), e a repetição abaixo não pode reexecutá-la
+        const result = await pool.query(sql, params)
         captured.push({ label: `${label}${captured.filter(c => c.label.startsWith(label)).length ? ' (2)' : ''}`, sql, params })
-        return pool.query(sql, params)
+        return result
       },
     }) as any
 

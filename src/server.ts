@@ -1,7 +1,7 @@
 import 'dotenv/config'
 import {
   logger, assertSessionInvariants, assertIssuerModelDomainEnforced, assertIssuerEnvironmentDomainEnforced, assertFamilyViewsReadable, runMigrations,
-  access, assertFiscalCodeDomainsEnforced,
+  access, assertFiscalCodeDomainsEnforced, SERVICE_VOICE_READING,
 } from 'fiscal-api'
 import { contextFromEnv } from './context'
 import { createApp } from './app'
@@ -28,7 +28,9 @@ async function main(): Promise<void> {
   await assertIssuerEnvironmentDomainEnforced(ctx.pool)    // D-F120: CHECK BINÁRIO do ambiente da habilitação (migration 005 do núcleo)
   await assertServiceVoiceDomainsEnforced(ctx.pool)        // D-F107/D-F120: kind (lista da família), source e ambiente da tentativa (005 desta API)
   await assertServiceStrictSession(ctx.pool)               // D-NE172: a sessão é ESTRITA — a chave de 51 posições é RECUSADA (1406), nunca cortada calada
-  await assertFamilyViewsReadable(ctx.pool, ctx.fiscalDb)  // D-F113: as views de cada família do catálogo respondem ao SELECT publicado
+  // D-F113 + D-NE158 (núcleo 5.0.0: sem valor padrão — cada chamador passa o que confere): esta API confere SÓ a view de tentativas da
+  // NFS-e. NUNCA o catálogo inteiro: ele lista também a família da NF-e, e o boot daqui ficaria preso à migration da nfe-api (D-NE76)
+  await assertFamilyViewsReadable(ctx.pool, ctx.fiscalDb, [SERVICE_VOICE_READING])
   // CRED.E1.P1 (D-F45/D-F120 + D-NE224): o domínio da configuração fiscal por UF (migration 006 do núcleo) — esta API grava a credencial do
   // fornecedor. O boot NÃO exige o CSRT (sobe sem ele, para cadastrá-lo pela rota): a recusa por falta de credencial é da nfe-api (D-NE223)
   await assertFiscalCodeDomainsEnforced(ctx.pool)

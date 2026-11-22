@@ -121,7 +121,9 @@ paths:
       summary: Apaga o A1 (as habilitações ficam e deixam de estar habilitadas)
       description: >-
         Recusa com transmissão VIVA (em voo, S ou K) em qualquer ambiente — sem o A1 nenhuma reconciliação fecha
-        (409 FISCAL_ISSUER_HAS_LIVE_TRANSMISSIONS; trava a habilitação SE, serializando com a reserva).
+        (409 FISCAL_ISSUER_HAS_LIVE_TRANSMISSIONS; trava a habilitação SE, serializando com a reserva). As vivas são as de
+        TODAS as famílias instaladas no banco fiscal (núcleo 5.0.0): uma NF-e viva do mesmo estabelecimento também recusa, mesmo
+        sem aparecer nas telas da NFS-e.
       responses:
         '200': { description: ok }
         '409': { $ref: '#/components/responses/Conflict' }
