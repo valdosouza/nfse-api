@@ -95,7 +95,7 @@ describe('a sonda do boot (D-F107/D-F120)', () => {
     expect(at('await runMigrations(')).toBeGreaterThan(0)
     for (const call of ['await assertIssuerModelDomainEnforced(ctx.pool)', 'await assertIssuerEnvironmentDomainEnforced(ctx.pool)',
       'await assertServiceVoiceDomainsEnforced(ctx.pool)', 'await assertServiceStrictSession(ctx.pool)',
-      'await assertFamilyViewsReadable(ctx.pool, ctx.fiscalDb)']) {
+      'await assertFamilyViewsReadable(ctx.pool, ctx.fiscalDb)', 'await assertFiscalCodeDomainsEnforced(ctx.pool)']) {
       expect([call, at(call) > at('await runMigrations(')]).toEqual([call, true])
     }
     // D-NE172: a prova da sessão estrita vem DEPOIS da conferência dos invariantes (que já exige o modo) e antes de ouvir

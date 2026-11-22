@@ -1,7 +1,7 @@
 import 'dotenv/config'
 import {
   logger, assertSessionInvariants, assertIssuerModelDomainEnforced, assertIssuerEnvironmentDomainEnforced, assertFamilyViewsReadable, runMigrations,
-  access,
+  access, assertFiscalCodeDomainsEnforced,
 } from 'fiscal-api'
 import { contextFromEnv } from './context'
 import { createApp } from './app'
@@ -29,6 +29,9 @@ async function main(): Promise<void> {
   await assertServiceVoiceDomainsEnforced(ctx.pool)        // D-F107/D-F120: kind (lista da família), source e ambiente da tentativa (005 desta API)
   await assertServiceStrictSession(ctx.pool)               // D-NE172: a sessão é ESTRITA — a chave de 51 posições é RECUSADA (1406), nunca cortada calada
   await assertFamilyViewsReadable(ctx.pool, ctx.fiscalDb)  // D-F113: as views de cada família do catálogo respondem ao SELECT publicado
+  // CRED.E1.P1 (D-F45/D-F120 + D-NE224): o domínio da configuração fiscal por UF (migration 006 do núcleo) — esta API grava a credencial do
+  // fornecedor. O boot NÃO exige o CSRT (sobe sem ele, para cadastrá-lo pela rota): a recusa por falta de credencial é da nfe-api (D-NE223)
+  await assertFiscalCodeDomainsEnforced(ctx.pool)
   // costura A1 (D-AU3/D-AU12): a sessão viva lida em TODA rota — sem a vw_user_link (script sql/70) ou sem o GRANT nela, o serviço NÃO sobe
   logger.info(`Sessão viva (setes_central.vw_user_link): ${await access.assertSessionViewReadable(ctx.pool)}`)
   if (ctx.keyring.currentVersion === null) logger.warn('FISCAL_MASTER_KEYS ausente — o A1 não abre (operações fiscais respondem 503) até configurar')
