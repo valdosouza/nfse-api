@@ -26,6 +26,7 @@ GRANT SELECT ON `setes\_%`.* TO 'fiscal_api'@'%';
 --     garante a linha específica (SELECT + SHOW VIEW) → tira o SELECT dela (fica o SHOW VIEW — se ficasse vazia o motor APAGAVA a linha e o
 --     curinga voltava a valer) → SELECT tabela a tabela. A LISTA vem de VARREDURA do código de produção do núcleo e da nfse-api — cerca
 --     `src/__tests__/grants-d-au12.test.ts` (tabela de setes_central lida pelo código ⊂ esta lista; tabela nova lida = linha nova aqui).
+--     A nfe-api usa o MESMO usuário e a cerca dela lê esta lista: o que só ela lê também entra aqui (DEPLOY.E1.P7).
 --     Conferência: com o usuário do serviço, `SELECT password FROM setes_central.tb_user` tem de dar ER_TABLEACCESS_DENIED_ERROR.
 GRANT SELECT, SHOW VIEW ON `setes_central`.* TO 'fiscal_api'@'%';
 REVOKE SELECT ON `setes_central`.* FROM 'fiscal_api'@'%';
@@ -38,6 +39,12 @@ GRANT SELECT ON `setes_central`.`tb_city`                 TO 'fiscal_api'@'%';
 GRANT SELECT ON `setes_central`.`tb_state`                TO 'fiscal_api'@'%';
 GRANT SELECT ON `setes_central`.`tb_interface`            TO 'fiscal_api'@'%';
 GRANT SELECT ON `setes_central`.`tb_interface_has_config` TO 'fiscal_api'@'%';
+-- DEPLOY.E1.P7 (PM-21, Valdo 2026-11-23): as três abaixo são da fonte de fatos da MERCADORIA (nfe-api:NFE.E5.P2.T1 — o leitor nasce lá;
+-- a cerca da nfe-api lê ESTA lista): unidade (uCom/uTrib), forma de pagamento (`id_nfce` → tPag) e CFOP (natOp — D-NE268). Ficam ANTES
+-- das views: `scripts/carga/semear.ts` (`grantsDaCarga`) corta em `;` e perde a instrução que vier depois de um comentário de fim de linha.
+GRANT SELECT ON `setes_central`.`tb_measure`              TO 'fiscal_api'@'%';
+GRANT SELECT ON `setes_central`.`tb_payment_types`        TO 'fiscal_api'@'%';
+GRANT SELECT ON `setes_central`.`tb_cfop`                 TO 'fiscal_api'@'%';
 GRANT SELECT ON `setes_central`.`vw_user_link`            TO 'fiscal_api'@'%';
 GRANT SELECT ON `setes_central`.`vw_interface_catalog`    TO 'fiscal_api'@'%';   -- D-F240: access.licensedKeys (pacote 2.0.0)
 -- (MySQL 8 apenas, se a leitura travante for recusada:)

@@ -18,6 +18,10 @@ GRANT SELECT ON `setes_central`.`tb_city`                 TO 'fiscal_api'@'local
 GRANT SELECT ON `setes_central`.`tb_state`                TO 'fiscal_api'@'localhost';
 GRANT SELECT ON `setes_central`.`tb_interface`            TO 'fiscal_api'@'localhost';
 GRANT SELECT ON `setes_central`.`tb_interface_has_config` TO 'fiscal_api'@'localhost';
+-- DEPLOY.E1.P7: fonte de fatos da mercadoria (nfe-api)
+GRANT SELECT ON `setes_central`.`tb_measure`              TO 'fiscal_api'@'localhost';
+GRANT SELECT ON `setes_central`.`tb_payment_types`        TO 'fiscal_api'@'localhost';
+GRANT SELECT ON `setes_central`.`tb_cfop`                 TO 'fiscal_api'@'localhost';
 GRANT SELECT ON `setes_central`.`vw_user_link`            TO 'fiscal_api'@'localhost';
 GRANT SELECT ON `setes_central`.`vw_interface_catalog`    TO 'fiscal_api'@'localhost';   -- D-F240: access.licensedKeys (pacote 2.0.0)
 
@@ -32,6 +36,10 @@ GRANT SELECT ON `setes_central`.`tb_city`                 TO 'fiscal_api'@'127.0
 GRANT SELECT ON `setes_central`.`tb_state`                TO 'fiscal_api'@'127.0.0.1';
 GRANT SELECT ON `setes_central`.`tb_interface`            TO 'fiscal_api'@'127.0.0.1';
 GRANT SELECT ON `setes_central`.`tb_interface_has_config` TO 'fiscal_api'@'127.0.0.1';
+-- DEPLOY.E1.P7: fonte de fatos da mercadoria (nfe-api)
+GRANT SELECT ON `setes_central`.`tb_measure`              TO 'fiscal_api'@'127.0.0.1';
+GRANT SELECT ON `setes_central`.`tb_payment_types`        TO 'fiscal_api'@'127.0.0.1';
+GRANT SELECT ON `setes_central`.`tb_cfop`                 TO 'fiscal_api'@'127.0.0.1';
 GRANT SELECT ON `setes_central`.`vw_user_link`            TO 'fiscal_api'@'127.0.0.1';
 GRANT SELECT ON `setes_central`.`vw_interface_catalog`    TO 'fiscal_api'@'127.0.0.1';   -- D-F240: access.licensedKeys (pacote 2.0.0)
 
@@ -46,5 +54,9 @@ GRANT SELECT ON `setes_central`.`tb_city`                 TO 'fiscal_api'@'::1';
 GRANT SELECT ON `setes_central`.`tb_state`                TO 'fiscal_api'@'::1';
 GRANT SELECT ON `setes_central`.`tb_interface`            TO 'fiscal_api'@'::1';
 GRANT SELECT ON `setes_central`.`tb_interface_has_config` TO 'fiscal_api'@'::1';
+-- DEPLOY.E1.P7: fonte de fatos da mercadoria (nfe-api)
+GRANT SELECT ON `setes_central`.`tb_measure`              TO 'fiscal_api'@'::1';
+GRANT SELECT ON `setes_central`.`tb_payment_types`        TO 'fiscal_api'@'::1';
+GRANT SELECT ON `setes_central`.`tb_cfop`                 TO 'fiscal_api'@'::1';
 GRANT SELECT ON `setes_central`.`vw_user_link`            TO 'fiscal_api'@'::1';
 GRANT SELECT ON `setes_central`.`vw_interface_catalog`    TO 'fiscal_api'@'::1';   -- D-F240: access.licensedKeys (pacote 2.0.0)

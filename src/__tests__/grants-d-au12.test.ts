@@ -3,6 +3,7 @@
 // só as tabelas que o código LÊ — nunca `tb_user` (o hash da senha), a recuperação de senha, o vínculo ou as concessões (o veredito vem
 // das views, SQL SECURITY DEFINER). CERCA: toda tabela/view de `setes_central` citada pelo código de PRODUÇÃO do núcleo e da nfse-api
 // está na lista do `ops/grants.sql` (tabela nova lida = linha nova no GRANT, junto) — e a lista nunca abre o que é da credencial/acesso.
+// A lista serve também a nfe-api (mesmo usuário; a cerca dela lê este `grants.sql`): o que só ela lê é fixado por nome (DEPLOY.E1.P7).
 // ⚠️ O curinga `setes\_%` casa `setes_central`: a seção exige a linha ESPECÍFICA do central SEM o SELECT (provado em banco descartável
 // pelo setes-api — `scripts/prove-user-access-views.ts`, item 6).
 import fs from 'fs'
@@ -81,6 +82,26 @@ describe('D-AU12 — GRANT do usuário fiscal em setes_central: só o que o cód
     const granted = grantedTables('%')
     const missing = [...centralReads()].filter(([name]) => !granted.has(name)).map(([name, files]) => `${name} ← ${[...files].join(', ')}`)
     expect(missing).toEqual([])
+  })
+
+  // DEPLOY.E1.P7 (PM-21, Valdo 2026-11-23): o usuário é o MESMO da nfe-api e a cerca dela (`acesso-e1-p1-sessao-viva.test.ts`) lê esta
+  // lista. As três tabelas da fonte de fatos da mercadoria (nfe-api:NFE.E5.P2.T1) não são lidas pelo código daqui — por isso a varredura
+  // acima não as protege, e este teste as fixa (quando o leitor de lá existir, tirar uma linha quebra também a suíte da nfe-api).
+  const NFE_ONLY = ['tb_measure', 'tb_payment_types', 'tb_cfop']
+  it('as tabelas da fonte de fatos da nfe-api (unidade, forma de pagamento, CFOP) estão na lista, nos quatro hosts', () => {
+    for (const host of ['%', 'localhost', '127.0.0.1', '::1']) {
+      const granted = grantedTables(host)
+      expect([host, NFE_ONLY.filter(t => !granted.has(t))]).toEqual([host, []])
+    }
+  })
+
+  // Gate adversarial da DEPLOY.E1.P7: o ambiente de carga monta os GRANTs por `grantsDaCarga` (`scripts/carga/semear.ts`), que tira as
+  // linhas de comentário, corta em `;` e só aceita o pedaço que COMEÇA pela instrução — uma linha posta depois de um comentário de fim
+  // de linha (o `-- D-F240` da `vw_interface_catalog`) some em silêncio. As três têm de sobreviver a essa leitura.
+  it('as três chegam ao ambiente de carga (a leitura de `grantsDaCarga` não as perde)', () => {
+    const { grantsDaCarga } = require('../../scripts/carga/semear')
+    const carga: string[] = grantsDaCarga(path.resolve(__dirname, '../..'), { fiscalDb: 'fiscal_api_carga', fiscalPassword: 'x' })
+    expect(NFE_ONLY.filter(t => !carga.some(s => s.startsWith(`GRANT SELECT ON \`setes_central\`.\`${t}\``)))).toEqual([])
   })
 
   it('o GRANT não abre o que é da credencial, do vínculo ou das concessões (o veredito vem da view)', () => {
