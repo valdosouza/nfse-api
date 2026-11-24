@@ -43,6 +43,10 @@ export const FISCAL_COPY_EXCEPTIONS: Readonly<Record<string, string>> = Object.f
   tb_fiscal_code_requirement:         'semeada pela migration 006 na própria cópia',
   tb_provider_fiscal_credential:      'valor do CSRT em texto puro (D-NE223) — não sai do fiscal_api real',
   tb_establishment_fiscal_credential: 'valor do código do contribuinte em texto puro (D-NE223) — não sai do fiscal_api real',
+  // DEPLOY.E1.P9 (2026-11-24) — núcleo 5.1.0, migration 008 (D-NE255/D-NE257): o ÚLTIMO NÚMERO da NF-e/NFC-e por série e ambiente. É
+  // tabela de OUTRA família (modelos 55/65 — CHECK da 008): nenhum código da nfse-api a lê ou grava, e os ataques daqui são da NFS-e.
+  // A cópia nasce com ela VAZIA (a 008 só cria); o real segue vigiado pelo CHECKSUM de toda tabela-base (D-F231).
+  tb_fiscal_number_sequence:          'contador da NF-e (outra família) — a NFS-e não lê nem grava; a cópia nasce vazia',
 })
 
 /** Tabelas que cada migration da família CRIA (`CREATE TABLE …` fora de comentário), com o projeto e a versão. */
