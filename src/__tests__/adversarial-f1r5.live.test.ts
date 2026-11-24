@@ -764,7 +764,7 @@ d('GATE ADVERSARIAL r5 — re-prova do delta da Rodada 4 (cópia descartável fi
         expect(h.user).not.toMatch(new RegExp(`^${setesUser}@`))
         expect(h.realBaseTables).toEqual(expect.arrayContaining(h.checked))
       })
-      // D-F53 (= Q-F53 (a), Valdo 2026-10-04; GRANT completado nos 4 hosts em 2026-10-10): o ERP é protegido por PRIVILÉGIO —
+      // D-F53 (= Q-F53 (a), Valdo 2026-10-04; GRANT de 2026-10-10 conforme registrado; hoje a conta é só a do host % — `ops/grants.sql` seção 5, DEPLOY.E1.P8): o ERP é protegido por PRIVILÉGIO —
       // provado pelos GRANTs do usuário E pela recusa do próprio MySQL
       it('[D-F53] …e o pool do ataque NÃO tem privilégio de escrita no ERP nem global (prevenção por privilégio)', () => {
         expect(h.grants.some((g: string) => /ON \*\.\*/.test(g) && !/^GRANT USAGE ON/.test(g))).toBe(false)

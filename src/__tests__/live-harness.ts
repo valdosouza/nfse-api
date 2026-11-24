@@ -4,7 +4,7 @@
 // cenário R2-2 que a D-F39 fechou). Agora cada suíte trabalha numa CÓPIA DESCARTÁVEL (`fiscal_api_adv_*`): migrations do
 // núcleo + família, as tabelas copiadas linha a linha, a virada aplicada SÓ na cópia; o ERP continua só LIDO (a nota é
 // travada por instantes, como em toda transmissão). No fim a cópia é apagada e o CHECKSUM do `fiscal_api` REAL tem de
-// ser o mesmo do início — senão a suíte falha. D-F53 (= Q-F53 (a), Valdo 2026-10-04; GRANT completado nos 4 hosts com o "vai" de 2026-10-10): o ATAQUE roda com o usuário
+// ser o mesmo do início — senão a suíte falha. D-F53 (= Q-F53 (a), Valdo 2026-10-04; GRANT de 2026-10-10 conforme registrado; hoje a conta é só a do host % — `ops/grants.sql` seção 5, DEPLOY.E1.P8): o ATAQUE roda com o usuário
 // do SERVIÇO (`fiscal_api`, do .env da nfse-api — só SELECT no ERP; ALL nas cópias `fiscal_api_adv*` por GRANT do dev,
 // `ops/grants.sql` seção 1b): a defesa do ERP volta a ser por CONSTRUÇÃO. O DONO (usuário do ../setes-api/.env) só cria,
 // copia e apaga a cópia e vigia os CHECKSUMs; o ENSAIO do ato (`--cutover` sem `--vai`, que escreve no ERP e desfaz) é o

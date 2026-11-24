@@ -97,13 +97,20 @@ GRANT ALL PRIVILEGES ON `fiscal\_api\_adv%`.* TO 'fiscal_api'@'%';
 --    deleted='S'`) — a única escrita de uma API fiscal no ERP (lista fechada da D-F31). Com o usuário 'fiscal_api' esse
 --    UPDATE é negado e o ato INTEIRO volta atrás (nada vira) — o GRANT acima NÃO ganha escrita no ERP.
 
--- 5. D-F53 — SÓ NO DEV (achado de 2026-10-10 ao rodar os ataques ao vivo): as conexões LOCAIS do MySQL autenticam como
---    'fiscal_api'@'localhost' (o host mais específico vence), que NÃO herda o GRANT do '@%' da seção 1b — no dev o mesmo
---    GRANT vai também para os hosts locais do usuário. Aplicado em 2026-10-10 ("vai" do Valdo) nos quatro hosts
---    (localhost, 127.0.0.1, ::1, %) e provado: cria/escreve/apaga a cópia; UPDATE no ERP → ER_TABLEACCESS_DENIED_ERROR;
---    banco fora do padrão → ER_DBACCESS_DENIED_ERROR. O '@%' já tinha `fiscal\_api\_adv\_%` desde 2026-10-04 (a seção 1b,
---    aplicada pelo Valdo naquela sessão). NUNCA em produção: lá o usuário só existe no '@%' (GRANT a usuário inexistente
---    criaria um usuário sem senha no MariaDB).
--- GRANT ALL PRIVILEGES ON `fiscal\_api\_adv%`.* TO 'fiscal_api'@'localhost';
--- GRANT ALL PRIVILEGES ON `fiscal\_api\_adv%`.* TO 'fiscal_api'@'127.0.0.1';
--- GRANT ALL PRIVILEGES ON `fiscal\_api\_adv%`.* TO 'fiscal_api'@'::1';
+-- 5. D-F53 — SÓ NO DEV: NENHUM GRANT a host local (DEPLOY.E1.P8, PM-22 — Valdo 2026-11-24).
+--    FATO (leitura de 2026-11-24 pela conexão do serviço, MariaDB 10.4.20): entrando por localhost, 127.0.0.1 e ::1, o
+--    `SELECT CURRENT_USER()` responde a conta do host '%' — a que a seção 1 deste script cria. A conexão local autentica na conta
+--    do host '%', e ela já tem a seção 1a e a 1b; nenhuma conta de host local responde (a tabela de contas do servidor não foi lida).
+--    HISTÓRIA: conforme registrado em 2026-10-10 (achado ao rodar os ataques ao vivo; "vai" do Valdo), o GRANT da seção 1b foi
+--    aplicado também nos hosts locais do usuário, onde a conexão local autenticava; em 2026-10-31 (D-AU12) uma leitura de permissões
+--    registrou linhas desses hosts, e o script só do dev que repetiria a seção 1a neles ficou para a janela — não há registro de que
+--    tenha sido aplicado. Hoje essas contas não respondem; o porquê não foi achado. Esse script foi APAGADO.
+--    ⚠️ CONHECIMENTO NEGATIVO (incidente de 2026-11-23 no dev): GRANT a uma conta que NÃO existe CRIA a conta, SEM SENHA, quando o
+--    `sql_mode` do servidor não tem `NO_AUTO_CREATE_USER` (o do dev não tem; ligá-lo é defesa a mais, não dispensa a conferência).
+--    A conta nova, de host mais específico, passa a vencer a do '%' e o login do serviço é recusado; o conserto foi `DROP USER` da
+--    conta de host local criada pelo GRANT — NUNCA a do '%'. O texto de um erro de permissão mostra a ORIGEM da conexão, não a
+--    conta: antes de QUALQUER GRANT, em qualquer ambiente, conferir com `SELECT CURRENT_USER()` pela conexão do serviço. A resposta
+--    esperada é sempre a conta do host '%'; qualquer outra é motivo para PARAR e investigar, não para conceder a ela.
+--    A cerca `src/__tests__/grants-d-au12.test.ts` só aceita, em qualquer arquivo de `ops/` (comentário também), conta escrita
+--    na forma exata deste arquivo, com o host '%'; arroba fora dessa forma, SQL montado em tempo de execução e escrita direta nas
+--    tabelas de contas do servidor são recusados.
