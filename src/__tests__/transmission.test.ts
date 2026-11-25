@@ -14,7 +14,7 @@ import os from 'os'
 import path from 'path'
 import * as fiscal from 'fiscal-api'
 import * as repo from '../nfse/repository'
-import { FsFiscalStorage, AuthorityHttpError, HttpError, MasterKeyRing } from 'fiscal-api'
+import { FsFiscalStorage, FiscalFileConflictError, AuthorityHttpError, HttpError, MasterKeyRing } from 'fiscal-api'
 import {
   transmitServiceInvoice, refreshServiceTransmission, cancelServiceInvoiceAtAuthority, reconfirmBeforeLocalCancel,
   refreshOpenServiceTransmissions, getServiceFiscalView, readNfseXml, resetMunicipalTermsCache, NfseDeps, CEILING_LOOKUP_TIMEOUT_MS,
@@ -97,6 +97,9 @@ const chainUntrusted = () => new AuthorityHttpError(409, 'Certificado do servido
 let headerRow: any
 let locked: any
 beforeEach(() => {
+  // DEPLOY.E1.P10 (núcleo 5.2.0, gravação única): cada teste parte do arquivo fiscal VAZIO — o mesmo nome com outro conteúdo, deixado por um
+  // teste anterior, viraria `FiscalFileConflictError`. Apaga o CONTEÚDO e mantém a raiz (o `save` recusa raiz ausente).
+  for (const e of fs.readdirSync(storageRoot)) fs.rmSync(path.join(storageRoot, e), { recursive: true, force: true })
   jest.clearAllMocks()
   resetMunicipalTermsCache()
   headerRow = header()
@@ -162,7 +165,7 @@ describe('transmitir — trava da nota → DPS da vida → fisco FORA da transa�
     expect(repo.fillAuthorityData).toHaveBeenCalledWith(itxLike(conn, 1, INVOICE), 1, { accessKey: KEY, nfseNumber: '123', dhProc: '2026-09-21 13:15:30' })
     expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(itxLike(conn, 1, INVOICE), 1, A.userId, expect.objectContaining({ kind: 'A', source: 'P', dh: '2026-09-21 13:15:30' }))
     const files = fs.readdirSync(path.join(storageRoot, CNPJ, 'H'), { recursive: true } as any).map(String)
-    expect(files.some(f => f.endsWith(`${DPS_ID}-dps.xml`))).toBe(true)
+    expect(files.some(f => f.endsWith(`${DPS_ID}-t1-dps.xml`))).toBe(true)                // NFSE-API#2: um DPS por tentativa
     expect(files.some(f => f.endsWith(`${KEY}-nfse.xml`))).toBe(true)
     // D-F31: nenhuma escrita no ERP (só a trava) — a única SQL na conexão fora da fiscal é o SELECT do ramo
     expect(conn.query.mock.calls.filter(([sql]) => /setes_setes/.test(sql) && !/^\s*SELECT/i.test(sql))).toEqual([])
@@ -791,7 +794,7 @@ describe('D-F241 — XML da NFS-e no layout por tipo, série e dia (DEPLOY.E1.P3
     } finally {
       jest.useRealTimers()
     }
-    expect(fs.readdirSync(dayDir('H')).sort()).toEqual([`${DPS_ID}-dps.xml`, `${KEY}-nfse.xml`].sort())
+    expect(fs.readdirSync(dayDir('H')).sort()).toEqual([`${DPS_ID}-t1-dps.xml`, `${KEY}-nfse.xml`].sort())
     expect(fs.existsSync(path.join(storageRoot, CNPJ, 'H', '2026'))).toBe(false)              // nada no layout antigo
     for (const serie of ['00001', null]) {
       ;(repo.listLifeTransmissions as jest.Mock).mockResolvedValue({
@@ -808,7 +811,7 @@ describe('D-F241 — XML da NFS-e no layout por tipo, série e dia (DEPLOY.E1.P3
     await transmitServiceInvoice(deps, A, webRef(A, INVOICE))
     expect(fs.readdirSync(path.join(storageRoot, CNPJ, 'H', 'nfse'))).toEqual(['2'])
     const files = fs.readdirSync(path.join(storageRoot, CNPJ, 'H', 'nfse', '2'), { recursive: true } as any).map(String)
-    expect(files.some(f => f.endsWith(`${id2}-dps.xml`)) && files.some(f => f.endsWith(`${KEY}-nfse.xml`))).toBe(true)
+    expect(files.some(f => f.endsWith(`${id2}-t1-dps.xml`)) && files.some(f => f.endsWith(`${KEY}-nfse.xml`))).toBe(true)
   })
 
   it('a consulta regrava o XML que falta na pasta da série da DPS; tentativa SEM série → não grava e só avisa (Q-N38: falhar ao gravar não derruba a consulta)', async () => {
@@ -823,5 +826,82 @@ describe('D-F241 — XML da NFS-e no layout por tipo, série e dia (DEPLOY.E1.P3
     expect(r).toMatchObject({ kind: 'A' })
     expect(fs.existsSync(path.join(storageRoot, CNPJ))).toBe(false)
     expect(fiscal.logger.warn).toHaveBeenCalledWith('XML da NFS-e não gravado na consulta', expect.objectContaining({ err: expect.stringMatching(/sem série da DPS/) }))
+  })
+})
+
+// DEPLOY.E1.P10 (núcleo 5.2.0 — ficha projetos/nfse-api/GERAL/ficha-deploy-e1-p10-adocao-pacote-5-2-0.md no Vault): o arquivo fiscal é de
+// GRAVAÇÃO ÚNICA (`FsFiscalStorage.save` — o mesmo nome com outro conteúdo lança `FiscalFileConflictError` e nada é tocado). Na NFS-e o
+// conflito só AVISA: a nota segue. E o DPS assinado é UM POR TENTATIVA (NFSE-API#2), porque o Id do DPS é o mesmo na vida da nota.
+describe('DEPLOY.E1.P10 — gravação única do arquivo fiscal (núcleo 5.2.0) e DPS por tentativa (NFSE-API#2)', () => {
+  const fileKey = { cnpj: CNPJ, kind: 'nfse' as const, serie: '1', environment: 'H' as const, zone: 'America/Sao_Paulo' }
+  const OTHER = '<NFSe><outro>conteúdo que já estava no arquivo</outro></NFSe>'
+  const allFiles = () => (fs.readdirSync(path.join(storageRoot, CNPJ, 'H', 'nfse', '1'), { recursive: true } as any) as unknown as string[])
+    .map(String).filter(f => !f.includes('.once') && f.endsWith('.xml'))
+  const readByName = (name: string) => {
+    const rel = allFiles().filter(f => f.endsWith(name))
+    expect(rel).toHaveLength(1)
+    return fs.readFileSync(path.join(storageRoot, CNPJ, 'H', 'nfse', '1', rel[0]), 'utf8')
+  }
+
+  it('transmissão: o `-nfse.xml` já existe com OUTRO conteúdo → a nota é autorizada do mesmo jeito, o arquivo antigo fica intacto e o conflito vira AVISO (nunca calado)', async () => {
+    deps.storage.save(fileKey, `${KEY}-nfse.xml`, OTHER, new Date('2026-09-20T12:00:00Z'))
+    adapter.transmit.mockResolvedValue({ accessKey: KEY, nfseNumber: '123', dhProc: '2026-09-21T10:15:30-03:00', nfseXml: NFSE_XML, raw: {} })
+    const r = await transmitServiceInvoice(deps, A, webRef(A, INVOICE))
+    expect(r).toMatchObject({ kind: 'A', accessKey: KEY })
+    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(itxLike(conn, 1, INVOICE), 1, A.userId, expect.objectContaining({ kind: 'A' }))
+    expect(readByName(`${KEY}-nfse.xml`)).toBe(OTHER)                                        // um arquivo só, o que já estava
+    expect(fiscal.logger.warn).toHaveBeenCalledWith('XML da NFS-e autorizada não gravado no arquivo fiscal',
+      expect.objectContaining({ name: `${KEY}-nfse.xml`, err: expect.stringMatching(/já existe com outro conteúdo \(gravação única\)/) }))
+  })
+
+  it('o erro do núcleo é o `FiscalFileConflictError` (code FISCAL_FILE_CONFLICT); os MESMOS bytes devolvem o caminho que já existe, sem erro', () => {
+    const first = deps.storage.save(fileKey, `${KEY}-nfse.xml`, NFSE_XML, new Date('2026-09-21T13:15:30Z'))
+    expect(deps.storage.save(fileKey, `${KEY}-nfse.xml`, NFSE_XML, new Date('2026-09-25T13:15:30Z'))).toBe(first)   // outro dia, mesmo nome
+    let caught: unknown
+    try { deps.storage.save(fileKey, `${KEY}-nfse.xml`, OTHER, new Date('2026-09-21T13:15:30Z')) } catch (err) { caught = err }
+    expect(caught).toBeInstanceOf(FiscalFileConflictError)
+    expect((caught as FiscalFileConflictError).code).toBe('FISCAL_FILE_CONFLICT')
+    expect(fs.readFileSync(first, 'utf8')).toBe(NFSE_XML)
+    expect(allFiles()).toHaveLength(1)
+  })
+
+  it('reenvio na MESMA vida (1ª rejeitada, 2ª autorizada): o Id do DPS é o mesmo e ficam DOIS arquivos, `-t1-dps.xml` e `-t2-dps.xml`, cada um com o que foi dito ao fisco naquela tentativa', async () => {
+    // o `dhEmi` do DPS é a hora do envio: a 2ª tentativa, minutos depois, diz ao fisco um XML DIFERENTE com o MESMO Id
+    let r: Awaited<ReturnType<typeof transmitServiceInvoice>>
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] })
+    try {
+      jest.setSystemTime(new Date('2026-09-21T13:00:00Z'))
+      adapter.transmit.mockRejectedValueOnce(rejected())
+      await expect(transmitServiceInvoice(deps, A, webRef(A, INVOICE))).rejects.toMatchObject({ code: 'FISCAL_DPS_REJECTED' })
+      ;(repo.getLifeDps as jest.Mock).mockResolvedValue({ lifeEvent: 1, serie: '1', dpsNumber: 42, dpsId: DPS_ID })
+      ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'R', accessKey: null }))
+      ;(repo.insertTransmission as jest.Mock).mockResolvedValue(2)
+      jest.setSystemTime(new Date('2026-09-21T13:20:00Z'))
+      adapter.transmit.mockResolvedValue({ accessKey: KEY, nfseNumber: '124', dhProc: '2026-09-21T10:21:00-03:00', nfseXml: NFSE_XML, raw: {} })
+      r = await transmitServiceInvoice(deps, A, webRef(A, INVOICE))
+    } finally {
+      jest.useRealTimers()
+    }
+    expect(r).toMatchObject({ attempt: 2, dpsId: DPS_ID, kind: 'A' })
+    const first = readByName(`${DPS_ID}-t1-dps.xml`)
+    const second = readByName(`${DPS_ID}-t2-dps.xml`)
+    expect(first).toBe(adapter.transmit.mock.calls[0][1])                                   // o que foi dito na 1ª
+    expect(second).toBe(adapter.transmit.mock.calls[1][1])                                  // o que foi dito na 2ª (a autorizada)
+    expect(first).not.toBe(second)
+    expect(allFiles().some(f => f.endsWith(`${DPS_ID}-dps.xml`))).toBe(false)               // o nome antigo (só pelo Id) não nasce mais
+    expect((fiscal.logger.warn as jest.Mock).mock.calls.filter(([m]) => /não gravado no arquivo fiscal/.test(String(m)))).toEqual([])
+  })
+
+  it('consulta: o `-nfse.xml` já existe com OUTRO conteúdo → a consulta devolve o resultado, NÃO tenta gravar (o `find` acha o arquivo) e o arquivo fica intacto', async () => {
+    deps.storage.save(fileKey, `${KEY}-nfse.xml`, OTHER, new Date('2026-09-21T13:15:30Z'))
+    const save = jest.spyOn(deps.storage, 'save')
+    try {
+      ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A' }))
+      adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'authorized', nfseXml: NFSE_XML, dhProc: '2026-09-21T10:15:30-03:00' })
+      expect(await refreshServiceTransmission(deps, A, webRef(A, INVOICE), 'Q')).toMatchObject({ kind: 'A' })
+      expect(save).not.toHaveBeenCalled()
+    } finally { save.mockRestore() }
+    expect(readByName(`${KEY}-nfse.xml`)).toBe(OTHER)
+    expect(fiscal.logger.warn).not.toHaveBeenCalledWith('XML da NFS-e não gravado na consulta', expect.anything())
   })
 })

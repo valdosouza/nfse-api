@@ -11,6 +11,7 @@ import { assertServiceVoiceDomainsEnforced, assertServiceStrictSession } from '.
 import { assertCorsOrigins } from './cors-origins'
 import { readBuildCheck, assertBuildCurrent } from './build-info'
 import { isProductionEnv } from './environment'
+import { warmFiscalStorageAtBoot } from './storage-warm'
 import { RefreshWorker, refreshWorkerDeps, refreshWorkerEnabled } from './worker/refresh-worker'
 
 async function main(): Promise<void> {
@@ -23,6 +24,9 @@ async function main(): Promise<void> {
   // migrations: núcleo primeiro, depois a família (trava nomeada — duas instâncias sobem juntas — D-F35)
   const applied = await runMigrations(ctx.db, MIGRATION_SETS)
   if (applied.length) logger.info('Migrations aplicadas no boot', { applied })
+  // DEPLOY.E1.P10 (núcleo 5.2.0): prepara o índice de gravação única do arquivo fiscal ANTES de ouvir a porta. A falha só avisa e o
+  // serviço sobe (NFSE-API#3) — a captura mora na própria função (`storage-warm.ts`); aqui a chamada é direta, sem condição.
+  warmFiscalStorageAtBoot(ctx.storage)
   await assertSessionInvariants(ctx.pool)
   await assertIssuerModelDomainEnforced(ctx.pool)          // D-F45/D-NE84: CHECK BINÁRIO do domínio do modelo (migrations 004/005 do núcleo)
   await assertIssuerEnvironmentDomainEnforced(ctx.pool)    // D-F120: CHECK BINÁRIO do ambiente da habilitação (migration 005 do núcleo)

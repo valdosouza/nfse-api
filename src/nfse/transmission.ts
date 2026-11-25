@@ -104,7 +104,10 @@ const XMOTIVO_MAX = 255
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e)).slice(0, 255)
 const estDeps = (d: NfseDeps) => ({ pool: d.pool, keyring: d.keyring })
 
-export const dpsFileName = (dpsId: string) => `${dpsId}-dps.xml`
+// DEPLOY.E1.P10 (NFSE-API#2, Valdo 2026-11-25): UM arquivo de DPS por TENTATIVA. O Id do DPS é o mesmo na vida inteira da nota e o núcleo
+// 5.2.0 grava cada nome UMA vez (o mesmo nome com outro conteúdo = `FiscalFileConflictError`, que aqui só avisa): com o nome só pelo Id, o
+// reenvio de uma nota rejeitada deixaria guardado o DPS da 1ª tentativa, e não o autorizado. Os arquivos antigos (`<Id>-dps.xml`) ficam.
+export const dpsFileName = (dpsId: string, attempt: number) => `${dpsId}-t${attempt}-dps.xml`
 // D-CJ7: o nome do arquivo leva a chave COMO É (antes sem as letras — duas chaves alfanuméricas diferentes podiam cair no mesmo arquivo;
 // para chave numérica o nome é o mesmo de sempre). A chave chega aqui já conferida pela forma geral (`asNfseAccessKey`) na leitura da voz.
 export const nfseFileName = (accessKey: string) => `${accessKey}-nfse.xml`
@@ -348,7 +351,11 @@ async function termsWithin(adapter: TaxAuthorityAdapter, ctx: AuthorityContext, 
 
 export function resetMunicipalTermsCache(): void { termsCache.clear(); ceilingCache.clear() }
 
-/** Arquivo fiscal: falha ao gravar só AVISA (o fato já existe no fisco; a consulta regrava). */
+/**
+ * Arquivo fiscal: falha ao gravar só AVISA (o fato já existe no fisco; a consulta regrava). Núcleo 5.2.0 (DEPLOY.E1.P10): o arquivo é de
+ * GRAVAÇÃO ÚNICA — o mesmo nome com OUTRO conteúdo lança `FiscalFileConflictError` e o arquivo que já existe fica intacto; aqui o conflito
+ * também só avisa (contrato do `save` do núcleo: aviso na NFS-e), nunca é calado.
+ */
 async function saveXmlSafe(deps: NfseDeps, actor: Actor, cnpj: string, serie: string | null, name: string, xml: string, when: Date, environment: AuthorityEnvironment, label: string): Promise<void> {
   try {
     // D-F241: a pasta leva a série da DPS; sem ela não há pasta certa — não grava (Q-N38: falhar ao gravar só avisa)
@@ -440,8 +447,8 @@ export async function transmitServiceInvoice(deps: NfseDeps, actor: UserActor, r
   const environment = reserved.opened.issuer.environment
   const ctx = ctxFor(reserved.opened, environment)
 
-  // (e) o DPS assinado no arquivo fiscal — snapshot do que foi dito ao fisco
-  await saveXmlSafe(deps, actor, base.emitter.cnpj, reserved.serie, dpsFileName(reserved.dpsId), reserved.xml, new Date(), environment, 'DPS assinado')
+  // (e) o DPS assinado no arquivo fiscal — snapshot do que foi dito ao fisco NESTA tentativa (NFSE-API#2)
+  await saveXmlSafe(deps, actor, base.emitter.cnpj, reserved.serie, dpsFileName(reserved.dpsId, reserved.attempt), reserved.xml, new Date(), environment, 'DPS assinado')
 
   // (f) o FISCO — fora de qualquer transação
   let outcome
