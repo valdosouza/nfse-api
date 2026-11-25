@@ -1,7 +1,7 @@
 import 'dotenv/config'
 import {
   logger, assertSessionInvariants, assertIssuerModelDomainEnforced, assertIssuerEnvironmentDomainEnforced, assertFamilyViewsReadable, runMigrations,
-  access, assertFiscalCodeDomainsEnforced, SERVICE_VOICE_READING,
+  access, assertFiscalCodeDomainsEnforced, assertSmtpCredentialDomainsEnforced, SERVICE_VOICE_READING,
 } from 'fiscal-api'
 import { contextFromEnv } from './context'
 import { createApp } from './app'
@@ -38,10 +38,13 @@ async function main(): Promise<void> {
   // CRED.E1.P1 (D-F45/D-F120 + D-NE224): o domínio da configuração fiscal por UF (migration 006 do núcleo) — esta API grava a credencial do
   // fornecedor. O boot NÃO exige o CSRT (sobe sem ele, para cadastrá-lo pela rota): a recusa por falta de credencial é da nfe-api (D-NE223)
   await assertFiscalCodeDomainsEnforced(ctx.pool)
+  // DEPLOY.E1.P11 (núcleo 5.3.0, migration 009, D-NE236): o domínio da conta de e-mail do cliente (porta, criptografia, linha viva com cifra).
+  // Esta API não grava nem lê a senha; confere a sonda porque o núcleo é um só e a rotação da chave cobre a tabela. Sempre depois das migrations
+  await assertSmtpCredentialDomainsEnforced(ctx.pool)
   // costura A1 (D-AU3/D-AU12): a sessão viva lida em TODA rota — sem a vw_user_link (script sql/70) ou sem o GRANT nela, o serviço NÃO sobe
   logger.info(`Sessão viva (setes_central.vw_user_link): ${await access.assertSessionViewReadable(ctx.pool)}`)
-  if (ctx.keyring.currentVersion === null) logger.warn('FISCAL_MASTER_KEYS ausente — o A1 não abre (operações fiscais respondem 503) até configurar')
-  // D-F250: a 1ª prova da chave (abre UM A1 guardado por versão — D-F243) roda ANTES de ouvir a porta: não há health "sem prova".
+  if (ctx.keyring.currentVersion === null) logger.warn('FISCAL_MASTER_KEYS ausente — os segredos cifrados (A1 e senha SMTP) não abrem (operações fiscais respondem 503) até configurar')
+  // D-F250: a 1ª prova da chave (abre UM segredo guardado por versão — D-F243) roda ANTES de ouvir a porta: não há health "sem prova".
   // Falhou = sobe assim mesmo com masterKey=false e o motivo no log. Depois, a cada 5 minutos (D-F245/D-F251).
   const keyProof = new KeyProof(ctx)
   logger.info(`Prova da chave-mestra na partida (D-F243): ${await keyProof.run() ? 'ok' : 'FALHOU — /v1/health com masterKey=false (ver o log)'}`)

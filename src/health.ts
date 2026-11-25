@@ -6,9 +6,9 @@ import type { KeyProof } from './key-proof'
  * /v1/health (sem autenticação): prova banco, chave-mestra e storage — critério §12.8-1. 200 só com os três; 503 diz qual falhou
  * (nunca conteúdo, nunca qual versão).
  *
- * Chave-mestra (D-F243/D-F244/D-F245 — DEPLOY.E2.P3): o sinal é o último resultado da `KeyProof`, que abre UM A1 guardado por versão em
+ * Chave-mestra (D-F243/D-F244/D-F245 — DEPLOY.E2.P3): o sinal é o último resultado da `KeyProof`, que abre UM segredo guardado (A1 ou senha SMTP) por versão em
  * uso na partida e a cada 5 minutos. Chamar o health NÃO abre certificado nenhum (o endereço é aberto e o monitor chama a cada poucos
- * segundos). A1 ilegível com a chave certa (`degraded`) não aparece aqui: vai para o log e para o alarme.
+ * segundos). Segredo ilegível com a chave certa (`degraded`) não aparece aqui: vai para o log e para o alarme.
  */
 export function healthHandler(ctx: AppContext, keyProof: KeyProof): RequestHandler {
   return async (_req, res) => {

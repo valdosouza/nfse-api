@@ -10,7 +10,7 @@ async function main(): Promise<number> {
   try {
     const dbItem = await preDeployDbItem(process.env, async sql => (await pool.query(sql))[0] as Array<Record<string, unknown>>)
     items.push(dbItem)
-    // D-F243: a chave do servidor abre os A1 guardados (só com o banco no ar; o anel vem do mesmo env do serviço)
+    // D-F243: a chave do servidor abre os segredos guardados (só com o banco no ar; o anel vem do mesmo env do serviço)
     if (dbItem.ok) {
       let keyring: MasterKeyRing | null = null
       try { keyring = MasterKeyRing.fromEnv(process.env) } catch { keyring = null }   // anel inválido: o item FISCAL_MASTER_KEYS já diz

@@ -1,12 +1,12 @@
 /// <reference types="jest" />
 // DEPLOY.E2.P3 (2026-11-18 — ficha `projetos/nfse-api/GERAL/ficha-deploy-e2-p3-chave-mestra-health.md` no Vault): a prova da chave do
-// SERVIDOR abre os A1 guardados (D-F243), roda na partida antes do `listen` (D-F250) e a cada 5 min (D-F245/D-F251); o health só lê;
+// SERVIDOR abre os segredos guardados — A1 e senha SMTP (D-F243; DEPLOY.E1.P11, núcleo 5.3.0), roda na partida antes do `listen` (D-F250) e a cada 5 min (D-F245/D-F251); o health só lê;
 // o pre-deploy prova na hora; o comando da rotação imprime só o relatório, nada do segredo.
 import { randomBytes } from 'crypto'
 import fs from 'fs'
 import path from 'path'
-import { MasterKeyRing, KeyRotationAborted } from 'fiscal-api'
-import type { KeyRotationReport, StoredKeyCheck } from 'fiscal-api'
+import { MasterKeyRing, StoredKeyRotationAborted, storedSecretsOutsideKeyVersion } from 'fiscal-api'
+import type { StoredKeyRotationReport, StoredKeyCheck } from 'fiscal-api'
 import { KeyProof, KEY_PROOF_INTERVAL_MINUTES, KEY_PROOF_LOG_CODES } from '../key-proof'
 import { preDeployKeyItem, preDeployReport } from '../pre-deploy'
 import { keyRotationArgumentErrors, runKeyRotation } from '../key-rotation'
@@ -130,6 +130,16 @@ describe('D-F243 KeyProof', () => {
   })
 })
 
+describe('DEPLOY.E1.P11 prova da chave com os dois donos (verifyStoredKeys REAL do 5.3.0)', () => {
+  it('senha SMTP selada com a chave A: o anel A abre, a chave B de 32 bytes NÃO; versão da senha fora do anel derruba; só senha, sem A1, também prova', async () => {
+    const smtps = [{ institutionId: 7, sealedWith: ringA }]
+    expect(await new KeyProof({ pool: storedA1Pool([], smtps), keyring: ringA }, { log: silentLog().log }).run()).toBe(true)
+    expect(await new KeyProof({ pool: storedA1Pool([], smtps), keyring: ringB }, { log: silentLog().log }).run()).toBe(false)
+    const v2 = MasterKeyRing.of({ 2: keyB })
+    expect(await new KeyProof({ pool: storedA1Pool([], [...smtps, { institutionId: 8, sealedWith: v2 }]), keyring: ringA }, { log: silentLog().log }).run()).toBe(false)
+  })
+})
+
 describe('D-F250 boot', () => {
   const server = fs.readFileSync(path.join(SRC, 'server.ts'), 'utf8')
   it('a 1ª prova roda (com await) ANTES de ouvir a porta; o timer começa; o app recebe a prova', () => {
@@ -179,7 +189,9 @@ describe('D-F243 pre-deploy', () => {
 describe('D-F243 rotação', () => {
   const ring12 = MasterKeyRing.of({ 1: keyA, 2: keyB })
   const deps = { pool, keyring: ring12 }
-  const clean: KeyRotationReport = { currentVersion: 2, rewrapped: [{ institutionId: 3, from: 1 }, { institutionId: 9, from: 1 }], failed: [], skipped: [] }
+  const A1 = 'tb_establishment_certificate'
+  const SMTP = 'tb_establishment_smtp_credential'
+  const clean: StoredKeyRotationReport = { currentVersion: 2, rewrapped: [{ store: A1, institutionId: 3, from: 1 }, { store: SMTP, institutionId: 9, from: 1 }], failed: [], skipped: [] }
   const okV2: StoredKeyCheck = { ok: true, degraded: false, versions: [{ version: 2, ok: true, unreadable: 0 }] }
   const allText = (r: { lines: string[] }) => r.lines.join('\n')
   const noLeak = (text: string) => {
@@ -204,12 +216,14 @@ describe('D-F243 rotação', () => {
   it('ENSAIO não chama a rotação; mostra o que regravaria, a prova e o passo 1 do runbook', async () => {
     const rotate = jest.fn(async () => clean)
     const r = await runKeyRotation(deps, {
-      execute: false, rotate, verify: async () => okCheck, versions: async () => [1], outside: async () => [3, 9],
+      execute: false, rotate, verify: async () => okCheck, versions: async () => [1], outside: async () => [{ store: A1, institutionId: 3 }, { store: SMTP, institutionId: 9 }],
     })
     expect(rotate).not.toHaveBeenCalled()
     expect(r.exitCode).toBe(0)
     expect(allText(r)).toMatch(/ENSAIO/)
-    expect(allText(r)).toMatch(/A1 a regravar para v2: 2/)
+    expect(allText(r)).toMatch(/segredos a regravar para v2: 2/)
+    expect(allText(r)).toMatch(/tb_establishment_certificate · institution 3/)    // o ensaio diz o dono de cada segredo
+    expect(allText(r)).toMatch(/tb_establishment_smtp_credential · institution 9/)
     expect(allText(r)).toMatch(/runbook 1/)
     noLeak(allText(r))
   })
@@ -217,13 +231,14 @@ describe('D-F243 rotação', () => {
   it('ATO limpo + versões [atual] + prova ok → saída 0 e o passo 4 do runbook', async () => {
     const r = await runKeyRotation(deps, { execute: true, rotate: async () => clean, verify: async () => okV2, versions: async () => [2] })
     expect(r.exitCode).toBe(0)
-    expect(allText(r)).toMatch(/institution 3: v1 → v2/)
+    expect(allText(r)).toMatch(/tb_establishment_certificate · institution 3: v1 → v2/)
+    expect(allText(r)).toMatch(/tb_establishment_smtp_credential · institution 9: v1 → v2/)   // o relatório diz o dono
     expect(allText(r)).toMatch(/runbook 4/)
     noLeak(allText(r))
   })
 
   it('ATO com falha, versão sobrando ou prova falha → saída 1, "não tire a antiga"', async () => {
-    const failed = { ...clean, failed: [{ institutionId: 5, from: 1, code: 'FISCAL_CERT_INVALID' }] }
+    const failed = { ...clean, failed: [{ store: SMTP, institutionId: 5, from: 1, code: 'SMTP_CREDENTIAL_UNREADABLE' }] }
     for (const run of [
       { rotate: async () => failed, verify: async () => okV2, versions: async () => [1, 2] },
       { rotate: async () => clean, verify: async () => okV2, versions: async () => [1, 2] },
@@ -237,10 +252,10 @@ describe('D-F243 rotação', () => {
   })
 
   it('ATO só com `failed` (versões já [atual], prova ok) → saída 1: a regra do `failed` vale sozinha', async () => {
-    const failed = { ...clean, failed: [{ institutionId: 5, from: 1, code: 'FISCAL_CERT_INVALID' }] }
+    const failed = { ...clean, failed: [{ store: SMTP, institutionId: 5, from: 1, code: 'SMTP_CREDENTIAL_UNREADABLE' }] }
     const r = await runKeyRotation(deps, { execute: true, rotate: async () => failed, verify: async () => okV2, versions: async () => [2] })
     expect(r.exitCode).toBe(1)
-    expect(allText(r)).toMatch(/1 A1 não regravado/)
+    expect(allText(r)).toMatch(/1 segredo\(s\) não regravado/)
   })
 
   it('ATO com a conferência que CAI depois da rotação → saída 1 SEM perder o relatório do que foi regravado', async () => {
@@ -254,22 +269,36 @@ describe('D-F243 rotação', () => {
 
   it('ENSAIO com a prova falhando (versão guardada fora do anel) → saída 1: o ato não regravaria', async () => {
     const r = await runKeyRotation(deps, {
-      execute: false, verify: async () => badCheck, versions: async () => [1], outside: async () => [3],
+      execute: false, verify: async () => badCheck, versions: async () => [1], outside: async () => [{ store: A1, institutionId: 3 }],
     })
     expect(r.exitCode).toBe(1)
     expect(allText(r)).toMatch(/Corrija FISCAL_MASTER_KEYS/)
   })
 
-  it('KeyRotationAborted → saída 1 com o relatório parcial e a institution em dúvida', async () => {
-    const partial = { ...clean, rewrapped: [{ institutionId: 3, from: 1 }] }
+  it('StoredKeyRotationAborted → saída 1 com o relatório parcial e o dono e a institution em dúvida', async () => {
+    const partial = { ...clean, rewrapped: [{ store: A1, institutionId: 3, from: 1 }] }
     const r = await runKeyRotation(deps, {
-      execute: true, rotate: async () => { throw new KeyRotationAborted(partial, new Error('Connection lost'), 9) },
+      execute: true, rotate: async () => { throw new StoredKeyRotationAborted(partial, new Error('Connection lost'), { store: SMTP, institutionId: 9 }) },
     })
     expect(r.exitCode).toBe(1)
     expect(allText(r)).toMatch(/INTERROMPIDA/)
     expect(allText(r)).toMatch(/institution 3: v1 → v2/)
-    expect(allText(r)).toMatch(/em dúvida: institution 9/)
+    expect(allText(r)).toMatch(/em dúvida: tb_establishment_smtp_credential · institution 9/)
     noLeak(allText(r))
+  })
+
+  it('o relatório diz o dono também nas linhas de falharam e de pulados', async () => {
+    const rep: StoredKeyRotationReport = { ...clean, failed: [{ store: SMTP, institutionId: 5, from: 1, code: 'SMTP_CREDENTIAL_UNREADABLE' }], skipped: [{ store: A1, institutionId: 6 }] }
+    const r = await runKeyRotation(deps, { execute: true, rotate: async () => rep, verify: async () => okV2, versions: async () => [2] })
+    expect(allText(r)).toMatch(/tb_establishment_smtp_credential · institution 5: v1 — SMTP_CREDENTIAL_UNREADABLE/)
+    expect(allText(r)).toMatch(/pulados .*: 1 \(tb_establishment_certificate · institution 6\)/)
+  })
+
+  it('erro inesperado no ato (fora do contrato do núcleo) → saída 1 com o aviso de que parte pode estar regravada; nunca sobe calado', async () => {
+    const r = await runKeyRotation(deps, { execute: true, rotate: async () => { throw new Error('Connection lost') } })
+    expect(r.exitCode).toBe(1)
+    expect(allText(r)).toMatch(/INTERROMPIDA por erro inesperado/)
+    expect(allText(r)).toMatch(/rode o ENSAIO/)
   })
 
   it('anel vazio → saída 1 sem tocar o banco', async () => {
@@ -277,5 +306,27 @@ describe('D-F243 rotação', () => {
     const r = await runKeyRotation({ pool, keyring: MasterKeyRing.of({}) }, { execute: true, rotate })
     expect(r.exitCode).toBe(1)
     expect(rotate).not.toHaveBeenCalled()
+  })
+
+  it('DEPLOY.E1.P11: o ensaio com a leitura REAL do núcleo lista os dois donos', async () => {
+    const poolOld = storedA1Pool([{ institutionId: 3, sealedWith: ringA }], [{ institutionId: 9, sealedWith: ringA }])
+    const found = await storedSecretsOutsideKeyVersion(poolOld, 2)
+    expect(found).toEqual([{ store: A1, institutionId: 3 }, { store: SMTP, institutionId: 9 }])
+    const r = await runKeyRotation({ pool: poolOld, keyring: ring12 }, { execute: false, verify: async () => okCheck, versions: async () => [1] })
+    expect(allText(r)).toMatch(/segredos a regravar para v2: 2/)
+    expect(allText(r)).toMatch(/tb_establishment_smtp_credential · institution 9/)
+  })
+
+  it('DEPLOY.E1.P11 (cerca por texto): `key-rotation.ts` chama só os nomes dos DOIS donos — o código não cita a rotação nem a leitura do A1 sozinho', () => {
+    const code = fs.readFileSync(path.join(SRC, 'key-rotation.ts'), 'utf8').split(/\r?\n/).filter(l => !/^\s*\/\//.test(l)).join('\n')
+    expect(code).not.toMatch(/rotateCertificateKeys|certificatesOutsideKeyVersion|\bKeyRotationAborted\b|\bKeyRotationReport\b/)
+    // o ato e a conferência padrão são os do núcleo para TODOS os donos: nada de lista reduzida (um dono só deixaria a senha para trás)
+    expect(code).toMatch(/const rotate = run\.rotate \?\? rotateStoredKeys\s/)
+    expect(code).toMatch(/const versionsOf = run\.versions \?\? storedKeyVersions\s/)
+    expect(code).toMatch(/const outside = run\.outside \?\? storedSecretsOutsideKeyVersion\s/)
+    expect(code).not.toMatch(/SEALED_STORE|certificateKeyVersions/)
+    expect(code).not.toMatch(/rotateStoredKeys\([^)]/)
+    expect(code).toMatch(/storedSecretsOutsideKeyVersion/)
+    expect(code).toMatch(/StoredKeyRotationAborted/)
   })
 })

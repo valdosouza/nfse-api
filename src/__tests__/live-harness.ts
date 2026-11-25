@@ -47,6 +47,10 @@ export const FISCAL_COPY_EXCEPTIONS: Readonly<Record<string, string>> = Object.f
   // tabela de OUTRA família (modelos 55/65 — CHECK da 008): nenhum código da nfse-api a lê ou grava, e os ataques daqui são da NFS-e.
   // A cópia nasce com ela VAZIA (a 008 só cria); o real segue vigiado pelo CHECKSUM de toda tabela-base (D-F231).
   tb_fiscal_number_sequence:          'contador da NF-e (outra família) — a NFS-e não lê nem grava; a cópia nasce vazia',
+  // DEPLOY.E1.P11 (2026-11-25) — núcleo 5.3.0, migration 009 (D-NE236): a conta de e-mail do cliente, com a SENHA cifrada. É de outra
+  // família (o envio da NF-e): nenhum código da nfse-api a lê ou grava. Copiar tabela de segredo para o banco descartável do ataque
+  // seria vazar cifra; a cópia nasce com ela VAZIA e o real segue vigiado pelo CHECKSUM de toda tabela-base (D-F231).
+  tb_establishment_smtp_credential:   'senha SMTP cifrada do cliente (outra família) — a NFS-e não lê nem grava; a cópia nasce vazia',
 })
 
 /** Tabelas que cada migration da família CRIA (`CREATE TABLE …` fora de comentário), com o projeto e a versão. */
